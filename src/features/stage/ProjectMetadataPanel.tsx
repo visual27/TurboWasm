@@ -63,7 +63,9 @@ function scratchProfileUrl(username: string): string {
  * mapping is done in `services/scratch-project.ts` so this component only
  * ever sees semantically-named fields.
  */
-export function ProjectMetadataPanel({ metadata }: ProjectMetadataPanelProps): React.JSX.Element {
+export const ProjectMetadataPanel = React.memo(function ProjectMetadataPanel({
+  metadata,
+}: ProjectMetadataPanelProps): React.JSX.Element {
   // Width matches the stage so the metadata frame aligns visually.
   const stageWidth = useSettingsStore((s) => s.advanced.stageWidth);
 
@@ -156,4 +158,4 @@ export function ProjectMetadataPanel({ metadata }: ProjectMetadataPanelProps): R
       </div>
     </aside>
   );
-}
+});

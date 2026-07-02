@@ -4,14 +4,12 @@ import { ErrorLogPanel } from '@/features/error-log/ErrorLogPanel';
 import { DropScreen } from '@/features/idle/DropScreen';
 import { StageView } from '@/features/stage/StageView';
 import { ControlBar } from '@/features/stage/ControlBar';
-import { SettingsDialog } from '@/features/settings/SettingsDialog';
-import { CreditsDialog } from '@/features/credits/CreditsDialog';
 import { ProjectMetadataPanel } from '@/features/stage/ProjectMetadataPanel';
 import { ProjectIdInput } from '@/features/stage/ProjectIdInput';
 import { LoadingProgress } from '@/features/stage/LoadingProgress';
 import { useProjectStore } from '@/stores/useProjectStore';
 import { usePlayerStore } from '@/stores/usePlayerStore';
-import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useSettingsStore, flushSettingsPersistForTesting } from '@/stores/useSettingsStore';
 import { useProjectLoader } from '@/features/project-loader/useProjectLoader';
 import { isAllowedFileName } from '@/lib/validation';
 import { useErrorLogStore } from '@/stores/useErrorLogStore';
@@ -20,13 +18,23 @@ import { useTheme } from '@/hooks/useTheme';
 import { useProjectUrlSync } from '@/hooks/useProjectUrlSync';
 import { cn } from '@/lib/utils';
 
+// Lazy-load the two dialogs so their bodies (and the Radix primitives they
+// pull in) ship as separate chunks and don't bloat the initial bundle.
+// fallback={null} is fine because the dialog itself only renders while
+// `open` is true — the brief Suspense boundary on first open is invisible.
+const SettingsDialog = React.lazy(() =>
+  import('@/features/settings/SettingsDialog').then((m) => ({ default: m.SettingsDialog })),
+);
+const CreditsDialog = React.lazy(() =>
+  import('@/features/credits/CreditsDialog').then((m) => ({ default: m.CreditsDialog })),
+);
+
 export function App(): React.JSX.Element {
   const loadState = useProjectStore((s) => s.loadState);
   const source = useProjectStore((s) => s.source);
   const metadata = useProjectStore((s) => s.metadata);
   const advanced = useSettingsStore((s) => s.advanced);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
-  const assetProgress = usePlayerStore((s) => s.assetProgress);
 
   const { loadFile, loadById } = useProjectLoader();
   const push = useErrorLogStore((s) => s.push);
@@ -35,7 +43,9 @@ export function App(): React.JSX.Element {
 
   const [settingsOpen, setSettingsOpen] = React.useState<boolean>(false);
   const [creditsOpen, setCreditsOpen] = React.useState<boolean>(false);
-  const [isFullscreen, setIsFullscreen] = React.useState<boolean>(false);
+  // isFullscreen is owned exclusively by the store; we read it directly
+  // here so we don't need a separate useState mirror.
+  const isFullscreen = usePlayerStore((s) => s.isFullscreen);
 
   const fsContainerRef = React.useRef<HTMLDivElement>(null);
 
@@ -86,16 +96,27 @@ export function App(): React.JSX.Element {
     };
   }, [loadFile, push]);
 
-  // Sync DOM fullscreen state with React.
+  // Sync DOM fullscreen state with the player store (single source of truth).
   React.useEffect(() => {
     const onChange = (): void => {
-      const fs = document.fullscreenElement === fsContainerRef.current;
-      setIsFullscreen(fs);
-      setFullscreen(fs);
+      setFullscreen(document.fullscreenElement === fsContainerRef.current);
     };
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, [setFullscreen]);
+
+  // Flush any debounced settings write before the page is hidden so the
+  // user's last change (e.g. dragging a volume slider right before closing
+  // the tab) is not lost.
+  React.useEffect(() => {
+    const flush = (): void => flushSettingsPersistForTesting();
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+    };
+  }, []);
 
   const handleToggleFullscreen = React.useCallback(async (): Promise<void> => {
     const el = fsContainerRef.current;
@@ -201,15 +222,11 @@ export function App(): React.JSX.Element {
               Loading progress overlay — covers the stage area (inside the
               border wrapper) whenever a project load is in flight, so the
               user sees a TurboWarp-style "Loading assets… X / Y" indicator
-              instead of the old frozen frame.
+              instead of the old frozen frame. LoadingProgress subscribes
+              directly to usePlayerStore.assetProgress so this App does not
+              need to re-render on every ASSET_PROGRESS event.
             */}
-            {loadState === 'loading' && (
-              <LoadingProgress
-                finished={assetProgress.finished}
-                total={assetProgress.total}
-                label={assetProgress.total > 0 ? 'Loading assets…' : 'Loading project…'}
-              />
-            )}
+            {loadState === 'loading' && <LoadingProgress />}
           </div>
 
           {/*
@@ -243,8 +260,10 @@ export function App(): React.JSX.Element {
             </span>
           </div>
         )}
-        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
-        <CreditsDialog open={creditsOpen} onOpenChange={setCreditsOpen} />
+        <React.Suspense fallback={null}>
+          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          <CreditsDialog open={creditsOpen} onOpenChange={setCreditsOpen} />
+        </React.Suspense>
       </div>
     </TooltipProvider>
   );

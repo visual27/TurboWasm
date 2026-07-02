@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlayerStore } from '@/stores/usePlayerStore';
 import { useTheme } from '@/hooks/useTheme';
 import { applySettings, initPlayer, setVolume, subscribePlayerState } from '@/runtime/player';
 import { relayoutScaffolding, setScaffoldingResizeMode } from '@/lib/scaffolding';
 import { useProjectStore } from '@/stores/useProjectStore';
+import type { AdvancedSettings } from '@/types/settings';
 import { cn } from '@/lib/utils';
 
 export interface StageViewProps {
@@ -16,11 +17,26 @@ function readWindowSize(): { w: number; h: number } {
   return { w: window.innerWidth, h: window.innerHeight };
 }
 
-export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
+// Cache of the last `advanced` snapshot seen by initPlayer / applySettings.
+// We re-read this snapshot from a ref so the mount-effect and the settings
+// effect can share a stable reference without re-subscribing on every render.
+function useAdvancedRef(): React.MutableRefObject<AdvancedSettings> {
   const advanced = useSettingsStore((s) => s.advanced);
+  const ref = useRef<AdvancedSettings>(advanced);
+  useEffect(() => {
+    ref.current = advanced;
+  }, [advanced]);
+  return ref;
+}
+
+export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
+  // Subscribe to advanced via a ref so the component does NOT re-render on
+  // every advanced patch (e.g. while dragging a slider in Settings). The
+  // settings effect below still receives every change via the ref.
+  const advancedRef = useAdvancedRef();
+  const stageWidth = useSettingsStore((s) => s.advanced.stageWidth);
+  const stageHeight = useSettingsStore((s) => s.advanced.stageHeight);
   const volume = useSettingsStore((s) => s.volume);
-  const setStageScale = usePlayerStore((s) => s.setStageScale);
-  const setContainerSize = usePlayerStore((s) => s.setContainerSize);
   const setPlaying = usePlayerStore((s) => s.setPlaying);
   const setPaused = usePlayerStore((s) => s.setPaused);
   const loadState = useProjectStore((s) => s.loadState);
@@ -31,7 +47,6 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
   const innerRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef<boolean>(false);
   const previousReadyRef = useRef<boolean>(false);
-  const previousFullscreenRef = useRef<boolean>(false);
   const [containerSize, setLocalContainerSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [windowSize, setWindowSize] = useState<{ w: number; h: number }>(readWindowSize);
 
@@ -43,7 +58,7 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
     let cancelled = false;
     (async () => {
       try {
-        await initPlayer(stageMountRef.current as HTMLElement, advanced);
+        await initPlayer(stageMountRef.current as HTMLElement, advancedRef.current);
         if (cancelled) return;
       } catch (err) {
         initializedRef.current = false;
@@ -57,16 +72,29 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Apply settings changes (immediate)
+  // Apply settings changes (immediate). We subscribe to advanced via a ref
+  // so this component doesn't re-render; the ref is updated by the
+  // `useAdvancedRef` hook above, and the manual subscription below catches
+  // every change.
   useEffect(() => {
-    if (!initializedRef.current) return;
-    try {
-      applySettings(advanced);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[stage] apply settings failed:', err);
-    }
-  }, [advanced]);
+    const apply = (): void => {
+      if (!initializedRef.current) return;
+      try {
+        applySettings(advancedRef.current);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[stage] apply settings failed:', err);
+      }
+    };
+    // Subscribe to advanced changes via the store directly. We bypass the
+    // hook subscription here so this component does not re-render on
+    // advanced patches.
+    const unsub = useSettingsStore.subscribe((state, prev) => {
+      if (state.advanced !== prev.advanced) apply();
+    });
+    apply();
+    return unsub;
+  }, [advancedRef]);
 
   // Apply volume
   useEffect(() => {
@@ -87,13 +115,14 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
     return unsub;
   }, [setPlaying, setPaused]);
 
-  // Switch Scaffolding resize mode. We always keep `preserve-ratio` so the
-  // underlying canvas preserves the project's aspect ratio. In fullscreen we
-  // additionally scale the displayed frame via CSS transform to fill the
-  // viewport — the renderer itself is NOT resized, which avoids the
-  // "stage disappears" bug and keeps gameplay coordinates consistent.
+  // Single coalesced relayout trigger. Any layout-affecting change
+  // (fullscreen, ready, stage-size) schedules at most one double-rAF
+  // relayout per frame. This replaces the three independent effects that
+  // previously could schedule overlapping relayouts.
+  const isReady = loadState === 'ready';
   useEffect(() => {
     setScaffoldingResizeMode('preserve-ratio');
+    if (!initializedRef.current) return;
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
       relayoutScaffolding();
@@ -103,16 +132,12 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
       cancelAnimationFrame(raf1);
       cancelAnimationFrame(raf2);
     };
-  }, [isFullscreen]);
+  }, [isFullscreen, isReady, stageWidth, stageHeight]);
 
-  // When transitioning from idle → ready, force a relayout so the canvas
-  // resizes correctly (the container was display:none during idle, which
-  // meant Scaffolding computed dimensions as 0).
-  const isReady = loadState === 'ready';
+  // Mark the previous ready state for the ready → not-ready transition check
+  // (kept for any future transition that needs to differ from the regular
+  // coalesced relayout above).
   useEffect(() => {
-    if (isReady && !previousReadyRef.current && initializedRef.current) {
-      requestAnimationFrame(() => relayoutScaffolding());
-    }
     previousReadyRef.current = isReady;
   }, [isReady]);
 
@@ -125,19 +150,10 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
       if (!entry) return;
       const { width, height } = entry.contentRect;
       setLocalContainerSize({ w: width, h: height });
-      setContainerSize({ width, height });
     });
     obs.observe(el);
     return () => obs.disconnect();
-  }, [setContainerSize]);
-
-  // Trigger a relayout whenever fullscreen state toggles (covers Escape exit).
-  useEffect(() => {
-    if (previousFullscreenRef.current !== isFullscreen && initializedRef.current) {
-      requestAnimationFrame(() => relayoutScaffolding());
-    }
-    previousFullscreenRef.current = isFullscreen;
-  }, [isFullscreen]);
+  }, []);
 
   // In fullscreen mode the displayed frame must scale to the actual viewport
   // size, not to the (unscaled) layout box of the inner container. Without
@@ -156,21 +172,30 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
   // - Fullscreen mode: scale up to fill the entire viewport while keeping
   //   the project's aspect ratio. The underlying Scaffolding canvas is NOT
   //   resized — only the displayed frame is enlarged via CSS transform.
-  const scale = isFullscreen
-    ? Math.min(
-        (windowSize.w || advanced.stageWidth) / advanced.stageWidth,
-        (windowSize.h || advanced.stageHeight) / advanced.stageHeight,
-      )
-    : Math.min(
-        1,
-        (containerSize.w || advanced.stageWidth) / advanced.stageWidth,
-        (containerSize.h || advanced.stageHeight) / advanced.stageHeight,
+  const scale = useMemo(() => {
+    if (isFullscreen) {
+      return Math.min(
+        (windowSize.w || stageWidth) / stageWidth,
+        (windowSize.h || stageHeight) / stageHeight,
       );
-  useEffect(() => {
-    setStageScale(scale);
-  }, [scale, setStageScale]);
+    }
+    return Math.min(
+      1,
+      (containerSize.w || stageWidth) / stageWidth,
+      (containerSize.h || stageHeight) / stageHeight,
+    );
+  }, [
+    isFullscreen,
+    windowSize.w,
+    windowSize.h,
+    containerSize.w,
+    containerSize.h,
+    stageWidth,
+    stageHeight,
+  ]);
 
   const stageBackground = resolved === 'dark' ? '#0a0a0a' : '#ffffff';
+  const isHidden = !isReady && !isFullscreen;
 
   return (
     <div
@@ -179,7 +204,7 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
       className={cn(
         'relative w-full',
         isFullscreen ? 'h-full w-full' : 'flex justify-center',
-        !isReady && !isFullscreen && 'hidden',
+        isHidden && 'hidden',
       )}
     >
       {/*
@@ -205,11 +230,11 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
         )}
         style={
           isFullscreen
-            ? { minWidth: advanced.stageWidth, minHeight: advanced.stageHeight }
+            ? { minWidth: stageWidth, minHeight: stageHeight }
             : {
                 width: '100%',
-                maxWidth: advanced.stageWidth,
-                aspectRatio: `${advanced.stageWidth} / ${advanced.stageHeight}`,
+                maxWidth: stageWidth,
+                aspectRatio: `${stageWidth} / ${stageHeight}`,
               }
         }
       >
@@ -220,8 +245,8 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
             // (stageWidth × stageHeight) size. The transform enlarges the
             // displayed frame to fill the available space while preserving
             // the project's aspect ratio.
-            width: advanced.stageWidth,
-            height: advanced.stageHeight,
+            width: stageWidth,
+            height: stageHeight,
             transform: `scale(${scale})`,
             transformOrigin: 'center center',
           }}

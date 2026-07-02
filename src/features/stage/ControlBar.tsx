@@ -25,7 +25,7 @@ export interface ControlBarProps {
   position?: ControlBarPosition;
 }
 
-export function ControlBar({
+function ControlBarImpl({
   onOpenSettings,
   onToggleFullscreen,
   variant = 'standalone',
@@ -50,15 +50,23 @@ export function ControlBar({
     [setVolume],
   );
 
+  // Stable array reference for the Radix Slider primitive so it doesn't see
+  // a fresh `[volume]` array on every render.
+  const volumeArr = React.useMemo(() => [volume], [volume]);
+
   // Pause / Resume: while paused, the button shows a Play icon and resumes
   // the project; while running, it shows a Pause icon and pauses the project.
   // We use conditional JSX instead of a dynamic component reference so the
   // icon is unambiguously rendered by React.
   const pauseResumeLabel = isPaused ? 'Resume' : 'Pause';
-  const onPauseResumeClick = (): void => {
+  const onPauseResumeClick = React.useCallback((): void => {
     if (isPaused) resume();
     else pause();
-  };
+  }, [isPaused]);
+
+  const onGreenFlagClick = React.useCallback(() => greenFlag(), []);
+  const onStopClick = React.useCallback(() => stop(), []);
+  const onMuteToggle = React.useCallback(() => toggleMute(), [toggleMute]);
 
   return (
     <div
@@ -81,7 +89,7 @@ export function ControlBar({
                 variant="ghost"
                 size="icon"
                 aria-label="Start (green flag)"
-                onClick={() => greenFlag()}
+                onClick={onGreenFlagClick}
                 data-testid="green-flag"
                 className="h-8 w-8 rounded-full"
               >
@@ -114,7 +122,7 @@ export function ControlBar({
                 variant="ghost"
                 size="icon"
                 aria-label="Stop"
-                onClick={() => stop()}
+                onClick={onStopClick}
                 data-testid="stop"
                 className="h-8 w-8 rounded-full"
               >
@@ -132,7 +140,7 @@ export function ControlBar({
                 variant="ghost"
                 size="icon"
                 aria-label={muted ? 'Unmute' : 'Mute'}
-                onClick={() => toggleMute()}
+                onClick={onMuteToggle}
                 data-testid={muted ? 'unmute' : 'mute'}
                 className="h-8 w-8 rounded-full"
               >
@@ -143,7 +151,7 @@ export function ControlBar({
           </Tooltip>
 
           <Slider
-            value={[volume]}
+            value={volumeArr}
             min={0}
             max={100}
             step={1}
@@ -195,3 +203,12 @@ export function ControlBar({
     </div>
   );
 }
+
+/**
+ * Memoized control bar. The component subscribes to several store slices and
+ * receives callbacks from `App`. Without `React.memo` every parent render
+ * (e.g. each `ASSET_PROGRESS` event) would re-render every ControlBar even
+ * when none of the relevant slices changed. With `React.memo` and the
+ * primitive selectors inside, re-renders are scoped to actual state changes.
+ */
+export const ControlBar = React.memo(ControlBarImpl);

@@ -102,7 +102,7 @@ interface RuntimeTabProps {
   patch: (patch: Partial<AdvancedSettings>) => void;
 }
 
-function RuntimeTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
+const RuntimeTab = React.memo(function RuntimeTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
   return (
     <div className="divide-y divide-border">
       <FieldRow id="fps" label="FPS" description="Maximum frames rendered per second.">
@@ -131,9 +131,9 @@ function RuntimeTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
       </FieldRow>
     </div>
   );
-}
+});
 
-function RenderingTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
+const RenderingTab = React.memo(function RenderingTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
   return (
     <div className="divide-y divide-border">
       <FieldRow id="hq-pen" label="High Quality Pen" description="Smoother pen rendering (slower).">
@@ -145,9 +145,9 @@ function RenderingTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
       </FieldRow>
     </div>
   );
-}
+});
 
-function CompilerTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
+const CompilerTab = React.memo(function CompilerTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
   return (
     <div className="divide-y divide-border">
       <FieldRow
@@ -170,9 +170,9 @@ function CompilerTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
       </FieldRow>
     </div>
   );
-}
+});
 
-function LimitsTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
+const LimitsTab = React.memo(function LimitsTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
   return (
     <div className="divide-y divide-border">
       <FieldRow
@@ -206,27 +206,35 @@ function LimitsTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
       </FieldRow>
     </div>
   );
-}
+});
 
-function AppearanceTab({
-  advanced,
-  patch,
-}: RuntimeTabProps): React.JSX.Element {
+const AppearanceTab = React.memo(function AppearanceTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
   const volume = useSettingsStore((s) => s.volume);
   const setVolume = useSettingsStore((s) => s.setVolume);
+  const onSliderChange = React.useCallback(
+    (values: number[]) => {
+      const v = values[0];
+      if (typeof v === 'number') setVolume(clampVolume(v));
+    },
+    [setVolume],
+  );
+  const onNumberChange = React.useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setVolume(clampVolume(Number(e.target.value))),
+    [setVolume],
+  );
+  // Stable reference so Radix Slider doesn't see a fresh `[volume]` array
+  // each render.
+  const volumeArr = React.useMemo(() => [volume], [volume]);
   return (
     <div className="divide-y divide-border">
       <FieldRow id="volume" label="Volume" description="Master audio volume.">
         <div className="flex items-center gap-2">
           <Slider
-            value={[volume]}
+            value={volumeArr}
             min={0}
             max={100}
             step={1}
-            onValueChange={(values) => {
-              const v = values[0];
-              if (typeof v === 'number') setVolume(clampVolume(v));
-            }}
+            onValueChange={onSliderChange}
             aria-label="Volume slider"
             className="w-32"
           />
@@ -237,7 +245,7 @@ function AppearanceTab({
             min={0}
             max={100}
             step={1}
-            onChange={(e) => setVolume(clampVolume(Number(e.target.value)))}
+            onChange={onNumberChange}
             className="h-9 w-16 text-right tabular-nums"
             aria-label="Volume number"
           />
@@ -265,12 +273,13 @@ function AppearanceTab({
       </FieldRow>
     </div>
   );
-}
+});
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): React.JSX.Element {
   const advanced = useSettingsStore((s) => s.advanced);
   const patch = useSettingsStore((s) => s.patchAdvanced);
   const resetAdvanced = useSettingsStore((s) => s.resetAdvanced);
+  const onResetClick = React.useCallback(() => resetAdvanced(), [resetAdvanced]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -311,7 +320,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => resetAdvanced()}
+            onClick={onResetClick}
             aria-label="Reset advanced settings to defaults"
           >
             Reset to defaults

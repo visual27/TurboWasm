@@ -1,18 +1,20 @@
 import * as React from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { usePlayerStore } from '@/stores/usePlayerStore';
 
 export interface LoadingProgressProps {
   /**
-   * Number of asset requests that have finished loading. When the Scaffolding
-   * is between assets, this is the last reported finished count.
+   * Optional explicit override for the `finished` count. When omitted, the
+   * component subscribes directly to `usePlayerStore.assetProgress` so the
+   * parent does not need to re-render on every Scaffolding `ASSET_PROGRESS`
+   * event.
    */
-  finished: number;
+  finished?: number;
   /**
-   * Total number of asset requests that need to complete. 0 means the
-   * loader has not yet reported a total (indeterminate state).
+   * Optional explicit override for the `total` count. See `finished`.
    */
-  total: number;
+  total?: number;
   /**
    * What triggered the load, e.g. "Loading project…" / "Loading assets…".
    */
@@ -27,6 +29,11 @@ export interface LoadingProgressProps {
  * Asset loading progress overlay shown on top of the stage area while a
  * project is being loaded.
  *
+ * Subscribes directly to `usePlayerStore` for `assetProgress` so the parent
+ * (`App`) does not need to re-render on every `ASSET_PROGRESS` event from
+ * Scaffolding. Callers can still pass explicit `finished` / `total` props
+ * to override the store value (e.g. for tests or non-store-driven state).
+ *
  * Layout:
  *  ┌────────────────────────────┐
  *  │ ◐ Loading assets…  42 / 87 │
@@ -38,12 +45,18 @@ export interface LoadingProgressProps {
  * sized in percent so it survives the parent having `overflow: hidden` on
  * the stage frame.
  */
-export function LoadingProgress({
-  finished,
-  total,
+export const LoadingProgress = React.memo(function LoadingProgress({
+  finished: finishedProp,
+  total: totalProp,
   label,
   className,
 }: LoadingProgressProps): React.JSX.Element {
+  // Subscribe with primitive selectors so this component re-renders only
+  // when the actual numbers change (Zustand uses Object.is by default).
+  const storeFinished = usePlayerStore((s) => s.assetProgress.finished);
+  const storeTotal = usePlayerStore((s) => s.assetProgress.total);
+  const finished = finishedProp ?? storeFinished;
+  const total = totalProp ?? storeTotal;
   const ratio = total > 0 ? Math.min(1, finished / total) : 0;
   const percent = total > 0 ? Math.round(ratio * 100) : null;
   const isIndeterminate = total <= 0;
@@ -62,11 +75,7 @@ export function LoadingProgress({
       )}
     >
       <div className="flex items-center gap-2 text-sm font-medium">
-        {isIndeterminate ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        )}
+        <Loader2 className="h-4 w-4 animate-spin" />
         <span>{text}</span>
         {!isIndeterminate && (
           <span className="tabular-nums text-muted-foreground">
@@ -78,8 +87,10 @@ export function LoadingProgress({
       <div className="h-1.5 w-64 overflow-hidden rounded-full bg-foreground/10">
         {isIndeterminate ? (
           <div
-            className="h-full w-1/3 animate-[loading-bar_1.2s_ease-in-out_infinite] rounded-full bg-foreground/60"
-            style={{ animationName: 'loading-bar' }}
+            className="h-1/3 w-1/3 rounded-full bg-foreground/60"
+            style={{
+              animation: 'loading-bar 1.2s ease-in-out infinite',
+            }}
           />
         ) : (
           <div
@@ -90,4 +101,4 @@ export function LoadingProgress({
       </div>
     </div>
   );
-}
+});

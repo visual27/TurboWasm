@@ -1,4 +1,3 @@
-import JSZip from 'jszip';
 import type { AdvancedSettings } from '@/types/settings';
 
 interface RawProjectJson {
@@ -158,6 +157,11 @@ export async function readTwconfigFromArrayBuffer(
   buf: ArrayBuffer,
 ): Promise<Partial<AdvancedSettings>> {
   try {
+    // Dynamic import keeps jszip (~100 KB) out of the initial bundle. The
+    // function is already async, so this has no measurable UX cost on
+    // project load — the import completes long before the asset list is
+    // processed.
+    const { default: JSZip } = await import('jszip');
     const zip = await JSZip.loadAsync(buf);
     const projectJsonEntry = zip.file('project.json');
     if (!projectJsonEntry) return {};

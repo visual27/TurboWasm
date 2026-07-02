@@ -61,7 +61,52 @@ export function computeMuteToggle(
   return { volume: VOLUME_MIN, lastNonMuteVolume: currentVolume };
 }
 
-function persist(state: SettingsState): void {
+// High-frequency setters (setVolume, patchAdvanced) coalesce their disk
+// writes through this microtask + idle debouncer. The latest snapshot wins;
+// intermediate states are skipped. We still flush synchronously on
+// setTheme / setAdvanced / resetAdvanced / toggleMute so the rare but
+// user-meaningful "Settings closed, expect the next page load to keep my
+// choice" expectation is preserved.
+let pendingSnapshot: SettingsState | null = null;
+let scheduled = false;
+function schedulePersist(snapshot: SettingsState): void {
+  pendingSnapshot = snapshot;
+  if (scheduled) return;
+  scheduled = true;
+  // Use queueMicrotask to coalesce synchronous bursts (e.g. a slider that
+  // fires 60 events in 1s → one persist call), and requestIdleCallback to
+  // defer the actual localStorage write off the critical render path.
+  queueMicrotask(() => {
+    const cb = (): void => {
+      scheduled = false;
+      if (pendingSnapshot) {
+        const snap = pendingSnapshot;
+        pendingSnapshot = null;
+        writeSettings({
+          theme: snap.theme,
+          volume: snap.volume,
+          lastNonMuteVolume: snap.lastNonMuteVolume,
+          advanced: snap.advanced,
+        });
+      }
+    };
+    if (typeof (globalThis as { requestIdleCallback?: (cb: () => void) => void })
+      .requestIdleCallback === 'function') {
+      (globalThis as { requestIdleCallback: (cb: () => void) => void })
+        .requestIdleCallback(cb);
+    } else {
+      // Fallback for environments without requestIdleCallback (older Safari,
+      // Node, jsdom). The 50 ms delay keeps it off the immediate paint path
+      // while staying responsive on browsers that lack idle callbacks.
+      setTimeout(cb, 50);
+    }
+  });
+}
+
+function persistImmediate(state: SettingsState): void {
+  // Cancel any debounced write so we don't overwrite this one with stale data.
+  pendingSnapshot = null;
+  scheduled = false;
   writeSettings({
     theme: state.theme,
     volume: state.volume,
@@ -80,13 +125,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   advanced: initial.advanced,
   setTheme: (theme) => {
     set({ theme });
-    persist(get());
+    persistImmediate(get());
   },
   setVolume: (volume) => {
-    // Slider-driven changes do NOT touch lastNonMuteVolume — by design.
+    // Slider-driven changes use the debounced writer so dragging a slider
+    // doesn't stall the main thread on every tick.
     const next = clampVolume(volume);
     set({ volume: next });
-    persist(get());
+    schedulePersist(get());
   },
   toggleMute: () => {
     const { volume, lastNonMuteVolume } = get();
@@ -95,20 +141,38 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       lastNonMuteVolume,
     );
     set({ volume: next, lastNonMuteVolume: nextLast });
-    persist(get());
+    persistImmediate(get());
     return next;
   },
   setAdvanced: (next) => {
     set({ advanced: next });
-    persist(get());
+    persistImmediate(get());
   },
   patchAdvanced: (patch) => {
     const merged: AdvancedSettings = { ...get().advanced, ...patch };
     set({ advanced: merged });
-    persist(get());
+    schedulePersist(get());
   },
   resetAdvanced: () => {
     set({ advanced: { ...DEFAULT_ADVANCED_SETTINGS } });
-    persist(get());
+    persistImmediate(get());
   },
 }));
+
+/**
+ * Synchronously flush any pending debounced write. Call from `beforeunload`
+ * / `pagehide` so the user's last settings change survives a navigation.
+ */
+export function flushSettingsPersistForTesting(): void {
+  if (pendingSnapshot) {
+    const snap = pendingSnapshot;
+    pendingSnapshot = null;
+    scheduled = false;
+    writeSettings({
+      theme: snap.theme,
+      volume: snap.volume,
+      lastNonMuteVolume: snap.lastNonMuteVolume,
+      advanced: snap.advanced,
+    });
+  }
+}

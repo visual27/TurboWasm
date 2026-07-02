@@ -20,9 +20,12 @@ const OPTIONS: ReadonlyArray<{
   { value: 'dark', label: 'Dark', icon: Moon },
 ];
 
+const OPTIONS_BY_VALUE: ReadonlyMap<Theme, React.ComponentType<{ className?: string }>> = new Map(
+  OPTIONS.map((o) => [o.value, o.icon]),
+);
+
 function ThemeIcon({ value, className }: { value: Theme; className?: string }): React.JSX.Element {
-  const opt = OPTIONS.find((o) => o.value === value) ?? OPTIONS[0]!;
-  const Icon = opt.icon;
+  const Icon = OPTIONS_BY_VALUE.get(value) ?? Monitor;
   return <Icon className={className} />;
 }
 

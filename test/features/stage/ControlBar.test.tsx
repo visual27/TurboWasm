@@ -54,8 +54,6 @@ describe('ControlBar', () => {
       isPlaying: false,
       isPaused: false,
       isFullscreen: false,
-      containerSize: { width: 0, height: 0 },
-      stageScale: 1,
     });
   });
 
