@@ -31,7 +31,7 @@ interface ScratchMetadata {
   history?: { id: string };
 }
 
-function asProjectMetadata(raw: {
+export function asProjectMetadata(raw: {
   id: number | string;
   title: string;
   description?: string;
@@ -41,13 +41,28 @@ function asProjectMetadata(raw: {
   author?: { username: string };
   image?: string;
 }): ProjectMetadata {
+  // Scratch API field semantics (verified against the official Scratch API
+  // docs: https://en.scratch-wiki.info/wiki/Scratch_API#GET_.2Fprojects.2F.3Cproject_id.3E
+  // and the PUT example request body, where the "description" key holds the
+  // "Notes and Credits" content):
+  //   - `description` is the project's "Notes and Credits" text.
+  //   - `instructions` is the project's "Instructions" text.
+  //   - The Scratch API does NOT expose a separate short "description" field.
+  //   - `notes` is included by some proxies (e.g. Trampoline) as an alias of
+  //     `description`. Prefer `notes` if present, fall back to `description`.
   return {
     id: String(raw.id),
     title: raw.title || 'Untitled',
-    ...(raw.description ? { description: raw.description } : {}),
     ...(raw.instructions ? { instructions: raw.instructions } : {}),
-    ...(raw.notesAndCredits ? { notesAndCredits: raw.notesAndCredits } : {}),
+    // notesAndCredits precedence (later spreads win):
+    //   notesAndCredits > notes > description.
+    // The base value is `description` (which IS the Notes & Credits text
+    // per the Scratch REST API). If a richer `notes` field is present
+    // (some proxies like Trampoline add it as an alias), it overrides.
+    // An explicit `notesAndCredits` field, if provided, wins over both.
+    ...(raw.description ? { notesAndCredits: raw.description } : {}),
     ...(raw.notes ? { notesAndCredits: raw.notes } : {}),
+    ...(raw.notesAndCredits ? { notesAndCredits: raw.notesAndCredits } : {}),
     ...(raw.author?.username ? { author: { username: raw.author.username } } : {}),
     ...(raw.image ? { thumbnailUrl: raw.image } : {}),
   };

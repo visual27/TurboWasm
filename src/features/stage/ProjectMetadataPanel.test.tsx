@@ -7,7 +7,10 @@ import type { ProjectMetadata } from '@/types/project';
 const FULL_METADATA: ProjectMetadata = {
   id: '123',
   title: 'My Project',
-  description: 'A short description.',
+  // Per the Scratch REST API, the `description` field holds the project's
+  // Notes and Credits content (see services/scratch-project.ts mapping).
+  // The viewer exposes it as `notesAndCredits` so the UI can label it
+  // unambiguously.
   instructions: 'Click the flag to start.',
   notesAndCredits: 'Thanks to everyone!',
   author: { username: 'tester' },
@@ -16,7 +19,7 @@ const FULL_METADATA: ProjectMetadata = {
 const INTRO_ONLY: ProjectMetadata = {
   id: '1',
   title: 'Intro Only',
-  description: 'desc',
+  instructions: 'click the green flag',
 };
 
 const NOTES_ONLY: ProjectMetadata = {
@@ -52,6 +55,68 @@ describe('ProjectMetadataPanel', () => {
     expect(screen.getByText(/tester/)).toBeInTheDocument();
   });
 
+  it('makes the project title a link to the Scratch project page', () => {
+    render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
+    const titleLink = screen.getByTestId('metadata-title-link');
+    expect(titleLink).toBeInTheDocument();
+    expect(titleLink.tagName).toBe('A');
+    expect(titleLink).toHaveAttribute('href', 'https://scratch.mit.edu/projects/123/');
+    expect(titleLink).toHaveAttribute('target', '_blank');
+    expect(titleLink).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(titleLink).toHaveAttribute('aria-label', 'Open project "My Project" on Scratch');
+    expect(titleLink).toHaveAttribute('title', 'Open "My Project" on Scratch');
+    // The link contains the title text.
+    expect(titleLink).toHaveTextContent('My Project');
+  });
+
+  it('makes the author name a link to the Scratch profile page', () => {
+    render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
+    const authorLink = screen.getByTestId('metadata-author-link');
+    expect(authorLink).toBeInTheDocument();
+    expect(authorLink.tagName).toBe('A');
+    expect(authorLink).toHaveAttribute('href', 'https://scratch.mit.edu/users/tester/');
+    expect(authorLink).toHaveAttribute('target', '_blank');
+    expect(authorLink).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(authorLink).toHaveAttribute(
+      'aria-label',
+      'Open Scratch profile for tester',
+    );
+    expect(authorLink).toHaveAttribute('title', "Open tester's Scratch profile");
+    // The link contains only the username (not the "by" prefix).
+    expect(authorLink).toHaveTextContent('tester');
+  });
+
+  it('does not render an author link when username is missing', () => {
+    const NO_AUTHOR: ProjectMetadata = {
+      id: '7',
+      title: 'Anonymous',
+      instructions: 'play me',
+    };
+    render(<ProjectMetadataPanel metadata={NO_AUTHOR} />);
+    expect(screen.queryByTestId('metadata-author-link')).toBeNull();
+    // The title link is still rendered.
+    const titleLink = screen.getByTestId('metadata-title-link');
+    expect(titleLink).toBeInTheDocument();
+  });
+
+  it('URL-encodes special characters in project id and username', () => {
+    const WEIRD: ProjectMetadata = {
+      id: '42/abc',
+      title: 'Weird',
+      instructions: 'click the flag',
+      author: { username: 'user name' },
+    };
+    render(<ProjectMetadataPanel metadata={WEIRD} />);
+    expect(screen.getByTestId('metadata-title-link')).toHaveAttribute(
+      'href',
+      'https://scratch.mit.edu/projects/42%2Fabc/',
+    );
+    expect(screen.getByTestId('metadata-author-link')).toHaveAttribute(
+      'href',
+      'https://scratch.mit.edu/users/user%20name/',
+    );
+  });
+
   it('width matches the configured stage width', () => {
     const { container } = render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
     const aside = container.querySelector('aside');
@@ -69,27 +134,35 @@ describe('ProjectMetadataPanel', () => {
     expect(labels).toEqual(['Introductions', 'Notes & Credits']);
   });
 
-  it('Introductions section contains both Description and Instructions texts', () => {
+  it('Introductions section contains the instructions text', () => {
     render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
     const introductionsSection = screen
-      .getByRole('heading', { name: 'Introductions' })
-      .closest('section');
-    expect(introductionsSection).not.toBeNull();
-    expect(introductionsSection).toHaveTextContent('A short description.');
+      .getByTestId('metadata-section-introductions');
+    expect(introductionsSection).toBeInTheDocument();
     expect(introductionsSection).toHaveTextContent('Click the flag to start.');
+    // Introductions must NOT contain the notes text.
+    expect(introductionsSection).not.toHaveTextContent('Thanks to everyone!');
   });
 
-  it('shows the description, instructions, and notes texts', () => {
+  it('Notes & Credits section contains the notes text', () => {
     render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
-    expect(screen.getByText('A short description.')).toBeInTheDocument();
+    const notesSection = screen.getByTestId('metadata-section-notes');
+    expect(notesSection).toBeInTheDocument();
+    expect(notesSection).toHaveTextContent('Thanks to everyone!');
+    // Notes & Credits must NOT contain the instructions text.
+    expect(notesSection).not.toHaveTextContent('Click the flag to start.');
+  });
+
+  it('shows the instructions and notes texts', () => {
+    render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
     expect(screen.getByText('Click the flag to start.')).toBeInTheDocument();
     expect(screen.getByText('Thanks to everyone!')).toBeInTheDocument();
   });
 
   it('renders only the Introductions section when notes are missing', () => {
     render(<ProjectMetadataPanel metadata={INTRO_ONLY} />);
-    expect(screen.getByText('desc')).toBeInTheDocument();
-    // Introductions is shown (description is present).
+    expect(screen.getByText('click the green flag')).toBeInTheDocument();
+    // Introductions is shown (instructions are present).
     expect(screen.getByRole('heading', { name: 'Introductions' })).toBeInTheDocument();
     // Notes is missing → its heading should not appear.
     expect(screen.queryByRole('heading', { name: /Notes/i })).toBeNull();
@@ -104,6 +177,42 @@ describe('ProjectMetadataPanel', () => {
     expect(
       screen.getByRole('heading', { level: 3, name: /Notes/i }),
     ).toBeInTheDocument();
+  });
+
+  it('renders each section content in its own section (Notes text is NOT inside the Introductions section)', () => {
+    render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
+    const introductionsSection = screen.getByTestId('metadata-section-introductions');
+    const notesSection = screen.getByTestId('metadata-section-notes');
+    expect(introductionsSection).not.toBeNull();
+    expect(notesSection).not.toBeNull();
+    // Introductions section must contain instructions but NOT notes.
+    expect(introductionsSection).toHaveTextContent('Click the flag to start.');
+    expect(introductionsSection).not.toHaveTextContent('Thanks to everyone!');
+    // Notes & Credits section must contain the notes text but NOT instructions.
+    expect(notesSection).toHaveTextContent('Thanks to everyone!');
+    expect(notesSection).not.toHaveTextContent('Click the flag to start.');
+  });
+
+  it('renders the Notes & Credits header (h3) when notes are present', () => {
+    render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
+    // The bug previously caused the Notes & Credits h3 to be missing entirely.
+    const notesHeader = screen.getByRole('heading', { level: 3, name: 'Notes & Credits' });
+    expect(notesHeader).toBeInTheDocument();
+    expect(notesHeader.textContent).toBe('Notes & Credits');
+  });
+
+  it('places the Notes & Credits section after the Introductions section in DOM order', () => {
+    const { container } = render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
+    const intro = container.querySelector('[data-testid="metadata-section-introductions"]');
+    const notes = container.querySelector('[data-testid="metadata-section-notes"]');
+    expect(intro).not.toBeNull();
+    expect(notes).not.toBeNull();
+    // DOM order: compare positions within the rendered <section> elements.
+    const allSections = Array.from(container.querySelectorAll<HTMLElement>('section'));
+    const introPos = allSections.indexOf(intro as HTMLElement);
+    const notesPos = allSections.indexOf(notes as HTMLElement);
+    expect(introPos).toBeGreaterThanOrEqual(0);
+    expect(notesPos).toBeGreaterThan(introPos);
   });
 
   it('has a border (matches stage frame)', () => {
