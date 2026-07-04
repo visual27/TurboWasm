@@ -415,31 +415,55 @@ function bindEvents(scaffolding: ScaffoldingInstance): void {
   scaffolding.addEventListener('PROJECT_RUN_START', onStart);
   scaffolding.addEventListener('PROJECT_RUN_STOP', onStop);
 
-  // Forward Scaffolding's ASSET_PROGRESS event to the player store so the
-  // loading overlay can render a real progress bar instead of an
-  // indeterminate spinner. The event payload is `(finished, total)`.
-  const onAssetProgress: EventListener = (e) => {
-    const ce = e as CustomEvent<{ finished?: number; total?: number }>;
-    const detail = (ce as CustomEvent).detail ?? {};
-    const finished = typeof detail.finished === 'number' ? detail.finished : 0;
-    const total = typeof detail.total === 'number' ? detail.total : 0;
-    try {
-      usePlayerStore.getState().setAssetProgress(finished, total);
-    } catch {
-      /* ignore */
-    }
-  };
-  scaffolding.addEventListener('ASSET_PROGRESS', onAssetProgress);
-  // Reset the progress when a fresh project starts loading — Scaffolding
-  // emits PROJECT_CHANGED both on first load and on subsequent loads.
-  const onProjectChanged: EventListener = () => {
-    try {
-      usePlayerStore.getState().resetAssetProgress();
-    } catch {
-      /* ignore */
-    }
-  };
-  scaffolding.addEventListener('PROJECT_CHANGED', onProjectChanged);
+  // The vendored Scaffolding does NOT forward the VM's `ASSET_PROGRESS`
+  // event to its own EventTarget (vendored/scaffolding/src/scaffolding.js
+  // only forwards MONITORS_UPDATE / PROJECT_RUN_START / PROJECT_RUN_STOP /
+  // STAGE_SIZE_CHANGED). But the VM (extends EventEmitter) does emit
+  // `ASSET_PROGRESS` with positional `(finished, total)` arguments for
+  // every costume / sound load (vendored/scratch-vm/src/serialization/sb3.js
+  // wraps each asset in `runtime.wrapAssetRequest`, which calls
+  // `runtime.emitAssetProgress()`). We therefore subscribe to the VM
+  // directly so LoadingProgress shows the real `finished / total` count
+  // instead of a hard-coded 1 / 1.
+  //
+  // The listener is defensive: the runtime may emit `(0, 0)` mid-load
+  // (e.g. font deserialization) and other extensions can fire ASSET_PROGRESS
+  // outside the deserializer. Anything that isn't a finite number is
+  // treated as 0 so the overlay never jumps to NaN%.
+  if (attachedScaffoldingHasVm(scaffolding)) {
+    const vm = asVm(scaffolding.vm);
+    vm.on('ASSET_PROGRESS', (finished: unknown, total: unknown) => {
+      const f = typeof finished === 'number' && Number.isFinite(finished) ? finished : 0;
+      const t = typeof total === 'number' && Number.isFinite(total) ? total : 0;
+      try {
+        usePlayerStore.getState().setAssetProgress(f, t);
+      } catch {
+        /* ignore — store may be torn down in tests */
+      }
+    });
+  }
+}
+
+function attachedScaffoldingHasVm(scaffolding: ScaffoldingInstance): boolean {
+  return (
+    scaffolding !== null &&
+    typeof scaffolding === 'object' &&
+    'vm' in scaffolding &&
+    scaffolding.vm !== null &&
+    typeof scaffolding.vm === 'object'
+  );
+}
+
+/**
+ * Test-only entry point that installs the production `bindEvents` listeners
+ * on a fake Scaffolding-shaped object. Exported so unit tests can drive
+ * `vm.emit('ASSET_PROGRESS', ...)` against a stub VM without touching the
+ * real Scaffolding instance.
+ *
+ * Mirrors the `resetScaffoldingMonitors` test-export pattern.
+ */
+export function __bindEventsForTesting(scaffolding: ScaffoldingInstance): void {
+  bindEvents(scaffolding);
 }
 
 async function initScaffolding(
@@ -939,20 +963,16 @@ export async function loadProjectFromArrayBuffer(
     throw new Error('Player is not initialized');
   }
 
-  // Drive LoadingProgress through the deserialize/install phase. The
-  // vendored Scaffolding does NOT emit `ASSET_PROGRESS` events (its
-  // minified bundle defines the constant but never dispatches it) and
-  // scratch-storage's `load` has no onProgress hook, so without this
-  // the bar would stay in the indeterminate state for the entire load.
-  // Reset and announce "0 / 1 — deserializing" before the Scaffolding
-  // call, then bump to "1 / 1" once it resolves.
-  try {
-    const player = usePlayerStore.getState();
-    player.resetAssetProgress();
-    player.setAssetProgress(0, 1);
-  } catch {
-    /* ignore — store may be torn down in tests */
-  }
+  // No manual progress drive here. The progress bar is fed by the
+  // ASSET_PROGRESS listener installed in `bindEvents()`: every costume /
+  // sound load wrapped in `runtime.wrapAssetRequest` increments the
+  // runtime's counters and emits the event with `(finished, total)`.
+  // `vm.deserializeProject()` also calls `vm.clear()` → `runtime.dispose()`
+  // → `runtime.resetProgress()`, which emits `(0, 0)` at the start of
+  // every load, so the bar naturally resets between projects without us
+  // touching the store. The Scaffolding itself does NOT forward
+  // ASSET_PROGRESS to its EventTarget, which is why the listener in
+  // bindEvents subscribes to `vm.on('ASSET_PROGRESS', …)` directly.
 
   // (NEW) Reset the vm/runtime stage BEFORE loading the new project so the
   // old project content is cleared from the canvas immediately. Without
@@ -1043,14 +1063,11 @@ export async function loadProjectFromArrayBuffer(
     await attachedScaffolding.loadProject(loadBuf);
     if (token !== projectLoadToken) return;
     setCloudProvider(getCloudProvider());
-    // Mark the deserialize/install phase as complete so the bar reaches
-    // 100% for an instant before useProjectStore transitions to 'ready'
-    // and LoadingProgress unmounts.
-    try {
-      usePlayerStore.getState().setAssetProgress(1, 1);
-    } catch {
-      /* ignore */
-    }
+    // No manual setAssetProgress(1, 1) here. By the time loadProject
+    // resolves, the runtime's ASSET_PROGRESS listener has already pushed
+    // the final (total, total) tick (or the project's natural terminal
+    // count if some assets failed). The LoadingProgress overlay will
+    // unmount as soon as useProjectStore transitions to 'ready' below.
     // Reset playback state on project load.
     setState({ isPlaying: false, isPaused: false, isReady: true });
 

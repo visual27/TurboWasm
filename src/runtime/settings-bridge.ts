@@ -22,6 +22,14 @@ export interface ScaffoldingVmLike {
   setTurboMode(value: boolean): void;
   setStageSize(width: number, height: number): void;
   setInterpolation?(value: boolean): void;
+  /**
+   * eventemitter3-style subscribe. The vendored VM extends EventEmitter
+   * and emits ASSET_PROGRESS with positional `(finished, total)` args,
+   * so the listener signature is intentionally loose here. Used by the
+   * player to wire the runtime's asset-load progress into the player
+   * store, since the Scaffolding itself does not forward that event.
+   */
+  on(event: string, listener: (...args: unknown[]) => unknown): unknown;
   runtime: VmRuntimeLike;
   renderer?: VmRendererLike;
 }

@@ -9,6 +9,7 @@ import {
   resetScaffoldingMonitors,
   setExtensionPermissionRequest,
   __resetPlayerReadyForTesting,
+  __bindEventsForTesting,
   pause,
   resume,
   stop,
@@ -17,6 +18,7 @@ import {
 } from '@/runtime/player';
 import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
 import { getScaffoldingInstance, resetScaffoldingForTesting } from '@/lib/scaffolding';
+import { usePlayerStore } from '@/stores/usePlayerStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import {
   __resetSessionDeniedUrlsForTesting,
@@ -593,5 +595,129 @@ describe('resetScaffoldingMonitors', () => {
       _monitors: { size: 0 },
     } as unknown as Parameters<typeof resetScaffoldingMonitors>[0];
     expect(() => resetScaffoldingMonitors(fakeScaffolding)).not.toThrow();
+  });
+});
+
+/**
+ * The Scaffolding layer does NOT forward the VM's `ASSET_PROGRESS` event
+ * (see vendored/scaffolding/src/scaffolding.js — only MONITORS_UPDATE /
+ * PROJECT_RUN_START / PROJECT_RUN_STOP / STAGE_SIZE_CHANGED are forwarded).
+ * To show a real progress count for projects with 400+ assets, `bindEvents`
+ * in player.ts subscribes to `vm.on('ASSET_PROGRESS', …)` directly.
+ *
+ * These tests pin that wiring down. We exercise the listener path with a
+ * minimal EventEmitter stub so we can verify (a) the store is updated with
+ * the raw positional args the runtime emits, (b) the listener tolerates
+ * non-numeric inputs without throwing, and (c) a Scaffolding without a
+ * `vm` is a safe no-op.
+ */
+describe('ASSET_PROGRESS wiring (bindEvents → vm.on → usePlayerStore)', () => {
+  interface EventEmitterStub {
+    _handlers: Map<string, Array<(...args: unknown[]) => unknown>>;
+    on(event: string, listener: (...args: unknown[]) => unknown): unknown;
+    emit(event: string, ...args: unknown[]): void;
+  }
+
+  function makeVmStub(): EventEmitterStub {
+    const vm: EventEmitterStub = {
+      _handlers: new Map(),
+      on(event, listener) {
+        const list = vm._handlers.get(event) ?? [];
+        list.push(listener);
+        vm._handlers.set(event, list);
+        return vm;
+      },
+      emit(event, ...args) {
+        const list = vm._handlers.get(event);
+        if (!list) return;
+        for (const listener of list) listener(...args);
+      },
+    };
+    return vm;
+  }
+
+  function makeScaffoldingStub(vm: unknown): Parameters<typeof __bindEventsForTesting>[0] {
+    const listeners = new Map<string, EventListener>();
+    return {
+      vm,
+      addEventListener(type: string, listener: EventListener): void {
+        listeners.set(type, listener);
+      },
+      removeEventListener(): void {
+        /* noop */
+      },
+    } as unknown as Parameters<typeof __bindEventsForTesting>[0];
+  }
+
+  beforeEach(() => {
+    // The player store is a module-level singleton; reset before each
+    // case so cross-test bleed can't mask regressions.
+    usePlayerStore.setState({
+      isPlaying: false,
+      isPaused: false,
+      isFullscreen: false,
+      assetProgress: { finished: 0, total: 0 },
+    });
+  });
+
+  it('forwards (finished, total) from the VM to the player store', () => {
+    const vm = makeVmStub();
+    const scaffolding = makeScaffoldingStub(vm);
+    __bindEventsForTesting(scaffolding);
+
+    vm.emit('ASSET_PROGRESS', 5, 10);
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 5, total: 10 });
+
+    vm.emit('ASSET_PROGRESS', 400, 400);
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 400, total: 400 });
+  });
+
+  it('treats the runtime-dispose reset as a fresh (0, 0) tick', () => {
+    const vm = makeVmStub();
+    const scaffolding = makeScaffoldingStub(vm);
+    __bindEventsForTesting(scaffolding);
+
+    // Simulate an in-progress project.
+    vm.emit('ASSET_PROGRESS', 50, 200);
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 50, total: 200 });
+
+    // The runtime emits (0, 0) at the start of every loadProject via
+    // runtime.dispose() → runtime.resetProgress(). The bar must drop
+    // back to indeterminate so the next project starts clean.
+    vm.emit('ASSET_PROGRESS', 0, 0);
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 0, total: 0 });
+  });
+
+  it('coerces non-numeric / missing args to 0 instead of NaN', () => {
+    const vm = makeVmStub();
+    const scaffolding = makeScaffoldingStub(vm);
+    __bindEventsForTesting(scaffolding);
+
+    // Custom extensions or older runtimes may emit ASSET_PROGRESS with
+    // unexpected shapes. The listener must not throw and must not push
+    // NaN into the store.
+    expect(() => vm.emit('ASSET_PROGRESS', 'x', undefined)).not.toThrow();
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 0, total: 0 });
+
+    expect(() => vm.emit('ASSET_PROGRESS', Number.NaN, 100)).not.toThrow();
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 0, total: 100 });
+
+    expect(() => vm.emit('ASSET_PROGRESS', Infinity, 10)).not.toThrow();
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 0, total: 10 });
+
+    // Even with no args at all (defensive), the store stays sane.
+    expect(() => vm.emit('ASSET_PROGRESS')).not.toThrow();
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 0, total: 0 });
+  });
+
+  it('is a safe no-op when the Scaffolding has no vm field', () => {
+    // A Scaffolding whose `vm` is missing (test stubs, pre-setup state,
+    // or future refactors that lazy-attach the VM) must not crash
+    // bindEvents. The pause / resume / stop helpers already follow this
+    // pattern; we extend it here so the new listener registration
+    // matches.
+    const scaffolding = makeScaffoldingStub(undefined);
+    expect(() => __bindEventsForTesting(scaffolding)).not.toThrow();
+    expect(usePlayerStore.getState().assetProgress).toEqual({ finished: 0, total: 0 });
   });
 });
