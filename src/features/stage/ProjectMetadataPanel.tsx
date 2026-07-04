@@ -160,10 +160,15 @@ export const ProjectMetadataPanel = React.memo(function ProjectMetadataPanel({
         column, exactly the same pattern as the two dialogs.
 
         `flush` skips the default `-translate-x-1.5` inward shift so the
-        scrollbar's right edge sits at the content area's right edge —
-        the same x-coordinate as the author link in the header above.
-        Without `flush`, the bar would land 6px to the left of the
-        author name and read as visually misaligned with the title row.
+        scrollbar's right edge sits at the content area's right edge.
+        That mirrors the title's left alignment: the title starts 16px
+        from the aside's left edge (left padding, `p-4 sm:p-5`) and the
+        scrollbar ends 16px from the aside's right edge — both at the
+        same distance from their respective aside edges. Without
+        `flush`, the bar would land 6px further inside and break this
+        visual symmetry. (The author link in the header above happens
+        to share the same x-coordinate because it also aligns to the
+        right edge of the content area.)
       */}
       <ScrollArea
         className="min-h-0 h-0 flex-1"
