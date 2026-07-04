@@ -158,8 +158,18 @@ export const ProjectMetadataPanel = React.memo(function ProjectMetadataPanel({
         `min-h-0 h-0 flex-1` lets the ScrollArea shrink below its
         intrinsic content height and grow to fill the parent flex
         column, exactly the same pattern as the two dialogs.
+
+        `flush` skips the default `-translate-x-1.5` inward shift so the
+        scrollbar's right edge sits at the content area's right edge —
+        the same x-coordinate as the author link in the header above.
+        Without `flush`, the bar would land 6px to the left of the
+        author name and read as visually misaligned with the title row.
       */}
-      <ScrollArea className="min-h-0 h-0 flex-1" data-testid="project-metadata-scroll-area">
+      <ScrollArea
+        className="min-h-0 h-0 flex-1"
+        data-testid="project-metadata-scroll-area"
+        flush
+      >
         <div className="space-y-5 pr-1">
           {hasIntroductions && (
             <Section title="Introductions" testId="metadata-section-introductions">

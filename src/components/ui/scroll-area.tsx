@@ -2,10 +2,27 @@ import * as React from 'react';
 import * as ScrollAreaPrimitive from '@radix-ui/react-scroll-area';
 import { cn } from '@/lib/utils';
 
+/**
+ * When `true`, the vertical scrollbar's right edge sits flush against the
+ * ScrollArea's right edge. The default (`false`) shifts the bar inward by
+ * `-translate-x-1.5` (6px) so it floats with breathing room equal to its
+ * own width on the right side.
+ *
+ * Used by surfaces whose right-edge content (e.g. the author link in
+ * `ProjectMetadataPanel`) is already inset by the surrounding padding.
+ * In that case the default shift makes the scrollbar land 6px short of
+ * the right-edge text, which reads as misalignment. Setting `flush`
+ * aligns the bar's right edge with that text instead.
+ */
+export interface ScrollAreaProps
+  extends React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root> {
+  flush?: boolean;
+}
+
 const ScrollArea = React.forwardRef<
   React.ElementRef<typeof ScrollAreaPrimitive.Root>,
-  React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root>
->(({ className, children, ...props }, ref) => (
+  ScrollAreaProps
+>(({ className, children, flush, ...props }, ref) => (
   <ScrollAreaPrimitive.Root
     ref={ref}
     /*
@@ -31,17 +48,22 @@ const ScrollArea = React.forwardRef<
     <ScrollAreaPrimitive.Viewport className="min-h-0 flex-1 rounded-[inherit]">
       {children}
     </ScrollAreaPrimitive.Viewport>
-    <ScrollBar />
-    <ScrollBar orientation="horizontal" />
+    <ScrollBar flush={flush} />
+    <ScrollBar flush={flush} orientation="horizontal" />
     <ScrollAreaPrimitive.Corner />
   </ScrollAreaPrimitive.Root>
 ));
 ScrollArea.displayName = ScrollAreaPrimitive.Root.displayName;
 
+export interface ScrollBarProps
+  extends React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar> {
+  flush?: boolean;
+}
+
 const ScrollBar = React.forwardRef<
   React.ElementRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>,
-  React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>
->(({ className, orientation = 'vertical', ...props }, ref) => (
+  ScrollBarProps
+>(({ className, orientation = 'vertical', flush, ...props }, ref) => (
   <ScrollAreaPrimitive.ScrollAreaScrollbar
     ref={ref}
     orientation={orientation}
@@ -49,8 +71,13 @@ const ScrollBar = React.forwardRef<
       Custom scrollbar — minimal and subtle:
         - Narrow track (w-1.5 / 6px) so the bar reads as a hairline
           indicator rather than a chunky UI element.
-        - Minimal padding (p-px) leaves a small but usable click target
-          for the thumb while keeping the track visually quiet.
+        - Minimal horizontal padding (px-px) leaves a small but usable
+          click target for the thumb while keeping the track visually
+          quiet.
+        - Vertical padding (py-2, 8px top and bottom) gives the thumb
+          breathing room from the top and bottom edges of the
+          ScrollArea, so even at scroll extremes the thumb doesn't sit
+          flush against the boundary.
         - Thumb uses very low foreground opacity (foreground/10) at rest
           and only steps up to foreground/30 while the user is hovering
           or actively dragging it.
@@ -60,15 +87,22 @@ const ScrollBar = React.forwardRef<
     className={cn(
       'flex touch-none select-none transition-colors',
       /*
-        Radix positions the scrollbar flush against the Root's border
-        edge, so padding on the Root has no effect on the bar's gap to
-        the dialog border. We shift the bar inward by its own width
-        (-translate-x-1.5 / -6px) so it floats with breathing room
-        equal to its width on the right side, matching the visual
-        breathing room the inner content already has on the left.
+        Radix positions the vertical scrollbar flush against the Root's
+        border edge, so padding on the Root has no effect on the bar's
+        gap to the dialog border. By default we shift the bar inward by
+        its own width (-translate-x-1.5 / -6px) so it floats with
+        breathing room equal to its width on the right side, matching
+        the visual breathing room the inner content already has on the
+        left. Surfaces that already inset their right-edge content by
+        the surrounding padding (e.g. ProjectMetadataPanel where the
+        author link defines the visual right edge) pass `flush` to skip
+        this shift so the bar lines up with that text.
       */
       orientation === 'vertical' &&
-        'h-full w-1.5 -translate-x-1.5 border-l border-l-transparent p-px',
+        cn(
+          'h-full w-1.5 border-l border-l-transparent px-px py-2',
+          flush ? '' : '-translate-x-1.5',
+        ),
       orientation === 'horizontal' &&
         'h-1.5 flex-col border-t border-t-transparent p-px',
       className,
