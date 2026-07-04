@@ -1,6 +1,7 @@
 import * as React from 'react';
 import type { ProjectMetadata } from '@/types/project';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 
 export interface ProjectMetadataPanelProps {
@@ -97,7 +98,15 @@ export const ProjectMetadataPanel = React.memo(function ProjectMetadataPanel({
       aria-label="Project metadata"
       data-testid="project-metadata-panel"
       className={cn(
-        'flex flex-col gap-5 rounded-xl border border-border/40 bg-white/90 p-4 text-left shadow-sm backdrop-blur-sm sm:p-5 dark:bg-zinc-900/85',
+        /*
+          The aside itself caps the height so long Notes & Credits /
+          Introductions blocks are scrollable instead of pushing the
+          page taller. overflow-hidden + flex-col is required so the
+          Radix ScrollArea Viewport below can scroll inside the
+          fixed-height box (and so the custom scrollbar cannot leak out
+          of the rounded border).
+        */
+        'flex max-h-80 flex-col gap-5 overflow-hidden rounded-xl border border-border/40 bg-white/90 p-4 text-left shadow-sm backdrop-blur-sm sm:max-h-96 sm:p-5 dark:bg-zinc-900/85',
       )}
       style={{ width: '100%', maxWidth: stageWidth }}
     >
@@ -140,19 +149,31 @@ export const ProjectMetadataPanel = React.memo(function ProjectMetadataPanel({
         )}
       </header>
 
-      <div className="max-h-80 space-y-5 overflow-y-auto pr-1 sm:max-h-96">
-        {hasIntroductions && (
-          <Section title="Introductions" testId="metadata-section-introductions">
-            <p data-testid="metadata-instructions">{instructions}</p>
-          </Section>
-        )}
+      {/*
+        ScrollArea wrapper. We rely on the Radix Viewport for scrolling —
+        it matches the custom scrollbar treatment used by the Settings
+        dialog and Extension Permission dialog (6px track, foreground/10
+        at rest, foreground/30 on hover) instead of the browser-default
+        scrollbar that `overflow-y-auto` previously produced. The pair
+        `min-h-0 h-0 flex-1` lets the ScrollArea shrink below its
+        intrinsic content height and grow to fill the parent flex
+        column, exactly the same pattern as the two dialogs.
+      */}
+      <ScrollArea className="min-h-0 h-0 flex-1" data-testid="project-metadata-scroll-area">
+        <div className="space-y-5 pr-1">
+          {hasIntroductions && (
+            <Section title="Introductions" testId="metadata-section-introductions">
+              <p data-testid="metadata-instructions">{instructions}</p>
+            </Section>
+          )}
 
-        {hasNotes && (
-          <Section title="Notes & Credits" testId="metadata-section-notes">
-            <p data-testid="metadata-notes">{notes}</p>
-          </Section>
-        )}
-      </div>
+          {hasNotes && (
+            <Section title="Notes & Credits" testId="metadata-section-notes">
+              <p data-testid="metadata-notes">{notes}</p>
+            </Section>
+          )}
+        </div>
+      </ScrollArea>
     </aside>
   );
 });
