@@ -2,24 +2,18 @@ import * as React from 'react';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { useSettingsStore } from '@/stores/useSettingsStore';
-import {
-  clampFps,
-  clampStageHeight,
-  clampStageWidth,
-  clampVolume,
-  formatInteger,
-} from '@/utils/format';
+import { clampFps, clampStageHeight, clampStageWidth, clampVolume } from '@/utils/format';
 import type { AdvancedSettings } from '@/types/settings';
 import { Button } from '@/components/ui/button';
 
@@ -37,12 +31,14 @@ interface FieldRowProps {
 
 function FieldRow({ id, label, description, children }: FieldRowProps): React.JSX.Element {
   return (
-    <div className="flex items-start justify-between gap-4 py-3">
+    <div className="flex items-start justify-between gap-4 py-4">
       <div className="flex-1">
         <Label htmlFor={id} className="text-sm">
           {label}
         </Label>
-        {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
+        {description && (
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{description}</p>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-2">{children}</div>
     </div>
@@ -59,7 +55,15 @@ interface NumberFieldProps {
   ariaLabel?: string;
 }
 
-function NumberField({ id, value, onChange, min, max, step = 1, ariaLabel }: NumberFieldProps): React.JSX.Element {
+function NumberField({
+  id,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  ariaLabel,
+}: NumberFieldProps): React.JSX.Element {
   return (
     <Input
       id={id}
@@ -87,24 +91,47 @@ interface SwitchFieldProps {
 }
 
 function SwitchField({ id, checked, onChange, ariaLabel }: SwitchFieldProps): React.JSX.Element {
+  return <Switch id={id} checked={checked} onCheckedChange={onChange} aria-label={ariaLabel} />;
+}
+
+interface SettingsSectionProps {
+  id: string;
+  title: string;
+  children: React.ReactNode;
+}
+
+/**
+ * One category in the settings list. Renders the uppercase title, the
+ * rows, and a horizontal rule beneath. The rule visually separates this
+ * section from the next one; the section itself does not have its own
+ * background or border.
+ */
+function SettingsSection({ id, title, children }: SettingsSectionProps): React.JSX.Element {
   return (
-    <Switch
-      id={id}
-      checked={checked}
-      onCheckedChange={onChange}
-      aria-label={ariaLabel}
-    />
+    <section aria-labelledby={`settings-section-${id}`} className="flex flex-col">
+      <h3
+        id={`settings-section-${id}`}
+        data-testid={`settings-section-${id}`}
+        className="pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.35em] text-muted-foreground"
+      >
+        {title}
+      </h3>
+      <div className="divide-y divide-border">{children}</div>
+    </section>
   );
 }
 
-interface RuntimeTabProps {
+interface RuntimeSectionProps {
   advanced: AdvancedSettings;
   patch: (patch: Partial<AdvancedSettings>) => void;
 }
 
-const RuntimeTab = React.memo(function RuntimeTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
+const RuntimeSection = React.memo(function RuntimeSection({
+  advanced,
+  patch,
+}: RuntimeSectionProps): React.JSX.Element {
   return (
-    <div className="divide-y divide-border">
+    <SettingsSection id="runtime" title="Runtime">
       <FieldRow id="fps" label="FPS" description="Maximum frames rendered per second.">
         <NumberField
           id="fps"
@@ -115,27 +142,49 @@ const RuntimeTab = React.memo(function RuntimeTab({ advanced, patch }: RuntimeTa
           ariaLabel="FPS"
         />
       </FieldRow>
-      <FieldRow id="interpolation" label="Interpolation" description="Smooth motion between frames.">
+      <FieldRow
+        id="turbo-mode"
+        label="Turbo Mode"
+        description="Run without framerate limit when supported."
+      >
+        <SwitchField
+          id="turbo-mode"
+          checked={advanced.turboMode}
+          onChange={(v) => patch({ turboMode: v })}
+        />
+      </FieldRow>
+      <FieldRow
+        id="interpolation"
+        label="Interpolation"
+        description="Smooth motion between frames."
+      >
         <SwitchField
           id="interpolation"
           checked={advanced.interpolation}
           onChange={(v) => patch({ interpolation: v })}
         />
       </FieldRow>
-      <FieldRow id="warpTimer" label="Warp Timer" description="Run custom blocks without screen refresh.">
+      <FieldRow
+        id="warpTimer"
+        label="Warp Timer"
+        description="Run custom blocks without screen refresh."
+      >
         <SwitchField
           id="warpTimer"
           checked={advanced.warpTimer}
           onChange={(v) => patch({ warpTimer: v })}
         />
       </FieldRow>
-    </div>
+    </SettingsSection>
   );
 });
 
-const RenderingTab = React.memo(function RenderingTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
+const RenderingSection = React.memo(function RenderingSection({
+  advanced,
+  patch,
+}: RuntimeSectionProps): React.JSX.Element {
   return (
-    <div className="divide-y divide-border">
+    <SettingsSection id="rendering" title="Rendering">
       <FieldRow id="hq-pen" label="High Quality Pen" description="Smoother pen rendering (slower).">
         <SwitchField
           id="hq-pen"
@@ -143,38 +192,41 @@ const RenderingTab = React.memo(function RenderingTab({ advanced, patch }: Runti
           onChange={(v) => patch({ highQualityPen: v })}
         />
       </FieldRow>
-    </div>
-  );
-});
-
-const CompilerTab = React.memo(function CompilerTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
-  return (
-    <div className="divide-y divide-border">
       <FieldRow
-        id="disable-compiler"
-        label="Disable Compiler"
-        description="Force the VM to interpret scripts (slower but more compatible)."
+        id="stage-size"
+        label="Stage Size"
+        description="Stage canvas width and height in pixels."
       >
-        <SwitchField
-          id="disable-compiler"
-          checked={advanced.disableCompiler}
-          onChange={(v) => patch({ disableCompiler: v })}
-        />
+        <div className="flex items-center gap-2">
+          <NumberField
+            id="stage-width"
+            value={advanced.stageWidth}
+            onChange={(v) => patch({ stageWidth: clampStageWidth(v) })}
+            min={1}
+            max={8192}
+            ariaLabel="Stage width"
+          />
+          <span className="text-xs text-muted-foreground">×</span>
+          <NumberField
+            id="stage-height"
+            value={advanced.stageHeight}
+            onChange={(v) => patch({ stageHeight: clampStageHeight(v) })}
+            min={1}
+            max={8192}
+            ariaLabel="Stage height"
+          />
+        </div>
       </FieldRow>
-      <FieldRow id="turbo-mode" label="Turbo Mode" description="Run without framerate limit when supported.">
-        <SwitchField
-          id="turbo-mode"
-          checked={advanced.turboMode}
-          onChange={(v) => patch({ turboMode: v })}
-        />
-      </FieldRow>
-    </div>
+    </SettingsSection>
   );
 });
 
-const LimitsTab = React.memo(function LimitsTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
+const LimitsSection = React.memo(function LimitsSection({
+  advanced,
+  patch,
+}: RuntimeSectionProps): React.JSX.Element {
   return (
-    <div className="divide-y divide-border">
+    <SettingsSection id="limits" title="Limits">
       <FieldRow
         id="infinite-clones"
         label="Infinity Clones"
@@ -186,7 +238,11 @@ const LimitsTab = React.memo(function LimitsTab({ advanced, patch }: RuntimeTabP
           onChange={(v) => patch({ infiniteClones: v })}
         />
       </FieldRow>
-      <FieldRow id="remove-fencing" label="Remove Fencing" description="Allow sprites to leave the stage.">
+      <FieldRow
+        id="remove-fencing"
+        label="Remove Fencing"
+        description="Allow sprites to leave the stage."
+      >
         <SwitchField
           id="remove-fencing"
           checked={advanced.removeFencing}
@@ -204,11 +260,14 @@ const LimitsTab = React.memo(function LimitsTab({ advanced, patch }: RuntimeTabP
           onChange={(v) => patch({ removeMiscLimits: v })}
         />
       </FieldRow>
-    </div>
+    </SettingsSection>
   );
 });
 
-const AppearanceTab = React.memo(function AppearanceTab({ advanced, patch }: RuntimeTabProps): React.JSX.Element {
+const OthersSection = React.memo(function OthersSection({
+  advanced,
+  patch,
+}: RuntimeSectionProps): React.JSX.Element {
   const volume = useSettingsStore((s) => s.volume);
   const setVolume = useSettingsStore((s) => s.setVolume);
   const onSliderChange = React.useCallback(
@@ -226,7 +285,7 @@ const AppearanceTab = React.memo(function AppearanceTab({ advanced, patch }: Run
   // each render.
   const volumeArr = React.useMemo(() => [volume], [volume]);
   return (
-    <div className="divide-y divide-border">
+    <SettingsSection id="others" title="Others">
       <FieldRow id="volume" label="Volume" description="Master audio volume.">
         <div className="flex items-center gap-2">
           <Slider
@@ -251,27 +310,18 @@ const AppearanceTab = React.memo(function AppearanceTab({ advanced, patch }: Run
           />
         </div>
       </FieldRow>
-      <FieldRow id="stage-width" label="Stage Width" description="Stage canvas width in pixels.">
-        <NumberField
-          id="stage-width"
-          value={advanced.stageWidth}
-          onChange={(v) => patch({ stageWidth: clampStageWidth(v) })}
-          min={1}
-          max={8192}
-          ariaLabel="Stage width"
+      <FieldRow
+        id="disable-compiler"
+        label="Disable Compiler"
+        description="Force the VM to interpret scripts (slower but more compatible)."
+      >
+        <SwitchField
+          id="disable-compiler"
+          checked={advanced.disableCompiler}
+          onChange={(v) => patch({ disableCompiler: v })}
         />
       </FieldRow>
-      <FieldRow id="stage-height" label="Stage Height" description="Stage canvas height in pixels.">
-        <NumberField
-          id="stage-height"
-          value={advanced.stageHeight}
-          onChange={(v) => patch({ stageHeight: clampStageHeight(v) })}
-          min={1}
-          max={8192}
-          ariaLabel="Stage height"
-        />
-      </FieldRow>
-    </div>
+    </SettingsSection>
   );
 });
 
@@ -283,49 +333,54 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
+      {/*
+        Layout:
+          - Header (title) pinned to the top.
+          - ScrollArea fills the rest of the dialog, holding the
+            vertically-stacked SettingsSection blocks separated by
+            horizontal rules.
+          - Footer (Reset) pinned to the bottom.
+        Padding on the header / footer is supplied by the section itself;
+        the ScrollArea only provides vertical scrolling.
+      */}
+      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="px-8 pb-3 pt-8">
           <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>
-            Changes apply immediately. {formatInteger(Object.keys(advanced).length)} advanced fields.
-          </DialogDescription>
         </DialogHeader>
         <Separator />
-        <Tabs defaultValue="runtime" className="w-full">
-          <TabsList className="grid w-full grid-cols-5">
-            <TabsTrigger value="runtime">Runtime</TabsTrigger>
-            <TabsTrigger value="rendering">Rendering</TabsTrigger>
-            <TabsTrigger value="compiler">Compiler</TabsTrigger>
-            <TabsTrigger value="limits">Limits</TabsTrigger>
-            <TabsTrigger value="appearance">Appearance</TabsTrigger>
-          </TabsList>
-          <TabsContent value="runtime">
-            <RuntimeTab advanced={advanced} patch={patch} />
-          </TabsContent>
-          <TabsContent value="rendering">
-            <RenderingTab advanced={advanced} patch={patch} />
-          </TabsContent>
-          <TabsContent value="compiler">
-            <CompilerTab advanced={advanced} patch={patch} />
-          </TabsContent>
-          <TabsContent value="limits">
-            <LimitsTab advanced={advanced} patch={patch} />
-          </TabsContent>
-          <TabsContent value="appearance">
-            <AppearanceTab advanced={advanced} patch={patch} />
-          </TabsContent>
-        </Tabs>
+
+        {/*
+          Same flex pattern as the Extension Permission dialog: pair the
+          Radix primitive with explicit `min-h-0 h-0 flex-1` so the
+          scroll container can both shrink below its content height and
+          grow to fill the parent. The Radix Viewport inside the
+          ScrollArea handles vertical scrolling — we deliberately do
+          NOT also put `overflow-y-auto` on the inner div, because the
+          double-scrollbar pattern fights Radix's own height calculation
+          and previously left both layers un-scrollable. Padding now
+          lives on the inner div only.
+        */}
+        <ScrollArea className="min-h-0 h-0 flex-1" data-testid="settings-scroll-area">
+          <div className="flex flex-col gap-7 px-8 py-6">
+            <RuntimeSection advanced={advanced} patch={patch} />
+            <RenderingSection advanced={advanced} patch={patch} />
+            <LimitsSection advanced={advanced} patch={patch} />
+            <OthersSection advanced={advanced} patch={patch} />
+          </div>
+        </ScrollArea>
+
         <Separator />
-        <div className="flex justify-end">
+        <DialogFooter className="flex-row justify-end px-8 pb-6 pt-4 sm:justify-end">
           <Button
             variant="ghost"
             size="sm"
             onClick={onResetClick}
             aria-label="Reset advanced settings to defaults"
+            data-testid="settings-reset"
           >
             Reset to defaults
           </Button>
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
