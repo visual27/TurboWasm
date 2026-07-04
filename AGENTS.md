@@ -10,7 +10,7 @@ Operational guide for agents working on **TurboWasm Viewer** — a static SB3 pl
 - All runtime errors → `ErrorLogPanel` (always visible). **No toasts, no modals.**
 - All UI state → one JSON blob at `localStorage` key `tw-viewer:settings:v1` (`STORAGE_KEYS.settings`).
 - Verify locally before declaring done: `npm run typecheck && npm run lint && npm test && npm run build`. **No CI workflows exist.**
-- Real-device smoke test: Chrome DevTools MCP → `new_page` → drop `.sb3` → `list_console_messages` and look for `[player] loadProject …` lines.
+- Real-device smoke test: Chrome DevTools MCP → `new_page` → drop `.sb3` or open `…/#<id>` → `list_console_messages` and look for `[player] loadProject …` lines.
 
 ## Language conventions
 
@@ -40,11 +40,11 @@ cd vendored/scaffolding && NODE_ENV=production npm run prepublishOnly && cd ../.
 
 | Command | Purpose | Notes |
 | --- | --- | --- |
-| `npm run dev` | Vite dev server | Port 5173, falls back to 5174. |
+| `npm run dev` | Vite dev server | Port 5173, falls back to 5174 / 5175. |
 | `npm run build` | typecheck (2 tsconfigs) + vite build | Produces `dist/`. |
 | `npm run typecheck` | `tsc --noEmit` for src + node | Both tsconfigs in series; both must pass. |
 | `npm run lint` | `eslint . --max-warnings 0` | Warnings are errors. |
-| `npm test` | Vitest single run | 37 files / 337 tests; jsdom env. |
+| `npm test` | Vitest single run | 37 files / 354 tests; jsdom env. |
 | `npm run format` | Prettier write | semi, singleQuote, trailingComma=all, printWidth=100, tabWidth=2. |
 | `npm run apply:scratch-render-patch` | Re-run patch-package | `postinstall` already does this. |
 | `cd vendored/scratch-vm && npm run tap:unit` | scratch-vm upstream tap | 96 files / 3459 assertions; **not** part of `npm test`. |
@@ -58,7 +58,11 @@ Recommended verification order: **typecheck → lint → test → build**.
   npx patch-package scratch-render --cwd vendored/scaffolding
   # move patches/scratch-render+0.1.0.patch to project root if patch-package wrote it inside vendored/
   ```
+- **Scaffolding never emits `ASSET_PROGRESS`.** The minified bundle defines the constant but never dispatches it, and scratch-storage's `load(assetType, assetId, dataFormat)` has no `onProgress` argument. Without intervention, `LoadingProgress` stays in the indeterminate state for the entire load. `loadProjectFromArrayBuffer` in `src/runtime/player.ts` drives the bar manually: `setAssetProgress(0, 1)` right before `attachedScaffolding.loadProject` and `setAssetProgress(1, 1)` right after, then `useProjectStore.setReadyFromId` (or `setReadyFromFile`) unmounts the overlay. **Do not** remove these calls without first verifying an alternative progress source.
+- **Scaffolding leaks monitor DOM nodes.** `_monitors` Map and `_monitorOverlay` children are never removed on `MONITORS_UPDATE` (the empty event from `runtime.dispose()` is a no-op). `resetScaffoldingMonitors(scaffolding)` in `src/runtime/player.ts` is exported (for tests) and called immediately before each `loadProject` so the second project load does not inherit the first project's variable / list monitors.
 - **Runtime façade.** All VM integration lives in `src/runtime/player.ts`. Load flow: `useProjectLoader` → `player.loadProjectFromArrayBuffer`. On failure, `console.error('[player] loadProject failed:', err)` is logged with full stack, cause chain, and `_loadedExtensions` keys — watch for that prefix when debugging load issues.
+- **Settings reflect to the runtime via `subscribe`, not via a `ref` mirror.** `StageView` subscribes to `useSettingsStore` and passes the live `state.advanced` into `applySettings`. Do **not** re-introduce a `useAdvancedRef` pattern — Zustand's `subscribe` fires synchronously inside `patchAdvanced`, before React's commit phase, so a ref-mirrored snapshot is one tick stale and silently corrupts `vm.setStageSize` / `vm.setFramerate`.
+- **Numeric inputs are commit-only.** `NumberField` in `src/features/settings/SettingsDialog.tsx` is a controlled draft. It writes to the store only on blur or Enter; Escape rolls back without committing. Partial keystrokes (`Number("") = 0`) never reach the store. Edit the `NumberField` component rather than calling `patchAdvanced` from raw inputs.
 - **Feature First.** `src/features/<name>/` owns its UI + state hooks. Cross-feature imports go through `src/lib/`, `src/hooks/`, `src/stores/`. New shadcn-style primitives go in `src/components/ui/`, **not** under `features/`.
 - **TS strict.** `tsconfig.json` enables `strict`, `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch`, `noUncheckedIndexedAccess`, plus `verbatimModuleSyntax` semantics. Do **not** relax these to silence the compiler. ESLint: `@typescript-eslint/no-explicit-any` is `error`; prefer `unknown` + narrowing.
 - **Component shape.** Function components return `React.JSX.Element` (or `Promise<void>` for async callbacks) — no implicit returns. Hooks, utilities, runtime modules use **named exports**; default exports are reserved for React components.
@@ -70,8 +74,9 @@ Recommended verification order: **typecheck → lint → test → build**.
 
 - Tests mirror `src/` under `test/` (e.g. `src/runtime/player.ts` → `test/runtime/player.test.ts`).
 - Vitest config: `environment: 'jsdom'`, `globals: true`. `test/setup.ts` polyfills `Blob.arrayBuffer/text`, `window.matchMedia`, and `ResizeObserver` for jsdom — **do not redefine these in individual tests.**
-- `src/runtime/player.ts` exports `errorMessage` and `ProjectLoadError` helpers specifically for unit testing; cover the non-Error / non-string branches when you touch them.
+- `src/runtime/player.ts` exports `errorMessage`, `ProjectLoadError`, and `resetScaffoldingMonitors` helpers specifically for unit testing; cover the non-Error / non-string branches when you touch them.
 - `useProjectLoader` and other hooks are commonly mocked at the module level with `vi.mock('@/features/project-loader/useProjectLoader', ...)`. See `test/features/stage/ProjectIdInput.test.tsx` for the pattern.
+- Single test run: `npx vitest run test/features/settings/SettingsDialog.test.tsx` etc. — useful when iterating on a specific file.
 
 ## Debug commands (project-ID input)
 
@@ -103,6 +108,7 @@ Implementation: `src/features/project-loader/debug-commands.ts`. Handler lives i
   - `GET https://api.scratch.mit.edu/projects/{id}` — metadata (field is `project_token`, not `token`)
   - `GET https://projects.scratch.mit.edu/{id}?token={project_token}` — sb3 binary
   - Failures surface through `useErrorLogStore` — **no toast, no dialog.**
+  - For real-device smoke tests, `http://localhost:5173/#<project-id>` triggers the load through `useProjectUrlSync` automatically.
 - **`twconfig` marker.** Look for the literal token `// _twconfig_` inside a project comment. The JSON that follows is parsed read-only by `src/runtime/twconfig.ts` and merged into `currentAdvanced`. Unknown keys are silently ignored; malformed JSON does not abort the load. Only the supported keys listed in `twconfig.ts` are honored.
 - **Storage schema.** `tw-viewer:settings:v1` (`STORAGE_KEYS.settings` in `src/utils/constants.ts`). To bump schema, change the suffix (`v2`, …) and add a migration in `src/lib/persistence.ts`.
 - **No toasts, no dialogs for runtime errors.** All errors go through `ErrorLogPanel` at the bottom of the page (`src/features/error-log/`). `severity === 'error'` is the on/off switch.
@@ -114,9 +120,13 @@ Implementation: `src/features/project-loader/debug-commands.ts`. Handler lives i
 | Symptom | Look here first |
 | --- | --- |
 | `Failed to construct 'ImageData': ...` at project load | Console `[player] loadProject …` lines; `patches/scratch-render+0.1.0.patch`; `vendored/scaffolding/node_modules/scratch-render/src/{RenderWebGL,PenSkin}.js` (~lines 1494 and 475). |
+| Loading overlay shows "Loading project…" forever (indeterminate spinner, no counter) | The bar is manually driven in `loadProjectFromArrayBuffer`. Check that the two `setAssetProgress` calls (0/1 → 1/1) are still there. Don't try to remove them — Scaffolding will not emit `ASSET_PROGRESS`. |
+| First project's variable monitors still visible after loading a second project | `resetScaffoldingMonitors(attachedScaffolding)` must be called immediately before each `loadProject`. See `src/runtime/player.ts` `loadProjectFromArrayBuffer`. |
+| Settings change silently reverts to the previous tick's value (stage size unchanged, FPS dropped to single digits) | `StageView` must not mirror `useSettingsStore.advanced` into a `useRef` — Zustand `subscribe` fires synchronously inside `patchAdvanced` and a stale ref snapshot wins. Pass `state.advanced` directly to `applySettings`. |
 | Dev server serves stale scaffold | `rm -rf node_modules/.vite`, then `npm run dev`. |
 | `vendored/scaffolding/dist/scaffolding-min.js` looks out of date | `cd vendored/scaffolding && npm run build` (or `prepublishOnly` for production). |
 | Tests pass locally but typecheck fails | Look for unused locals / params; `noUnusedLocals` + `noUnusedParameters` are strict. |
 | Lost patches after `npm install` | Check that `postinstall` ran and `node_modules/patch-package` exists. Run `npm run apply:scratch-render-patch`. |
 | Extension permission dialog doesn't appear | `ExtensionPermissionDialog` registers its request handler in a mount effect and clears it on unmount — confirm the component is mounted and `App.tsx` renders it inside `<ExtensionPermissionDialog />`. |
 | `Permission to load extension denied: <id>` at load | URL is not in `allowedExtensionUrls`. Either re-prompt the user or persist via `useSettingsStore.addAllowedExtensionUrl`. |
+| `NumberField` accepts a value but the store doesn't update | Inputs must be committed (blur / Enter). Raw `onChange` writing to the store was a regression — restore the controlled-draft pattern in `NumberField`. |
