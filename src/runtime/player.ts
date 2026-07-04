@@ -939,6 +939,21 @@ export async function loadProjectFromArrayBuffer(
     throw new Error('Player is not initialized');
   }
 
+  // Drive LoadingProgress through the deserialize/install phase. The
+  // vendored Scaffolding does NOT emit `ASSET_PROGRESS` events (its
+  // minified bundle defines the constant but never dispatches it) and
+  // scratch-storage's `load` has no onProgress hook, so without this
+  // the bar would stay in the indeterminate state for the entire load.
+  // Reset and announce "0 / 1 — deserializing" before the Scaffolding
+  // call, then bump to "1 / 1" once it resolves.
+  try {
+    const player = usePlayerStore.getState();
+    player.resetAssetProgress();
+    player.setAssetProgress(0, 1);
+  } catch {
+    /* ignore — store may be torn down in tests */
+  }
+
   // (NEW) Reset the vm/runtime stage BEFORE loading the new project so the
   // old project content is cleared from the canvas immediately. Without
   // this, the previous project keeps rendering during the asset load
@@ -1028,6 +1043,14 @@ export async function loadProjectFromArrayBuffer(
     await attachedScaffolding.loadProject(loadBuf);
     if (token !== projectLoadToken) return;
     setCloudProvider(getCloudProvider());
+    // Mark the deserialize/install phase as complete so the bar reaches
+    // 100% for an instant before useProjectStore transitions to 'ready'
+    // and LoadingProgress unmounts.
+    try {
+      usePlayerStore.getState().setAssetProgress(1, 1);
+    } catch {
+      /* ignore */
+    }
     // Reset playback state on project load.
     setState({ isPlaying: false, isPaused: false, isReady: true });
 
