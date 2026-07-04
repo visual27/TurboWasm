@@ -36,8 +36,9 @@ export interface LoadingProgressProps {
  *
  * Layout:
  *  ┌────────────────────────────┐
- *  │ ◐ Loading assets…  42 / 87 │
+ *  │ ◐ Loading assets…           │
  *  │ ████████░░░░░░░░░░░░░░░░░░ │
+ *  │   42 / 87 (48%)            │
  *  └────────────────────────────┘
  *
  * When `total === 0` we render an indeterminate spinner with a generic
@@ -77,12 +78,6 @@ export const LoadingProgress = React.memo(function LoadingProgress({
       <div className="flex items-center gap-2 text-sm font-medium">
         <Loader2 className="h-4 w-4 animate-spin" />
         <span>{text}</span>
-        {!isIndeterminate && (
-          <span className="tabular-nums text-muted-foreground">
-            {finished} / {total}
-            {percent !== null ? ` (${percent}%)` : ''}
-          </span>
-        )}
       </div>
       <div className="h-1.5 w-64 overflow-hidden rounded-full bg-foreground/10">
         {isIndeterminate ? (
@@ -99,6 +94,12 @@ export const LoadingProgress = React.memo(function LoadingProgress({
           />
         )}
       </div>
+      {!isIndeterminate && (
+        <div className="text-xs tabular-nums text-muted-foreground/70">
+          {finished} / {total}
+          {percent !== null ? ` (${percent}%)` : ''}
+        </div>
+      )}
     </div>
   );
 });

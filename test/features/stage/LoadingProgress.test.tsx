@@ -61,4 +61,22 @@ describe('LoadingProgress', () => {
     // We just check the bar is present and total/finished are reported.
     expect(el.textContent).toMatch(/120\s*\/\s*87/);
   });
+
+  it('renders the count BELOW the bar with a muted style, not next to the label', () => {
+    render(
+      <TooltipProvider delayDuration={0}>
+        <LoadingProgress finished={42} total={87} />
+      </TooltipProvider>,
+    );
+    const el = screen.getByTestId('loading-progress');
+    // The label and the count are now in different visual rows.
+    const labelRow = el.querySelector('div');
+    expect(labelRow?.textContent).toMatch(/Loading assets/);
+    expect(labelRow?.textContent).not.toMatch(/42\s*\/\s*87/);
+    // The count must live in a separate descendant with muted styling.
+    const count = el.querySelector('div.text-xs.tabular-nums');
+    expect(count).not.toBeNull();
+    expect(count?.textContent).toMatch(/42\s*\/\s*87/);
+    expect(count?.className).toMatch(/text-muted-foreground/);
+  });
 });
