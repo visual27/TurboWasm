@@ -31,6 +31,8 @@ npm run dev      # or `npm run build` for the static output
 
 `vendored/scaffolding/dist/scaffolding-min.js` is the shipped VM. Both `vite.config.ts` and `tsconfig.json` alias `@turbowarp/scaffolding` to this UMD (never re-import from `node_modules`).
 
+`postinstall` runs `scripts/apply-vendored-patches.mjs`, which re-invokes patch-package against `vendored/scaffolding/node_modules/scratch-render`. The script deliberately exits 0 even on failure so it can never break `npm install` — if the scratch-render patch is missing after a fresh checkout, run `npm run apply:scratch-render-patch` manually.
+
 For production-grade rebuilds (only when scratch-vm / scratch-render sources change):
 ```bash
 cd vendored/scaffolding && NODE_ENV=production npm run prepublishOnly && cd ../..
@@ -42,9 +44,10 @@ cd vendored/scaffolding && NODE_ENV=production npm run prepublishOnly && cd ../.
 | --- | --- | --- |
 | `npm run dev` | Vite dev server | Port 5173, falls back to 5174 / 5175. |
 | `npm run build` | typecheck (2 tsconfigs) + vite build | Produces `dist/`. |
+| `npm run preview` | vite preview of `dist/` | Quick sanity check after `npm run build`. |
 | `npm run typecheck` | `tsc --noEmit` for src + node | Both tsconfigs in series; both must pass. |
 | `npm run lint` | `eslint . --max-warnings 0` | Warnings are errors. |
-| `npm test` | Vitest single run | 37 files / 354 tests; jsdom env. |
+| `npm test` | Vitest single run | 37 files / 358 tests; jsdom env. |
 | `npm run format` | Prettier write | semi, singleQuote, trailingComma=all, printWidth=100, tabWidth=2. |
 | `npm run apply:scratch-render-patch` | Re-run patch-package | `postinstall` already does this. |
 | `cd vendored/scratch-vm && npm run tap:unit` | scratch-vm upstream tap | 96 files / 3459 assertions; **not** part of `npm test`. |
@@ -58,8 +61,9 @@ Recommended verification order: **typecheck → lint → test → build**.
   npx patch-package scratch-render --cwd vendored/scaffolding
   # move patches/scratch-render+0.1.0.patch to project root if patch-package wrote it inside vendored/
   ```
-- **Scaffolding never emits `ASSET_PROGRESS`.** The minified bundle defines the constant but never dispatches it, and scratch-storage's `load(assetType, assetId, dataFormat)` has no `onProgress` argument. Without intervention, `LoadingProgress` stays in the indeterminate state for the entire load. `loadProjectFromArrayBuffer` in `src/runtime/player.ts` drives the bar manually: `setAssetProgress(0, 1)` right before `attachedScaffolding.loadProject` and `setAssetProgress(1, 1)` right after, then `useProjectStore.setReadyFromId` (or `setReadyFromFile`) unmounts the overlay. **Do not** remove these calls without first verifying an alternative progress source.
+- **`ASSET_PROGRESS` is wired through the VM, not the Scaffolding.** The vendored `scratch-vm` runtime DOES emit `ASSET_PROGRESS` with positional `(finished, total)` arguments for every costume / sound load wrapped in `runtime.wrapAssetRequest` (see `vendored/scratch-vm/src/engine/runtime.js`). The VM forwards it to its own EventEmitter, but the Scaffolding layer (`vendored/scaffolding/src/scaffolding.js`) does **not** propagate the event to its own EventTarget — it only forwards `MONITORS_UPDATE` / `PROJECT_RUN_START` / `PROJECT_RUN_STOP` / `STAGE_SIZE_CHANGED`. So `bindEvents()` in `src/runtime/player.ts` subscribes directly to `attachedScaffolding.vm.on('ASSET_PROGRESS', …)` to drive the `LoadingProgress` bar. There is no manual `setAssetProgress(0, 1) → (1, 1)` drive anywhere — `runtime.dispose()` at the start of every `loadProject` emits `(0, 0)` and the runtime naturally reaches `(total, total)` when all asset promises settle. If the bar stops climbing partway, suspect a failing asset inside `loadProject` and check the `[player] loadProject …` console prefix.
 - **Scaffolding leaks monitor DOM nodes.** `_monitors` Map and `_monitorOverlay` children are never removed on `MONITORS_UPDATE` (the empty event from `runtime.dispose()` is a no-op). `resetScaffoldingMonitors(scaffolding)` in `src/runtime/player.ts` is exported (for tests) and called immediately before each `loadProject` so the second project load does not inherit the first project's variable / list monitors.
+- **Shared `ScrollArea` (Radix).** `src/components/ui/scroll-area.tsx` is the single scrollbar primitive used by every scrollable in-product surface (Settings dialog, Extension Permission dialog, `ProjectMetadataPanel`). Defaults: 6px track, `foreground/10` at rest / `foreground/30` on hover, `-translate-x-1.5` (6px) inward shift gives the bar breathing room from the right edge of its container, and `py-2` (8px) on the track keeps the thumb from sitting flush against the ScrollArea's top and bottom edges at scroll extremes. Pass `flush` to skip the inward shift when the surrounding content is already inset by its own right-edge padding — `ProjectMetadataPanel` uses this so its scrollbar's right edge lines up with the title row at the same x-coordinate (16px / 20px on sm) from the aside's right edge as the title's left edge is from the aside's left edge. Edit the shared component with care: any visual change applies to every scrollable surface in the app.
 - **Runtime façade.** All VM integration lives in `src/runtime/player.ts`. Load flow: `useProjectLoader` → `player.loadProjectFromArrayBuffer`. On failure, `console.error('[player] loadProject failed:', err)` is logged with full stack, cause chain, and `_loadedExtensions` keys — watch for that prefix when debugging load issues.
 - **Settings reflect to the runtime via `subscribe`, not via a `ref` mirror.** `StageView` subscribes to `useSettingsStore` and passes the live `state.advanced` into `applySettings`. Do **not** re-introduce a `useAdvancedRef` pattern — Zustand's `subscribe` fires synchronously inside `patchAdvanced`, before React's commit phase, so a ref-mirrored snapshot is one tick stale and silently corrupts `vm.setStageSize` / `vm.setFramerate`.
 - **Numeric inputs are commit-only.** `NumberField` in `src/features/settings/SettingsDialog.tsx` is a controlled draft. It writes to the store only on blur or Enter; Escape rolls back without committing. Partial keystrokes (`Number("") = 0`) never reach the store. Edit the `NumberField` component rather than calling `patchAdvanced` from raw inputs.
@@ -74,7 +78,7 @@ Recommended verification order: **typecheck → lint → test → build**.
 
 - Tests mirror `src/` under `test/` (e.g. `src/runtime/player.ts` → `test/runtime/player.test.ts`).
 - Vitest config: `environment: 'jsdom'`, `globals: true`. `test/setup.ts` polyfills `Blob.arrayBuffer/text`, `window.matchMedia`, and `ResizeObserver` for jsdom — **do not redefine these in individual tests.**
-- `src/runtime/player.ts` exports `errorMessage`, `ProjectLoadError`, and `resetScaffoldingMonitors` helpers specifically for unit testing; cover the non-Error / non-string branches when you touch them.
+- `src/runtime/player.ts` exports `errorMessage`, `ProjectLoadError`, `resetScaffoldingMonitors`, and `__bindEventsForTesting` helpers specifically for unit testing; cover the non-Error / non-string branches when you touch them. `__bindEventsForTesting` lets tests drive `vm.emit('ASSET_PROGRESS', …)` against a stub VM to exercise the wiring in `bindEvents()` without spinning up a real Scaffolding instance.
 - `useProjectLoader` and other hooks are commonly mocked at the module level with `vi.mock('@/features/project-loader/useProjectLoader', ...)`. See `test/features/stage/ProjectIdInput.test.tsx` for the pattern.
 - Single test run: `npx vitest run test/features/settings/SettingsDialog.test.tsx` etc. — useful when iterating on a specific file.
 
@@ -120,8 +124,9 @@ Implementation: `src/features/project-loader/debug-commands.ts`. Handler lives i
 | Symptom | Look here first |
 | --- | --- |
 | `Failed to construct 'ImageData': ...` at project load | Console `[player] loadProject …` lines; `patches/scratch-render+0.1.0.patch`; `vendored/scaffolding/node_modules/scratch-render/src/{RenderWebGL,PenSkin}.js` (~lines 1494 and 475). |
-| Loading overlay shows "Loading project…" forever (indeterminate spinner, no counter) | The bar is manually driven in `loadProjectFromArrayBuffer`. Check that the two `setAssetProgress` calls (0/1 → 1/1) are still there. Don't try to remove them — Scaffolding will not emit `ASSET_PROGRESS`. |
+| Loading overlay shows "Loading project…" forever (indeterminate spinner, no counter) | The bar is driven by `vm.on('ASSET_PROGRESS', …)` installed in `bindEvents()` (`src/runtime/player.ts`); the runtime itself emits the event via `runtime.wrapAssetRequest` for every costume / sound load. Confirm the listener is still wired (search for `ASSET_PROGRESS` in player.ts). If it's wired but `finished` never advances, a costume / sound load is stuck — look at `[player] loadProject …` console lines. |
 | First project's variable monitors still visible after loading a second project | `resetScaffoldingMonitors(attachedScaffolding)` must be called immediately before each `loadProject`. See `src/runtime/player.ts` `loadProjectFromArrayBuffer`. |
+| `ProjectMetadataPanel` scrollbar lands 6px to the left of the author / title row | The shared `ScrollArea` defaults shift the bar inward by `-translate-x-1.5`. `ProjectMetadataPanel`'s content is already inset by its `p-4 sm:p-5` padding, so it must pass `<ScrollArea … flush>` to skip the shift and let the bar's right edge sit at the content area's right edge. See `src/features/stage/ProjectMetadataPanel.tsx`. |
 | Settings change silently reverts to the previous tick's value (stage size unchanged, FPS dropped to single digits) | `StageView` must not mirror `useSettingsStore.advanced` into a `useRef` — Zustand `subscribe` fires synchronously inside `patchAdvanced` and a stale ref snapshot wins. Pass `state.advanced` directly to `applySettings`. |
 | Dev server serves stale scaffold | `rm -rf node_modules/.vite`, then `npm run dev`. |
 | `vendored/scaffolding/dist/scaffolding-min.js` looks out of date | `cd vendored/scaffolding && npm run build` (or `prepublishOnly` for production). |
