@@ -22,7 +22,8 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@turbowarp/scaffolding": ["vendored/scaffolding/types.d.ts"]
     },
     "types": ["node"]
   },

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ControlBar } from '@/features/stage/ControlBar';
+import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlayerStore } from '@/stores/usePlayerStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -36,19 +37,7 @@ describe('ControlBar', () => {
       theme: 'system',
       volume: 100,
       lastNonMuteVolume: 100,
-      advanced: {
-        fps: 30,
-        interpolation: false,
-        highQualityPen: false,
-        warpTimer: false,
-        infiniteClones: false,
-        removeFencing: false,
-        removeMiscLimits: false,
-        turboMode: false,
-        disableCompiler: false,
-        stageWidth: 480,
-        stageHeight: 360,
-      },
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     });
     usePlayerStore.setState({
       isPlaying: false,

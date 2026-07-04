@@ -15,10 +15,7 @@ interface SectionProps {
 
 function Section({ title, testId, children }: SectionProps): React.JSX.Element {
   return (
-    <section
-      data-testid={testId}
-      className="flex flex-col gap-1.5"
-    >
+    <section data-testid={testId} className="flex flex-col gap-1.5">
       <h3 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
         {title}
       </h3>

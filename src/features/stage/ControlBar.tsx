@@ -1,5 +1,15 @@
 import * as React from 'react';
-import { Maximize2, Minimize2, Pause, Play, Square, Volume2, VolumeX, Settings } from 'lucide-react';
+import {
+  Flag,
+  Maximize2,
+  Minimize2,
+  Pause,
+  Play,
+  Square,
+  Volume2,
+  VolumeX,
+  Settings,
+} from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -93,28 +103,28 @@ function ControlBarImpl({
                 data-testid="green-flag"
                 className="h-8 w-8 rounded-full"
               >
-                <Play className="h-3.5 w-3.5" />
+                <Flag className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Start</TooltipContent>
+            <TooltipContent>Run</TooltipContent>
           </Tooltip>
 
-<Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={pauseResumeLabel}
-            onClick={onPauseResumeClick}
-            disabled={!isPlaying && !isPaused}
-            data-testid={isPaused ? 'resume' : 'pause'}
-            className="h-8 w-8 rounded-full"
-          >
-            {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>{pauseResumeLabel}</TooltipContent>
-      </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={pauseResumeLabel}
+                onClick={onPauseResumeClick}
+                disabled={!isPlaying && !isPaused}
+                data-testid={isPaused ? 'resume' : 'pause'}
+                className="h-8 w-8 rounded-full"
+              >
+                {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{pauseResumeLabel}</TooltipContent>
+          </Tooltip>
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -159,7 +169,9 @@ function ControlBarImpl({
             aria-label="Volume"
             className="w-24"
           />
-          <span className="w-7 text-right text-[10px] tabular-nums text-muted-foreground">{volume}</span>
+          <span className="w-7 text-right text-[10px] tabular-nums text-muted-foreground">
+            {volume}
+          </span>
         </>
       )}
 
@@ -193,7 +205,11 @@ function ControlBarImpl({
                 data-testid="toggle-fullscreen"
                 className="h-8 w-8 rounded-full"
               >
-                {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                {isFullscreen ? (
+                  <Minimize2 className="h-3.5 w-3.5" />
+                ) : (
+                  <Maximize2 className="h-3.5 w-3.5" />
+                )}
               </Button>
             </TooltipTrigger>
             <TooltipContent>{isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}</TooltipContent>

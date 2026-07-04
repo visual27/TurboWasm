@@ -1,17 +1,22 @@
 import { applyAdvancedSettings, asVm } from '@/runtime/settings-bridge';
 import { applyExtensions } from '@/runtime/extensions';
+import {
+  addSessionDeniedExtensionUrl,
+  applyExtensionSecurityManager,
+} from '@/runtime/extension-security';
+import {
+  readExtensionURLsFromArrayBuffer,
+  stripProjectExtensions,
+  type ProjectExtensionUrl,
+} from '@/runtime/extension-urls';
 import { setupScratchAssetStore } from '@/runtime/asset-store';
 import { relayoutScaffolding } from '@/lib/scaffolding';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlayerStore } from '@/stores/usePlayerStore';
 import type { ScaffoldingInstance } from '@/runtime/scaffolding-types';
-import {
-  applyPreSetupConfig,
-  ensureSetup,
-  getScaffolding,
-} from '@/lib/scaffolding';
+import { applyPreSetupConfig, ensureSetup, getScaffolding } from '@/lib/scaffolding';
 import { readTwconfigFromArrayBuffer } from '@/runtime/twconfig';
-import type { AdvancedSettings } from '@/types/settings';
+import type { AdvancedSettings, ExtensionSandboxMode } from '@/types/settings';
 import { buildPreSetupConfig } from '@/runtime/pre-setup';
 import { isValidProjectFile } from '@/lib/validation';
 import { setCloudProvider, getCloudProvider } from '@/runtime/cloud-provider';
@@ -25,6 +30,102 @@ let currentAdvanced: AdvancedSettings | null = null;
 let projectLoadToken = 0;
 
 let readyPromise: Promise<ScaffoldingInstance> | null = null;
+
+/**
+ * Outcome of the user-facing Extension Permission dialog.
+ */
+export interface ExtensionPermissionDecision {
+  /**
+   * The set of extension URLs the user approved. These are written to
+   * the persistent allow-list by the caller before the VM attempts to
+   * load them.
+   */
+  allowedUrls: ReadonlySet<string>;
+  /**
+   * Sandbox mode the user selected in the dialog. Persisted to
+   * `advanced.extensionSandboxMode` so subsequent loads use it.
+   */
+  sandboxMode: ExtensionSandboxMode;
+  /**
+   * URLs the user explicitly denied. Added to the session-only deny
+   * list so re-prompts are suppressed for the rest of the page load.
+   * The persistent allow-list is not modified.
+   */
+  sessionDeniedUrls: readonly string[];
+}
+
+/**
+ * Subset of `ProjectExtensionUrl` re-declared here so the dialog type
+ * stays decoupled from the runtime file. Both names point at the same
+ * shape.
+ */
+export type ExtensionPromptEntry = ProjectExtensionUrl;
+
+/**
+ * Function signature for the Extension Permission dialog. Receives the
+ * full list of extension URLs the project wants to load and returns the
+ * user's decision once the dialog closes.
+ *
+ * Installed once at app startup by `<ExtensionPermissionDialog />` via
+ * {@link setExtensionPermissionRequest}. If no request handler is
+ * registered (e.g. during tests, or before the dialog mounts), unknown
+ * URLs default-deny and the VM throws `Permission to load extension
+ * denied`, surfacing as a normal load error.
+ */
+export type ExtensionPermissionRequest = (
+  entries: readonly ExtensionPromptEntry[],
+) => Promise<ExtensionPermissionDecision>;
+
+let requestExtensionPermission: ExtensionPermissionRequest | null = null;
+
+/**
+ * Register the function that will be called when a project requests
+ * custom extensions. Pass `null` to clear the registration (used on
+ * dialog unmount and during test teardown).
+ */
+export function setExtensionPermissionRequest(fn: ExtensionPermissionRequest | null): void {
+  requestExtensionPermission = fn;
+}
+
+/**
+ * Read the currently-registered permission request handler. Exported
+ * primarily so tests can exercise the integration path without
+ * having to mock the Scaffolding layer.
+ */
+export function getExtensionPermissionRequest(): ExtensionPermissionRequest | null {
+  return requestExtensionPermission;
+}
+
+/**
+ * Apply a user's {@link ExtensionPermissionDecision} to the persistent
+ * allow-list, session deny-list, and sandbox-mode setting. Exposed so
+ * tests can verify the post-resolution side effects without going
+ * through the full `loadProjectFromArrayBuffer` flow (which requires
+ * a Scaffolding instance and would fail in jsdom).
+ *
+ * Also called internally by `loadProjectFromArrayBuffer` after the
+ * dialog resolves.
+ */
+export function applyExtensionPermissionDecision(decision: ExtensionPermissionDecision): void {
+  const sandboxChanged =
+    decision.sandboxMode === 'worker' ||
+    decision.sandboxMode === 'iframe' ||
+    decision.sandboxMode === 'unsandboxed';
+  if (sandboxChanged) {
+    useSettingsStore.getState().patchAdvanced({
+      extensionSandboxMode: decision.sandboxMode,
+    });
+    if (currentAdvanced) {
+      currentAdvanced = { ...currentAdvanced, extensionSandboxMode: decision.sandboxMode };
+    }
+  }
+  if (decision.allowedUrls.size > 0) {
+    useSettingsStore.getState().addAllowedExtensionUrls(Array.from(decision.allowedUrls));
+  }
+  for (const url of decision.sessionDeniedUrls) {
+    addSessionDeniedExtensionUrl(url);
+  }
+}
 
 // Resolvers for the "player is ready" promise. The first time `initPlayer`
 // is called, this is replaced with a resolved promise so any subsequent
@@ -142,7 +243,10 @@ interface RuntimeLike {
         soundPlayers?: Record<
           string,
           {
-            outputNode?: { stop: (t: number) => void; start: (t: number, off: number) => void } | null;
+            outputNode?: {
+              stop: (t: number) => void;
+              start: (t: number, off: number) => void;
+            } | null;
             _createSource?: () => void;
             startingUntil?: number;
           }
@@ -349,10 +453,46 @@ async function initScaffolding(
   attachedScaffolding = await ensureSetup();
   bindEvents(attachedScaffolding);
   applyExtensions(attachedScaffolding);
+  // Install the extension security manager BEFORE any project is loaded so
+  // that the very first `canLoadExtensionFromProject` consult check
+  // already reflects the user's `allowProjectExtensions` setting. The
+  // `getCurrentAdvanced` closure is captured here and re-reads from
+  // `currentAdvanced` on every call, so later `applySettings()` flips are
+  // honored without needing a re-install.
+  applyExtensionSecurityManager(
+    attachedScaffolding,
+    getCurrentAdvanced,
+    () => useSettingsStore.getState().allowedExtensionUrls,
+  );
   // Register Scratch's official asset CDN so project ID loads can resolve assets.
   setupScratchAssetStore(attachedScaffolding);
   attachedScaffolding.appendTo(container);
   return attachedScaffolding;
+}
+
+/**
+ * Returns the most recent AdvancedSettings snapshot known to the player.
+ * Used by the extension security manager (and any other VM-side hook) so
+ * the latest setting is consulted on every policy check, even after the
+ * user toggles something in the Settings dialog while a project is
+ * running.
+ */
+function getCurrentAdvanced(): AdvancedSettings {
+  if (currentAdvanced) return currentAdvanced;
+  return {
+    fps: 30,
+    interpolation: false,
+    highQualityPen: false,
+    warpTimer: false,
+    infiniteClones: false,
+    removeFencing: false,
+    removeMiscLimits: false,
+    turboMode: false,
+    disableCompiler: false,
+    stageWidth: 480,
+    stageHeight: 360,
+    extensionSandboxMode: 'worker',
+  };
 }
 
 function defaultAdvanced(): AdvancedSettings {
@@ -368,10 +508,14 @@ function defaultAdvanced(): AdvancedSettings {
     disableCompiler: false,
     stageWidth: 480,
     stageHeight: 360,
+    extensionSandboxMode: 'worker',
   };
 }
 
-export function initPlayer(container: HTMLElement, advanced: AdvancedSettings): Promise<ScaffoldingInstance> {
+export function initPlayer(
+  container: HTMLElement,
+  advanced: AdvancedSettings,
+): Promise<ScaffoldingInstance> {
   if (!readyPromise) {
     currentAdvanced = { ...advanced };
     // Resolve the player-ready gate so that any concurrent caller (e.g. the
@@ -503,12 +647,12 @@ export function pause(): void {
     ? runtime._getMonitorThreadCount.bind(runtime)
     : null;
 
-  const originalAudioContextResume: (() => Promise<void> | void) | null =
-    runtime.audioEngine?.audioContext?.resume
-      ? (runtime.audioEngine.audioContext.resume as () => Promise<void> | void).bind(
-          runtime.audioEngine.audioContext,
-        )
-      : null;
+  const originalAudioContextResume: (() => Promise<void> | void) | null = runtime.audioEngine
+    ?.audioContext?.resume
+    ? (runtime.audioEngine.audioContext.resume as () => Promise<void> | void).bind(
+        runtime.audioEngine.audioContext,
+      )
+    : null;
 
   const audioStateChain = Promise.resolve();
 
@@ -611,9 +755,9 @@ export function pause(): void {
     // Hook attachAudioEngine so the resume override is applied to whatever
     // audioContext ends up being attached.
     const originalAttach = runtime.attachAudioEngine.bind(runtime);
-    runtime.attachAudioEngine = function pausedAttachAudioEngine(
-      engine: { audioContext?: { resume?: () => void | Promise<void> } },
-    ): unknown {
+    runtime.attachAudioEngine = function pausedAttachAudioEngine(engine: {
+      audioContext?: { resume?: () => void | Promise<void> };
+    }): unknown {
       const result = originalAttach(engine);
       if (pauseOverride && engine.audioContext) {
         const audioCtx = engine.audioContext;
@@ -783,9 +927,61 @@ export async function loadProjectFromArrayBuffer(
     vm.setStageSize(currentAdvanced.stageWidth, currentAdvanced.stageHeight);
   }
 
+  // Inspect the project for custom extension URLs BEFORE asking the VM to
+  // load it. The upstream VM consults `canLoadExtensionFromProject` per
+  // URL and fail-fasts on the first denial, which would otherwise reach
+  // us as `Permission to load extension denied: <id>` — only useful for
+  // projects that don't use extensions at all, and confusing for users
+  // who want to selectively allow extensions.
+  //
+  // Flow:
+  //   1. If `extensionURLs` is empty or no handler is registered, fall
+  //      through and let the VM decide (it will deny everything).
+  //   2. Split URLs into already-allowed (persistent) and needs-prompt.
+  //      Already-allowed ones need no work.
+  //   3. If anything needs prompting, call the handler. The handler
+  //      resolves once the user closes the Extension Permission dialog.
+  //      Apply the decision to both the persistent allow-list (via the
+  //      settings store) and the in-memory session deny-list.
+  //   4. Hand the buffer to the VM, which will then re-check via the
+  //      security manager. Any extension the user denied now resolves
+  //      to `false` immediately and is reported as a normal
+  //      `Failed to load project: Permission to load extension denied: <id>`
+  //      error in the error log.
+  //   5. Special case: when the user picks the `disabled` sandbox mode
+  //      in the dialog, strip both `extensions` and `extensionURLs` from
+  //      `project.json` so the VM loads the project without any
+  //      extension references at all (no `Permission to load extension
+  //      denied` error). The stripped buffer is used only when `disabled`
+  //      is selected; otherwise the original buffer is passed through.
+  let loadBuf: ArrayBuffer = buf;
+  const extensionEntries = await readExtensionURLsFromArrayBuffer(buf);
+  if (extensionEntries.length > 0 && requestExtensionPermission !== null) {
+    const allowedSnapshot = useSettingsStore.getState().allowedExtensionUrls;
+    const needsPrompt = extensionEntries.filter(({ url }) => !allowedSnapshot.includes(url));
+    if (needsPrompt.length > 0) {
+      const decision = await requestExtensionPermission(needsPrompt);
+      // Sandbox-mode change: re-apply settings so the security manager
+      // picks it up on its next call.
+      applyExtensionPermissionDecision(decision);
+      if (attachedScaffolding && currentAdvanced) {
+        applyAdvancedSettings(attachedScaffolding, currentAdvanced);
+      }
+      // Disabled mode: rewrite the buffer so the VM never sees the
+      // extension references. Falling back to the original buffer on
+      // any zip/JSON failure keeps the load going (the VM will then
+      // throw its normal "Permission to load extension denied" error,
+      // which is at least understandable).
+      if (decision.sandboxMode === 'disabled') {
+        const stripped = await stripProjectExtensions(buf);
+        if (stripped !== null) loadBuf = stripped;
+      }
+    }
+  }
+
   const token = ++projectLoadToken;
   try {
-    await attachedScaffolding.loadProject(buf);
+    await attachedScaffolding.loadProject(loadBuf);
     if (token !== projectLoadToken) return;
     setCloudProvider(getCloudProvider());
     // Reset playback state on project load.
@@ -801,9 +997,11 @@ export async function loadProjectFromArrayBuffer(
       relayoutScaffolding();
       requestAnimationFrame(() => {
         try {
-          const r = (attachedScaffolding as unknown as {
-            renderer?: { draw?: () => void };
-          }).renderer;
+          const r = (
+            attachedScaffolding as unknown as {
+              renderer?: { draw?: () => void };
+            }
+          ).renderer;
           if (r && typeof r.draw === 'function') r.draw();
         } catch {
           /* ignore */
@@ -811,16 +1009,85 @@ export async function loadProjectFromArrayBuffer(
       });
     });
   } catch (err) {
-    throw new ProjectLoadError('invalid', `Failed to load project: ${(err as Error).message}`, err);
+    // TurboWasm: emit full diagnostic context to the browser console.
+    // The user-visible `Failed to load project: ...` text is still produced
+    // by the ProjectLoadError below, but this gives us the underlying stack
+    // trace and cause chain when chasing intermittent DOMException /
+    // ImageData errors raised by custom extensions (e.g. pen+, SPjson,
+    // SPimgEditor). See docs/extension-imagedata-investigation.md.
+    // eslint-disable-next-line no-console
+    console.error('[player] loadProject failed:', err);
+    if (err instanceof Error && err.stack) {
+      // eslint-disable-next-line no-console
+      console.error('[player] loadProject stack:', err.stack);
+    }
+    if (err && typeof err === 'object' && 'cause' in err && (err as { cause?: unknown }).cause) {
+      const cause = (err as { cause?: unknown }).cause;
+      // eslint-disable-next-line no-console
+      console.error('[player] loadProject cause:', cause);
+      if (cause instanceof Error && cause.stack) {
+        // eslint-disable-next-line no-console
+        console.error('[player] loadProject cause stack:', cause.stack);
+      }
+    }
+    const extManager = (
+      attachedScaffolding.vm as unknown as {
+        extensionManager?: {
+          _loadedExtensions?: Record<string, unknown>;
+        };
+      }
+    )?.extensionManager;
+    if (extManager) {
+      // eslint-disable-next-line no-console
+      console.error(
+        '[player] loadProject extension state:',
+        Object.keys(extManager._loadedExtensions ?? {}),
+      );
+    }
+    throw new ProjectLoadError('invalid', `Failed to load project: ${errorMessage(err)}`, err);
   }
+}
+
+/**
+ * Safely extract a human-readable message from an unknown thrown value.
+ *
+ * Upstream scratch-vm's `loadProject()` deliberately rejects with
+ * `JSON.stringify(error)` (a raw string, NOT an Error instance) when
+ * `error.validationError` is set, so that the caller can pass it through
+ * scratch-parser unchanged. Reading `.message` on a string yields
+ * `undefined`, which is why the previous wrapper produced the
+ * user-visible "Failed to load project: undefined" error.
+ *
+ * This helper handles every shape we have seen in practice: Error
+ * instances, raw strings (e.g. JSON-serialized validation errors),
+ * numbers, objects with a `message` field, and `null`/`undefined`.
+ *
+ * Exported for unit testing; not part of the public runtime API.
+ */
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message || err.name || '<empty Error>';
+  }
+  if (typeof err === 'string') {
+    return err || '<empty string>';
+  }
+  if (err && typeof err === 'object') {
+    const m = (err as { message?: unknown }).message;
+    if (typeof m === 'string' && m.length > 0) return m;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return Object.prototype.toString.call(err);
+    }
+  }
+  if (err === undefined) return 'undefined';
+  if (err === null) return 'null';
+  return String(err);
 }
 
 export async function loadProjectFromFile(file: File): Promise<void> {
   if (!(await isValidProjectFile(file))) {
-    throw new ProjectLoadError(
-      'invalid',
-      `"${file.name}" is not a valid .sb3 / .sb2 / .sb file`,
-    );
+    throw new ProjectLoadError('invalid', `"${file.name}" is not a valid .sb3 / .sb2 / .sb file`);
   }
   const buf = await file.arrayBuffer();
   await loadProjectFromArrayBuffer(buf);

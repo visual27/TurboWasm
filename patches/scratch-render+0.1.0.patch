@@ -1,0 +1,57 @@
+diff --git a/node_modules/scratch-render/src/PenSkin.js b/node_modules/scratch-render/src/PenSkin.js
+index 762bfbe..df778f6 100644
+--- a/node_modules/scratch-render/src/PenSkin.js
++++ b/node_modules/scratch-render/src/PenSkin.js
+@@ -475,6 +475,16 @@ class PenSkin extends Skin {
+     _setCanvasSize (canvasSize) {
+         const [width, height] = canvasSize;
+ 
++        // TurboWasm: degenerate native-size guard. Zero, non-finite, or
++        // negative dimensions would cause the WebGL texture / framebuffer
++        // creation below and `new ImageData(width, height)` (line 528) to
++        // throw or render garbage. Skip the resize entirely; the next valid
++        // resize will rebuild everything correctly. This can happen when a
++        // custom extension drives the stage size to 0 during project load.
++        if (!(width >= 1) || !(height >= 1)) {
++            // Clear stale silhouette buffers so a later updateSilhouette()
++            // call uses the empty 1x1 fallback in Skin.js instead of trying
++            // to read from a buffer sized to the (now invalid) previous
++            // dimensions.
++            this._silhouetteImageData = null;
++            return;
++        }
++
+         // tw: do not resize if new size === old size
+         if (this._size && this._size[0] === width && this._size[1] === height) {
+             return;
+diff --git a/node_modules/scratch-render/src/RenderWebGL.js b/node_modules/scratch-render/src/RenderWebGL.js
+index 5363d68..ecd836c 100644
+--- a/node_modules/scratch-render/src/RenderWebGL.js
++++ b/node_modules/scratch-render/src/RenderWebGL.js
+@@ -1494,8 +1494,24 @@ class RenderWebGL extends EventEmitter {
+ 
+         // Set a reasonable max limit width and height for the bufferInfo bounds
+         const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+-        const clampedWidth = Math.min(MAX_EXTRACTED_DRAWABLE_DIMENSION, canvasSpaceBounds.width, maxTextureSize);
+-        const clampedHeight = Math.min(MAX_EXTRACTED_DRAWABLE_DIMENSION, canvasSpaceBounds.height, maxTextureSize);
++        let clampedWidth = Math.min(MAX_EXTRACTED_DRAWABLE_DIMENSION, canvasSpaceBounds.width, maxTextureSize);
++        let clampedHeight = Math.min(MAX_EXTRACTED_DRAWABLE_DIMENSION, canvasSpaceBounds.height, maxTextureSize);
++        // TurboWasm: degenerate-bounds guard. A custom extension may call
++        // extractDrawableScreenSpace() before the drawable's skin has a
++        // positive size (e.g. before costume load completes, or for a sprite
++        // with a zero-area hidden skin). Passing (0, h) or (w, 0) to
++        // `new ImageData(data, w, h)` throws a DOMException and aborts
++        // loadProject. Fall back to a 1x1 transparent ImageData with empty
++        // bounds so the extension / project load continues.
++        if (!(clampedWidth >= 1) || !(clampedHeight >= 1)) {
++            return {
++                imageData: new ImageData(1, 1),
++                x: 0,
++                y: 0,
++                width: 0,
++                height: 0
++            };
++        }
+ 
+         // Make a new bufferInfo since this._queryBufferInfo is limited to 480x360
+         const bufferInfo = twgl.createFramebufferInfo(gl, [{format: gl.RGBA}], clampedWidth, clampedHeight);

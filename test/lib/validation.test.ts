@@ -32,7 +32,9 @@ describe('validation', () => {
       expect(await isValidProjectFile(makeFile('a.sb', [1, 2, 3]))).toBe(true);
     });
     it('accepts .sb3 with valid ZIP magic', async () => {
-      expect(await isValidProjectFile(makeFile('a.sb3', [0x50, 0x4b, 0x03, 0x04, 0x99]))).toBe(true);
+      expect(await isValidProjectFile(makeFile('a.sb3', [0x50, 0x4b, 0x03, 0x04, 0x99]))).toBe(
+        true,
+      );
     });
     it('rejects .sb3 with wrong magic', async () => {
       expect(await isValidProjectFile(makeFile('a.sb3', [0xff, 0x00, 0x00, 0x00]))).toBe(false);

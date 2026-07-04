@@ -1,16 +1,22 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useSettingsStore, computeMuteToggle } from '@/stores/useSettingsStore';
 import { DEFAULT_ADVANCED_SETTINGS, VOLUME_MAX } from '@/utils/constants';
+import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 
-describe('useSettingsStore', () => {
+function resetStore(): void {
+  useSettingsStore.setState({
+    theme: 'system',
+    volume: 100,
+    lastNonMuteVolume: 100,
+    advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+    allowedExtensionUrls: [],
+  });
+}
+
+describe('useSettingsStore — basic', () => {
   beforeEach(() => {
     localStorage.clear();
-    useSettingsStore.setState({
-      theme: 'system',
-      volume: 100,
-      lastNonMuteVolume: 100,
-      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
-    });
+    resetStore();
   });
 
   it('updates theme and persists', () => {
@@ -36,11 +42,108 @@ describe('useSettingsStore', () => {
     expect(s.advanced.stageWidth).toBe(DEFAULT_ADVANCED_SETTINGS.stageWidth);
   });
 
-  it('resetAdvanced restores defaults', () => {
+  it('resetAdvanced restores defaults including the allow-list', () => {
     useSettingsStore.getState().patchAdvanced({ fps: 60, stageWidth: 1000 });
+    useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/x.js');
     useSettingsStore.getState().resetAdvanced();
-    expect(useSettingsStore.getState().advanced.fps).toBe(30);
-    expect(useSettingsStore.getState().advanced.stageWidth).toBe(480);
+    const s = useSettingsStore.getState();
+    expect(s.advanced.fps).toBe(30);
+    expect(s.advanced.stageWidth).toBe(480);
+    expect(s.allowedExtensionUrls).toEqual([]);
+  });
+});
+
+describe('useSettingsStore — allowedExtensionUrls', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetStore();
+  });
+
+  it('addAllowedExtensionUrl appends and persists', () => {
+    expect(useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js')).toBe(
+      true,
+    );
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual(['https://example.com/a.js']);
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    expect(JSON.parse(raw as string).state.allowedExtensionUrls).toEqual([
+      'https://example.com/a.js',
+    ]);
+  });
+
+  it('addAllowedExtensionUrl dedupes existing entries', () => {
+    useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js');
+    expect(useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js')).toBe(
+      false,
+    );
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual(['https://example.com/a.js']);
+  });
+
+  it('addAllowedExtensionUrl trims whitespace', () => {
+    useSettingsStore.getState().addAllowedExtensionUrl('  https://example.com/a.js  ');
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual(['https://example.com/a.js']);
+  });
+
+  it('addAllowedExtensionUrl ignores empty input', () => {
+    expect(useSettingsStore.getState().addAllowedExtensionUrl('')).toBe(false);
+    expect(useSettingsStore.getState().addAllowedExtensionUrl('   ')).toBe(false);
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual([]);
+  });
+
+  it('addAllowedExtensionUrl refuses over capacity', () => {
+    const urls = Array.from(
+      { length: ALLOWED_EXTENSION_URLS_MAX },
+      (_, i) => `https://example.com/${i}.js`,
+    );
+    useSettingsStore.setState({ allowedExtensionUrls: [...urls] });
+    expect(useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/extra.js')).toBe(
+      false,
+    );
+    expect(useSettingsStore.getState().allowedExtensionUrls).toHaveLength(
+      ALLOWED_EXTENSION_URLS_MAX,
+    );
+  });
+
+  it('addAllowedExtensionUrls dedupes across the call and against the existing list', () => {
+    useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js');
+    const added = useSettingsStore.getState().addAllowedExtensionUrls([
+      'https://example.com/a.js', // dup vs existing
+      'https://example.com/b.js',
+      'https://example.com/b.js', // dup vs batch
+      '  https://example.com/c.js  ', // trimmed
+    ]);
+    expect(added).toBe(2);
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual([
+      'https://example.com/a.js',
+      'https://example.com/b.js',
+      'https://example.com/c.js',
+    ]);
+  });
+
+  it('addAllowedExtensionUrls returns 0 when nothing new is added', () => {
+    useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js');
+    const added = useSettingsStore
+      .getState()
+      .addAllowedExtensionUrls(['https://example.com/a.js', '']);
+    expect(added).toBe(0);
+  });
+
+  it('removeAllowedExtensionUrl drops an entry and persists', () => {
+    useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js');
+    useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/b.js');
+    expect(useSettingsStore.getState().removeAllowedExtensionUrl('https://example.com/a.js')).toBe(
+      true,
+    );
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual(['https://example.com/b.js']);
+  });
+
+  it('removeAllowedExtensionUrl returns false for unknown URLs', () => {
+    expect(useSettingsStore.getState().removeAllowedExtensionUrl('https://nope.js')).toBe(false);
+  });
+
+  it('clearAllowedExtensionUrls empties the list and persists', () => {
+    useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js');
+    useSettingsStore.getState().clearAllowedExtensionUrls();
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual([]);
   });
 });
 
@@ -76,6 +179,7 @@ describe('useSettingsStore.toggleMute (smart restore)', () => {
       volume: 50,
       lastNonMuteVolume: 50,
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
     });
   });
 

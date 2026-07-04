@@ -5,7 +5,9 @@ import { Button } from '@/components/ui/button';
 import { useProjectLoader } from '@/features/project-loader/useProjectLoader';
 import { useProjectStore } from '@/stores/useProjectStore';
 import { extractProjectId } from '@/utils/project-id';
+import { useErrorLogStore } from '@/stores/useErrorLogStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { executeDebugCommand, isDebugCommand } from '@/features/project-loader/debug-commands';
 import { cn } from '@/lib/utils';
 
 export interface ProjectIdInputProps {
@@ -23,16 +25,21 @@ export interface ProjectIdInputProps {
  *  - a bare numeric Scratch / TurboWarp project ID
  *  - a full URL (e.g. https://scratch.mit.edu/projects/1334154904 or
  *    https://turbowarp.org/1197296165/editor?fps=48&limitless&hqpen)
+ *  - a debug command prefixed with `!` (e.g. `!reset`, `!help`). See
+ *    `src/features/project-loader/debug-commands.ts` for the list.
  *
  * On submit the input value is normalized via `extractProjectId` and the
- * extracted ID is used to load the project. The field clears after a
- * successful submit and shows a loading spinner while the request is in
- * flight, so users can queue another ID without overlapping.
+ * extracted ID is used to load the project. Debug commands bypass the
+ * loader entirely and run their maintenance action synchronously, then
+ * push a feedback message to the error log. The field clears after
+ * either kind of successful submit and shows a loading spinner while
+ * a real load is in flight.
  */
 export function ProjectIdInput({ width }: ProjectIdInputProps): React.JSX.Element {
   const { loadById } = useProjectLoader();
   const loadState = useProjectStore((s) => s.loadState);
   const stageWidth = useSettingsStore((s) => s.advanced.stageWidth);
+  const push = useErrorLogStore((s) => s.push);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [value, setValue] = React.useState<string>('');
 
@@ -43,6 +50,18 @@ export function ProjectIdInput({ width }: ProjectIdInputProps): React.JSX.Elemen
       e.preventDefault();
       const trimmed = value.trim();
       if (!trimmed) return;
+
+      // Debug-command short-circuit: maintainers can type `!help` to
+      // discover the available commands. We surface the result through
+      // the error log so the same UI shows feedback for both successful
+      // and unknown commands. The loader is not invoked.
+      if (isDebugCommand(trimmed)) {
+        const { message, severity } = executeDebugCommand(trimmed);
+        push(severity, message);
+        setValue('');
+        return;
+      }
+
       const extracted = extractProjectId(trimmed);
       if (extracted && extracted !== trimmed) {
         setValue(extracted);
@@ -57,7 +76,7 @@ export function ProjectIdInput({ width }: ProjectIdInputProps): React.JSX.Elemen
         })
         .catch(() => undefined);
     },
-    [loadById, value],
+    [loadById, push, value],
   );
 
   return (
@@ -77,11 +96,11 @@ export function ProjectIdInput({ width }: ProjectIdInputProps): React.JSX.Elemen
           ref={inputRef}
           type="text"
           inputMode="numeric"
-          placeholder="Enter Project ID or paste Scratch / TurboWarp URL"
+          placeholder="Enter Project ID, paste URL"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           disabled={loading}
-          aria-label="Project ID or URL"
+          aria-label="Project ID, URL, or debug command"
           data-testid="project-id-input"
           className={cn(
             'h-9 w-full pl-8 pr-3 text-sm',

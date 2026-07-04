@@ -35,9 +35,7 @@ describe('ErrorLogPanel', () => {
 
   it('uses singular "error" label when there is only one error', () => {
     useErrorLogStore.setState({
-      entries: [
-        { id: 'e1', severity: 'error', message: 'only one', ts: 1, visible: true },
-      ],
+      entries: [{ id: 'e1', severity: 'error', message: 'only one', ts: 1, visible: true }],
     });
     render(<ErrorLogPanel />);
     expect(screen.getByText(/^1 error$/i)).toBeInTheDocument();
@@ -45,9 +43,7 @@ describe('ErrorLogPanel', () => {
 
   it('panel is labelled "Errors"', () => {
     useErrorLogStore.setState({
-      entries: [
-        { id: 'e1', severity: 'error', message: 'err', ts: 1, visible: true },
-      ],
+      entries: [{ id: 'e1', severity: 'error', message: 'err', ts: 1, visible: true }],
     });
     render(<ErrorLogPanel />);
     expect(screen.getByLabelText(/^Errors$/i)).toBeInTheDocument();

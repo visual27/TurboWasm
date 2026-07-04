@@ -107,8 +107,8 @@ describe('StageView fullscreen scaling', () => {
       const { container } = render(<StageView isFullscreen={true} />);
       // Find the element that receives the transform: scale(...) style.
       // The scale wrapper sits inside the inner container.
-      const scaled = Array.from(container.querySelectorAll<HTMLElement>('div')).find(
-        (el) => /transform:\s*scale\(/.test(el.getAttribute('style') ?? ''),
+      const scaled = Array.from(container.querySelectorAll<HTMLElement>('div')).find((el) =>
+        /transform:\s*scale\(/.test(el.getAttribute('style') ?? ''),
       );
       expect(scaled).toBeDefined();
       const style = scaled?.getAttribute('style') ?? '';
@@ -133,8 +133,8 @@ describe('StageView fullscreen scaling', () => {
 
     try {
       const { container } = render(<StageView isFullscreen={false} />);
-      const scaled = Array.from(container.querySelectorAll<HTMLElement>('div')).find(
-        (el) => /transform:\s*scale\(/.test(el.getAttribute('style') ?? ''),
+      const scaled = Array.from(container.querySelectorAll<HTMLElement>('div')).find((el) =>
+        /transform:\s*scale\(/.test(el.getAttribute('style') ?? ''),
       );
       expect(scaled).toBeDefined();
       const style = scaled?.getAttribute('style') ?? '';

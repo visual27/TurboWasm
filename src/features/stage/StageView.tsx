@@ -224,9 +224,7 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
         ref={innerRef}
         className={cn(
           'relative',
-          isFullscreen
-            ? 'flex h-full w-full items-center justify-center'
-            : 'flex justify-center',
+          isFullscreen ? 'flex h-full w-full items-center justify-center' : 'flex justify-center',
         )}
         style={
           isFullscreen

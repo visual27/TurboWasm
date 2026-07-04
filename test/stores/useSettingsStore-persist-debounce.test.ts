@@ -1,12 +1,12 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { useSettingsStore, flushSettingsPersistForTesting } from '@/stores/useSettingsStore';
+import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
 import { writeSettings } from '@/lib/persistence';
 
 // Mock @/lib/persistence so we can observe calls without dealing with
 // SafeStorage's cached reference to the real localStorage instance.
 vi.mock('@/lib/persistence', async () => {
-  const actual =
-    await vi.importActual<typeof import('@/lib/persistence')>('@/lib/persistence');
+  const actual = await vi.importActual<typeof import('@/lib/persistence')>('@/lib/persistence');
   return {
     ...actual,
     writeSettings: vi.fn(),
@@ -20,24 +20,12 @@ describe('useSettingsStore persist debouncing (Phase 3-6 regression)', () => {
     mockedWrite.mockClear();
     mockedWrite.mockImplementation(() => undefined);
     // Reset the store to a known state. The actual localStorage state is
-    // irrelevant here — writeSettings is mocked.
+    // irrelevant here 窶・writeSettings is mocked.
     useSettingsStore.setState({
       theme: 'system',
       volume: 100,
       lastNonMuteVolume: 100,
-      advanced: {
-        fps: 30,
-        interpolation: false,
-        highQualityPen: false,
-        warpTimer: false,
-        infiniteClones: false,
-        removeFencing: false,
-        removeMiscLimits: false,
-        turboMode: false,
-        disableCompiler: false,
-        stageWidth: 480,
-        stageHeight: 360,
-      },
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     });
   });
 

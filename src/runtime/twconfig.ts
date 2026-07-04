@@ -1,4 +1,4 @@
-import type { AdvancedSettings } from '@/types/settings';
+import type { AdvancedSettings, ExtensionSandboxMode } from '@/types/settings';
 
 interface RawProjectJson {
   comments?: unknown;
@@ -27,6 +27,7 @@ const SUPPORTED_KEYS: ReadonlyArray<keyof AdvancedSettings> = [
   'disableCompiler',
   'stageWidth',
   'stageHeight',
+  'extensionSandboxMode',
 ];
 
 function isFiniteNumber(v: unknown): v is number {
@@ -54,6 +55,11 @@ function coerceStageDim(v: unknown): number | null {
   return Math.round(v);
 }
 
+function coerceSandboxMode(v: unknown): ExtensionSandboxMode | null {
+  if (v === 'worker' || v === 'iframe' || v === 'unsandboxed') return v;
+  return null;
+}
+
 function mapKeyToAdvanced(key: string, value: unknown): Partial<AdvancedSettings> | null {
   if (!SUPPORTED_KEYS.includes(key as keyof AdvancedSettings)) return null;
   switch (key) {
@@ -76,9 +82,11 @@ function mapKeyToAdvanced(key: string, value: unknown): Partial<AdvancedSettings
     case 'turboMode':
     case 'disableCompiler': {
       const b = coerceBoolean(value);
-      return b !== null
-        ? ({ [key]: b } as unknown as Partial<AdvancedSettings>)
-        : null;
+      return b !== null ? ({ [key]: b } as unknown as Partial<AdvancedSettings>) : null;
+    }
+    case 'extensionSandboxMode': {
+      const mode = coerceSandboxMode(value);
+      return mode !== null ? { extensionSandboxMode: mode } : null;
     }
     default:
       return null;

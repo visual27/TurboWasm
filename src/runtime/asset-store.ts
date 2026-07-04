@@ -1,7 +1,4 @@
-import type {
-  ScaffoldingInstance,
-  ScratchStorageLike,
-} from '@/runtime/scaffolding-types';
+import type { ScaffoldingInstance, ScratchStorageLike } from '@/runtime/scaffolding-types';
 
 let webStoreRegistered = false;
 

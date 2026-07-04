@@ -14,7 +14,10 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   disableCompiler: false,
   stageWidth: 480,
   stageHeight: 360,
+  extensionSandboxMode: 'worker',
 };
+
+export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
 
 export const STAGE_MIN_WIDTH = 1;
 export const STAGE_MAX_WIDTH = 8192;

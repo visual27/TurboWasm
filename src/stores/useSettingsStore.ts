@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import type { AdvancedSettings, Theme } from '@/types/settings';
-import { DEFAULT_ADVANCED_SETTINGS, VOLUME_MAX, VOLUME_MIN } from '@/utils/constants';
+import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
+import {
+  DEFAULT_ADVANCED_SETTINGS,
+  DEFAULT_ALLOWED_EXTENSION_URLS,
+  VOLUME_MAX,
+  VOLUME_MIN,
+} from '@/utils/constants';
 import { clampVolume } from '@/utils/format';
 import { readSettings, writeSettings } from '@/lib/persistence';
 
@@ -22,6 +28,13 @@ export interface SettingsState {
    */
   lastNonMuteVolume: number;
   advanced: AdvancedSettings;
+  /**
+   * Persistent allow-list of custom extension URLs the user has previously
+   * approved. These URLs are loaded automatically on subsequent project
+   * loads without re-prompting. Bounded by
+   * {@link ALLOWED_EXTENSION_URLS_MAX}.
+   */
+  allowedExtensionUrls: string[];
   setTheme: (theme: Theme) => void;
   setVolume: (volume: number) => void;
   /**
@@ -36,6 +49,26 @@ export interface SettingsState {
   setAdvanced: (next: AdvancedSettings) => void;
   patchAdvanced: (patch: Partial<AdvancedSettings>) => void;
   resetAdvanced: () => void;
+  /**
+   * Append one URL to the persistent allow-list. No-op if already present
+   * or if the list is at capacity. Returns true if the list changed.
+   */
+  addAllowedExtensionUrl: (url: string) => boolean;
+  /**
+   * Append many URLs to the persistent allow-list. Duplicates against
+   * the existing list and within `urls` are dropped. Returns the number
+   * of URLs that were newly added.
+   */
+  addAllowedExtensionUrls: (urls: readonly string[]) => number;
+  /**
+   * Remove a URL from the persistent allow-list. Returns true if the
+   * list changed.
+   */
+  removeAllowedExtensionUrl: (url: string) => boolean;
+  /**
+   * Clear the entire allow-list. Used by the Settings reset action.
+   */
+  clearAllowedExtensionUrls: () => void;
 }
 
 const initial = readSettings();
@@ -87,13 +120,15 @@ function schedulePersist(snapshot: SettingsState): void {
           volume: snap.volume,
           lastNonMuteVolume: snap.lastNonMuteVolume,
           advanced: snap.advanced,
+          allowedExtensionUrls: snap.allowedExtensionUrls,
         });
       }
     };
-    if (typeof (globalThis as { requestIdleCallback?: (cb: () => void) => void })
-      .requestIdleCallback === 'function') {
-      (globalThis as { requestIdleCallback: (cb: () => void) => void })
-        .requestIdleCallback(cb);
+    if (
+      typeof (globalThis as { requestIdleCallback?: (cb: () => void) => void })
+        .requestIdleCallback === 'function'
+    ) {
+      (globalThis as { requestIdleCallback: (cb: () => void) => void }).requestIdleCallback(cb);
     } else {
       // Fallback for environments without requestIdleCallback (older Safari,
       // Node, jsdom). The 50 ms delay keeps it off the immediate paint path
@@ -112,6 +147,7 @@ function persistImmediate(state: SettingsState): void {
     volume: state.volume,
     lastNonMuteVolume: state.lastNonMuteVolume,
     advanced: state.advanced,
+    allowedExtensionUrls: state.allowedExtensionUrls,
   });
 }
 
@@ -123,6 +159,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // 100 % fallback is applied at toggle time, so we can keep this 0 here.
   lastNonMuteVolume: initial.lastNonMuteVolume ?? initial.volume,
   advanced: initial.advanced,
+  allowedExtensionUrls: [...initial.allowedExtensionUrls],
   setTheme: (theme) => {
     set({ theme });
     persistImmediate(get());
@@ -154,7 +191,51 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     schedulePersist(get());
   },
   resetAdvanced: () => {
-    set({ advanced: { ...DEFAULT_ADVANCED_SETTINGS } });
+    set({
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
+    });
+    persistImmediate(get());
+  },
+  addAllowedExtensionUrl: (url) => {
+    const trimmed = url.trim();
+    if (trimmed.length === 0) return false;
+    const current = get().allowedExtensionUrls;
+    if (current.includes(trimmed)) return false;
+    if (current.length >= ALLOWED_EXTENSION_URLS_MAX) return false;
+    set({ allowedExtensionUrls: [...current, trimmed] });
+    persistImmediate(get());
+    return true;
+  },
+  addAllowedExtensionUrls: (urls) => {
+    const current = get().allowedExtensionUrls;
+    const seen = new Set(current);
+    const additions: string[] = [];
+    for (const raw of urls) {
+      const trimmed = typeof raw === 'string' ? raw.trim() : '';
+      if (trimmed.length === 0) continue;
+      if (seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      additions.push(trimmed);
+      if (current.length + additions.length >= ALLOWED_EXTENSION_URLS_MAX) break;
+    }
+    if (additions.length === 0) return 0;
+    set({ allowedExtensionUrls: [...current, ...additions] });
+    persistImmediate(get());
+    return additions.length;
+  },
+  removeAllowedExtensionUrl: (url) => {
+    const trimmed = url.trim();
+    if (trimmed.length === 0) return false;
+    const current = get().allowedExtensionUrls;
+    const next = current.filter((u) => u !== trimmed);
+    if (next.length === current.length) return false;
+    set({ allowedExtensionUrls: next });
+    persistImmediate(get());
+    return true;
+  },
+  clearAllowedExtensionUrls: () => {
+    set({ allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS] });
     persistImmediate(get());
   },
 }));
@@ -173,6 +254,7 @@ export function flushSettingsPersistForTesting(): void {
       volume: snap.volume,
       lastNonMuteVolume: snap.lastNonMuteVolume,
       advanced: snap.advanced,
+      allowedExtensionUrls: snap.allowedExtensionUrls,
     });
   }
 }

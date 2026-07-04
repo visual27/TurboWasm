@@ -80,9 +80,7 @@ describe('useProjectUrlSync', () => {
   });
 
   it('updates the hash when currentId changes', () => {
-    const { result } = renderHook(() =>
-      useProjectUrlSync({ loadById: loadByIdMock }),
-    );
+    const { result } = renderHook(() => useProjectUrlSync({ loadById: loadByIdMock }));
     void result; // unused, just to invoke the hook
     act(() => {
       useProjectStore.getState().setReadyFromId('1234567890', {
@@ -95,9 +93,7 @@ describe('useProjectUrlSync', () => {
 
   it('clears the hash when currentId is reset to null', () => {
     window.location.hash = '#1234567890';
-    const { result } = renderHook(() =>
-      useProjectUrlSync({ loadById: loadByIdMock }),
-    );
+    const { result } = renderHook(() => useProjectUrlSync({ loadById: loadByIdMock }));
     void result;
     act(() => {
       useProjectStore.getState().setReadyFromId('1234567890', {

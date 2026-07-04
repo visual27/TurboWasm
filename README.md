@@ -22,6 +22,7 @@ This project is **not** a Scratch editor — it is a read-only player for `.sb3`
 
 ```bash
 npm install
+cd vendored/scaffolding && npm install && npm run build && cd ../..
 npm run dev      # start dev server
 npm run build    # production build → dist/
 npm run preview  # preview built output
@@ -29,6 +30,26 @@ npm test         # run unit tests
 npm run lint     # run ESLint
 npm run typecheck
 ```
+
+### Vendored scaffolding & scratch-render patch
+
+`vendored/scaffolding/node_modules/scratch-render` carries a small in-tree patch
+(see `patches/scratch-render+0.1.0.patch`) that guards against the
+`Failed to construct 'ImageData': The source height is zero or not a number`
+DOMException thrown by `RenderWebGL.extractDrawableScreenSpace` /
+`PenSkin._setCanvasSize` when a custom extension drives a drawable or the
+stage into a degenerate (zero-area) state at load time. The patch is applied
+automatically by the `postinstall` hook once `vendored/scaffolding/node_modules`
+is in place. Re-run it manually at any time with:
+
+```bash
+npm run apply:scratch-render-patch
+```
+
+If you ever need to regenerate the patch after touching scratch-render sources,
+use `npx patch-package scratch-render --cwd vendored/scaffolding` (then move
+the resulting `patches/scratch-render+0.1.0.patch` to the project root if it
+was generated inside `vendored/`).
 
 The build output in `dist/` is a fully static site. Deploy the contents of `dist/` to any static host (Cloudflare Pages, GitHub Pages, Netlify, Vercel static, etc.) — no server-side runtime required.
 
@@ -54,18 +75,18 @@ Feature First architecture: each feature owns its UI and state hooks. Cross-feat
 
 The Settings dialog maps directly to the TurboWarp VM/Runtime APIs:
 
-| Setting              | Target                                       |
-| -------------------- | -------------------------------------------- |
-| FPS                  | `vm.runtime.frameLoop.setFramerate(v)`       |
-| Interpolation        | `vm.runtime.frameLoop.setInterpolation(v)`   |
-| High Quality Pen     | `vm.renderer.setUseHighQualityRender(v)`     |
-| Warp Timer           | `vm.runtime.setCompilerOptions({warpTimer})` |
-| Infinite Clones      | `vm.runtime.setRuntimeOptions({maxClones: ∞})` |
-| Remove Fencing       | `vm.runtime.setRuntimeOptions({fencing: false})` |
+| Setting              | Target                                              |
+| -------------------- | --------------------------------------------------- |
+| FPS                  | `vm.runtime.frameLoop.setFramerate(v)`              |
+| Interpolation        | `vm.runtime.frameLoop.setInterpolation(v)`          |
+| High Quality Pen     | `vm.renderer.setUseHighQualityRender(v)`            |
+| Warp Timer           | `vm.runtime.setCompilerOptions({warpTimer})`        |
+| Infinite Clones      | `vm.runtime.setRuntimeOptions({maxClones: ∞})`      |
+| Remove Fencing       | `vm.runtime.setRuntimeOptions({fencing: false})`    |
 | Remove Misc Limits   | `vm.runtime.setRuntimeOptions({miscLimits: false})` |
-| Turbo Mode           | `vm.setTurboMode(v)`                          |
-| Disable Compiler     | `vm.runtime.setCompilerOptions({enabled: !v})` |
-| Stage Width / Height | `vm.setStageSize(w, h)`                       |
+| Turbo Mode           | `vm.setTurboMode(v)`                                |
+| Disable Compiler     | `vm.runtime.setCompilerOptions({enabled: !v})`      |
+| Stage Width / Height | `vm.setStageSize(w, h)`                             |
 
 ## Extension points
 
@@ -76,9 +97,9 @@ Future extensions (Addons, Cloud Variables) plug into runtime via two interfaces
 
 ## Environment variables
 
-| Variable                 | Purpose                                | Default                                       |
-| ------------------------ | -------------------------------------- | --------------------------------------------- |
-| `VITE_GITHUB_REPO_URL`   | Target URL of the GitHub icon (top-right) | `https://github.com/visual27/TurboWasm`    |
+| Variable               | Purpose                                   | Default                                 |
+| ---------------------- | ----------------------------------------- | --------------------------------------- |
+| `VITE_GITHUB_REPO_URL` | Target URL of the GitHub icon (top-right) | `https://github.com/visual27/TurboWasm` |
 
 Vite injects build-time values; changing them requires a rebuild.
 

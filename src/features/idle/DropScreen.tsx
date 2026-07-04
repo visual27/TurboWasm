@@ -47,7 +47,10 @@ export function DropScreen(): React.JSX.Element {
   );
 
   return (
-    <div className="flex w-full max-w-md flex-col items-center gap-8 py-6 text-center" data-testid="drop-screen">
+    <div
+      className="flex w-full max-w-md flex-col items-center gap-8 py-6 text-center"
+      data-testid="drop-screen"
+    >
       <p className="text-sm text-muted-foreground">
         Drag an <span className="font-medium text-foreground">.sb3</span> file anywhere on the page
       </p>

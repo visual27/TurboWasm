@@ -20,10 +20,9 @@ describe('twconfig parser', () => {
       disableCompiler: true,
       stageWidth: 640,
       stageHeight: 480,
+      extensionSandboxMode: 'unsandboxed',
     });
-    const comments = [
-      { text: `header\n// _twconfig_\n${json}\nfooter` },
-    ];
+    const comments = [{ text: `header\n// _twconfig_\n${json}\nfooter` }];
     expect(parseTwconfigFromComments(comments)).toEqual({
       fps: 60,
       interpolation: true,
@@ -36,7 +35,35 @@ describe('twconfig parser', () => {
       disableCompiler: true,
       stageWidth: 640,
       stageHeight: 480,
+      extensionSandboxMode: 'unsandboxed',
     });
+  });
+
+  it('parses the extension security fields in isolation', () => {
+    // `allowProjectExtensions` is no longer supported — extension loading
+    // is now per-URL via the Extension Permission dialog. Projects that
+    // still set it should be silently ignored.
+    expect(
+      parseTwconfigFromComments([{ text: '// _twconfig_\n{"allowProjectExtensions": true}' }]),
+    ).toEqual({});
+
+    expect(
+      parseTwconfigFromComments([{ text: '// _twconfig_\n{"extensionSandboxMode": "iframe"}' }]),
+    ).toEqual({ extensionSandboxMode: 'iframe' });
+  });
+
+  it('rejects unknown sandbox modes', () => {
+    expect(
+      parseTwconfigFromComments([
+        { text: '// _twconfig_\n{"extensionSandboxMode": "totally-isolated"}' },
+      ]),
+    ).toEqual({});
+  });
+
+  it('silently drops the legacy allowProjectExtensions field', () => {
+    expect(
+      parseTwconfigFromComments([{ text: '// _twconfig_\n{"allowProjectExtensions": "yes"}' }]),
+    ).toEqual({});
   });
 
   it('ignores unknown keys silently', () => {

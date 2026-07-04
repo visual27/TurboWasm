@@ -16,6 +16,7 @@ import { useErrorLogStore } from '@/stores/useErrorLogStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useTheme } from '@/hooks/useTheme';
 import { useProjectUrlSync } from '@/hooks/useProjectUrlSync';
+import { ExtensionPermissionDialog } from '@/features/extension-permission/ExtensionPermissionDialog';
 import { cn } from '@/lib/utils';
 
 // Lazy-load the two dialogs so their bodies (and the Radix primitives they
@@ -200,9 +201,7 @@ export function App(): React.JSX.Element {
             <div
               className={cn(
                 'flex items-center justify-center border border-border/40',
-                isFullscreen
-                  ? 'h-full w-full border-0 overflow-visible'
-                  : 'overflow-hidden',
+                isFullscreen ? 'h-full w-full border-0 overflow-visible' : 'overflow-hidden',
               )}
             >
               <StageView isFullscreen={isFullscreen} />
@@ -264,6 +263,13 @@ export function App(): React.JSX.Element {
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
           <CreditsDialog open={creditsOpen} onOpenChange={setCreditsOpen} />
         </React.Suspense>
+        {/*
+          The Extension Permission dialog drives its own visibility from
+          the runtime: the player invokes the registered request function
+          when a project asks for custom extensions, and the dialog
+          resolves the promise with the user's decision.
+        */}
+        <ExtensionPermissionDialog />
       </div>
     </TooltipProvider>
   );

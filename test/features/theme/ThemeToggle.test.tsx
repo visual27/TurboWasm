@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
 import { ThemeToggle } from '@/features/theme/ThemeToggle';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useErrorLogStore } from '@/stores/useErrorLogStore';
@@ -29,19 +30,7 @@ describe('ThemeToggle vertical dropdown', () => {
     useSettingsStore.setState({
       theme: 'system',
       volume: 100,
-      advanced: {
-        fps: 30,
-        interpolation: false,
-        highQualityPen: false,
-        warpTimer: false,
-        infiniteClones: false,
-        removeFencing: false,
-        removeMiscLimits: false,
-        turboMode: false,
-        disableCompiler: false,
-        stageWidth: 480,
-        stageHeight: 360,
-      },
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     });
     useErrorLogStore.setState({ entries: [] });
   });
@@ -93,19 +82,7 @@ describe('ThemeToggle upload button', () => {
     useSettingsStore.setState({
       theme: 'system',
       volume: 100,
-      advanced: {
-        fps: 30,
-        interpolation: false,
-        highQualityPen: false,
-        warpTimer: false,
-        infiniteClones: false,
-        removeFencing: false,
-        removeMiscLimits: false,
-        turboMode: false,
-        disableCompiler: false,
-        stageWidth: 480,
-        stageHeight: 360,
-      },
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     });
     useErrorLogStore.setState({ entries: [] });
   });

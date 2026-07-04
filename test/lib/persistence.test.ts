@@ -13,6 +13,7 @@ describe('persistence', () => {
       theme: 'system',
       volume: 100,
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
     });
   });
 
@@ -22,6 +23,7 @@ describe('persistence', () => {
       volume: 42,
       lastNonMuteVolume: 42,
       advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 60, stageWidth: 800 },
+      allowedExtensionUrls: ['https://example.com/a.js'],
     });
     const settings = readSettings();
     expect(settings.theme).toBe('dark');
@@ -29,6 +31,7 @@ describe('persistence', () => {
     expect(settings.lastNonMuteVolume).toBe(42);
     expect(settings.advanced.fps).toBe(60);
     expect(settings.advanced.stageWidth).toBe(800);
+    expect(settings.allowedExtensionUrls).toEqual(['https://example.com/a.js']);
   });
 
   it('clamps out-of-range values when reading', () => {
@@ -66,5 +69,146 @@ describe('persistence', () => {
     const settings = readSettings();
     expect(settings.theme).toBe('system');
     expect(settings.volume).toBe(100);
+  });
+
+  it('round-trips the extension sandbox mode field', () => {
+    writeSettings({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: {
+        ...DEFAULT_ADVANCED_SETTINGS,
+        extensionSandboxMode: 'iframe',
+      },
+      allowedExtensionUrls: [],
+    });
+    const settings = readSettings();
+    expect(settings.advanced.extensionSandboxMode).toBe('iframe');
+  });
+
+  it('falls back to safe defaults when extension fields are missing or invalid', () => {
+    // Simulate a snapshot from before the extensionSandboxMode field
+    // existed (the key is absent entirely).
+    localStorage.setItem(
+      STORAGE_KEYS.settings,
+      JSON.stringify({
+        state: {
+          theme: 'system',
+          volume: 100,
+          lastNonMuteVolume: 100,
+          advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        },
+        version: 1,
+      }),
+    );
+    const settings = readSettings();
+    expect(settings.advanced.extensionSandboxMode).toBe('worker');
+
+    // Now simulate the key being present but with a bogus value.
+    localStorage.setItem(
+      STORAGE_KEYS.settings,
+      JSON.stringify({
+        state: {
+          theme: 'system',
+          volume: 100,
+          lastNonMuteVolume: 100,
+          advanced: {
+            ...DEFAULT_ADVANCED_SETTINGS,
+            extensionSandboxMode: 'nonsense',
+          },
+        },
+        version: 1,
+      }),
+    );
+    const settings2 = readSettings();
+    expect(settings2.advanced.extensionSandboxMode).toBe('worker');
+  });
+
+  it('silently drops the legacy allowProjectExtensions field', () => {
+    // Snapshots from before the rewrite stored allowProjectExtensions
+    // inside `advanced`. The new shape no longer has that field; the
+    // migration just ignores it.
+    localStorage.setItem(
+      STORAGE_KEYS.settings,
+      JSON.stringify({
+        state: {
+          theme: 'dark',
+          volume: 100,
+          lastNonMuteVolume: 100,
+          advanced: {
+            ...DEFAULT_ADVANCED_SETTINGS,
+            allowProjectExtensions: true,
+          },
+        },
+        version: 1,
+      }),
+    );
+    const settings = readSettings();
+    expect(settings.theme).toBe('dark');
+    // The legacy field is no longer part of the typed shape — verify
+    // the surviving keys are exactly the post-rewrite ones.
+    expect(Object.keys(settings.advanced).sort()).toEqual(
+      [
+        'disableCompiler',
+        'extensionSandboxMode',
+        'fps',
+        'highQualityPen',
+        'infiniteClones',
+        'interpolation',
+        'removeFencing',
+        'removeMiscLimits',
+        'stageHeight',
+        'stageWidth',
+        'turboMode',
+        'warpTimer',
+      ].sort(),
+    );
+  });
+
+  it('round-trips the persistent allow-list with de-duplication', () => {
+    writeSettings({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [
+        'https://example.com/a.js',
+        'https://example.com/a.js', // duplicate
+        '  https://example.com/b.js  ', // trimmed
+      ],
+    });
+    const settings = readSettings();
+    expect(settings.allowedExtensionUrls).toEqual([
+      'https://example.com/a.js',
+      'https://example.com/b.js',
+    ]);
+  });
+
+  it('drops empty / non-string entries from the persistent allow-list', () => {
+    localStorage.setItem(
+      STORAGE_KEYS.settings,
+      JSON.stringify({
+        state: {
+          theme: 'system',
+          volume: 100,
+          lastNonMuteVolume: 100,
+          advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+          allowedExtensionUrls: [
+            'https://example.com/a.js',
+            '',
+            '   ',
+            42,
+            null,
+            'https://example.com/b.js',
+          ],
+        },
+        version: 1,
+      }),
+    );
+    const settings = readSettings();
+    expect(settings.allowedExtensionUrls).toEqual([
+      'https://example.com/a.js',
+      'https://example.com/b.js',
+    ]);
   });
 });

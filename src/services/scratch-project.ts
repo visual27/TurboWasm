@@ -5,8 +5,7 @@ import { extractProjectId } from '@/utils/project-id';
 const TRAMPOLINE_METADATA_URL = (id: string): string =>
   `https://trampoline.turbowarp.org/api/projects/${id}`;
 
-const SCRATCH_METADATA_URL = (id: string): string =>
-  `https://api.scratch.mit.edu/projects/${id}`;
+const SCRATCH_METADATA_URL = (id: string): string => `https://api.scratch.mit.edu/projects/${id}`;
 const SCRATCH_PROJECT_URL = (id: string, token: string): string =>
   `https://projects.scratch.mit.edu/${id}?token=${token}`;
 
@@ -149,10 +148,7 @@ async function tryScratch(id: string): Promise<ProjectFetchResult> {
         `Project data not available (HTTP 404). It may be unshared or age-restricted.`,
       );
     }
-    throw new ProjectLoadError(
-      'network',
-      `Failed to fetch project data: HTTP ${dataRes.status}`,
-    );
+    throw new ProjectLoadError('network', `Failed to fetch project data: HTTP ${dataRes.status}`);
   }
   const data = await dataRes.arrayBuffer();
   return {

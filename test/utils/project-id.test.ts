@@ -33,9 +33,7 @@ describe('extractProjectId', () => {
   });
 
   it('extracts the ID from a TurboWarp embed URL', () => {
-    expect(extractProjectId('https://turbowarp.org/embed.html?id=1197296165')).toBe(
-      '1197296165',
-    );
+    expect(extractProjectId('https://turbowarp.org/embed.html?id=1197296165')).toBe('1197296165');
   });
 
   it('trims surrounding whitespace', () => {

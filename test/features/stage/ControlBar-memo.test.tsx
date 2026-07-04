@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import * as React from 'react';
 import { render } from '@testing-library/react';
 import { ControlBar } from '@/features/stage/ControlBar';
+import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlayerStore } from '@/stores/usePlayerStore';
@@ -25,19 +26,7 @@ describe('ControlBar React.memo (Phase 3-1 regression)', () => {
       theme: 'system',
       volume: 50,
       lastNonMuteVolume: 50,
-      advanced: {
-        fps: 30,
-        interpolation: false,
-        highQualityPen: false,
-        warpTimer: false,
-        infiniteClones: false,
-        removeFencing: false,
-        removeMiscLimits: false,
-        turboMode: false,
-        disableCompiler: false,
-        stageWidth: 480,
-        stageHeight: 360,
-      },
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     });
     usePlayerStore.setState({
       isPlaying: false,

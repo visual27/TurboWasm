@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyExtensionPermissionDecision,
   ensurePlayerReady,
+  errorMessage,
+  getExtensionPermissionRequest,
   initPlayer,
   isPlayerReady,
+  setExtensionPermissionRequest,
   __resetPlayerReadyForTesting,
   pause,
   resume,
@@ -11,10 +15,13 @@ import {
   play,
 } from '@/runtime/player';
 import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
+import { getScaffoldingInstance, resetScaffoldingForTesting } from '@/lib/scaffolding';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 import {
-  getScaffoldingInstance,
-  resetScaffoldingForTesting,
-} from '@/lib/scaffolding';
+  __resetSessionDeniedUrlsForTesting,
+  addSessionDeniedExtensionUrl,
+} from '@/runtime/extension-security';
+import type { ExtensionPermissionRequest } from '@/runtime/player';
 
 function makeContainer(): HTMLElement {
   const el = document.createElement('div');
@@ -123,7 +130,9 @@ describe('pause/resume state semantics', () => {
 
   it('stop() resets both isPlaying and isPaused', () => {
     const seen: { isPlaying: boolean; isPaused: boolean }[] = [];
-    const unsub = subscribePlayerState((s) => seen.push({ isPlaying: s.isPlaying, isPaused: s.isPaused }));
+    const unsub = subscribePlayerState((s) =>
+      seen.push({ isPlaying: s.isPlaying, isPaused: s.isPaused }),
+    );
 
     // simulate running then pausing then stopping
     pause();
@@ -315,5 +324,210 @@ describe('PROJECT_RUN_STOP event is ignored while paused', () => {
     onStop();
     expect(state.isPaused).toBe(false);
     expect(state.isPlaying).toBe(false);
+  });
+});
+
+describe('errorMessage (loadProject error wrapper)', () => {
+  // Regression: upstream scratch-vm's loadProject() deliberately
+  // rejects with `JSON.stringify(error)` (a raw string) when
+  // `error.validationError` is set. The previous wrapper read
+  // `(err as Error).message` on that string, which yielded
+  // `undefined`, producing the user-visible "Failed to load project:
+  // undefined" error. These tests pin down the safe extraction.
+
+  it('returns the .message of an Error instance', () => {
+    expect(errorMessage(new Error('boom'))).toBe('boom');
+    expect(errorMessage(new TypeError('bad arg'))).toBe('bad arg');
+  });
+
+  it('falls back to Error.name when .message is empty', () => {
+    const e = new Error('');
+    e.name = 'CustomError';
+    expect(errorMessage(e)).toBe('CustomError');
+  });
+
+  it('falls back to the default Error name when both message and a custom name are empty', () => {
+    // A fresh Error('') has message = '' and name = 'Error'. The
+    // function should return the class name (truthy) rather than the
+    // placeholder, which is only reached when both are empty.
+    const e = new Error('');
+    e.name = '';
+    expect(errorMessage(e)).toBe('<empty Error>');
+  });
+
+  it('returns a raw string as-is (validation-error path)', () => {
+    // The exact path the bug came from: scratch-vm rejects with
+    // `JSON.stringify(error)` which is a plain string.
+    const validationError = JSON.stringify({
+      validationError: 'invalid sb3',
+      reason: 'corrupt',
+    });
+    expect(errorMessage(validationError)).toBe(validationError);
+    // The pre-fix behavior was "undefined" — assert we never produce
+    // that for the offending shape.
+    expect(errorMessage(validationError)).not.toBe('undefined');
+  });
+
+  it('returns "<empty string>" for an empty string', () => {
+    expect(errorMessage('')).toBe('<empty string>');
+  });
+
+  it('returns "undefined" for an undefined value', () => {
+    expect(errorMessage(undefined)).toBe('undefined');
+  });
+
+  it('returns "null" for a null value', () => {
+    expect(errorMessage(null)).toBe('null');
+  });
+
+  it('returns String(value) for primitive non-string non-undefined', () => {
+    expect(errorMessage(42)).toBe('42');
+    expect(errorMessage(true)).toBe('true');
+  });
+
+  it('returns .message when an object has a string message', () => {
+    expect(errorMessage({ message: 'from obj' })).toBe('from obj');
+  });
+
+  it('returns JSON.stringify when an object has no message', () => {
+    expect(errorMessage({ code: 'E1', detail: 'x' })).toBe(
+      JSON.stringify({ code: 'E1', detail: 'x' }),
+    );
+  });
+
+  it('handles objects with circular references without throwing', () => {
+    const obj: Record<string, unknown> = { name: 'loop' };
+    obj.self = obj;
+    const result = errorMessage(obj);
+    // The function must not throw. The exact text is implementation-
+    // defined; the contract is "no throw and a non-empty string".
+    expect(typeof result).toBe('string');
+    expect(result.length).toBeGreaterThan(0);
+  });
+});
+
+describe('Extension Permission request bridge', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+    });
+    __resetSessionDeniedUrlsForTesting();
+    setExtensionPermissionRequest(null);
+  });
+
+  it('returns null when no request handler is registered', () => {
+    expect(getExtensionPermissionRequest()).toBeNull();
+  });
+
+  it('registers and clears the request handler', () => {
+    const handler: ExtensionPermissionRequest = vi.fn(
+      async (): ReturnType<ExtensionPermissionRequest> => ({
+        allowedUrls: new Set<string>(),
+        sandboxMode: 'worker',
+        sessionDeniedUrls: [],
+      }),
+    );
+    setExtensionPermissionRequest(handler);
+    expect(getExtensionPermissionRequest()).toBe(handler);
+    setExtensionPermissionRequest(null);
+    expect(getExtensionPermissionRequest()).toBeNull();
+  });
+
+  it('invokes the registered handler with the entries provided', async () => {
+    const handler = vi.fn(
+      async (): ReturnType<ExtensionPermissionRequest> => ({
+        allowedUrls: new Set<string>(['https://example.com/foo.js']),
+        sandboxMode: 'worker' as const,
+        sessionDeniedUrls: ['https://example.com/bar.js'],
+      }),
+    );
+    setExtensionPermissionRequest(handler);
+    const fn = getExtensionPermissionRequest();
+    expect(fn).not.toBeNull();
+    const decision = await fn!([
+      { id: 'foo', url: 'https://example.com/foo.js' },
+      { id: 'bar', url: 'https://example.com/bar.js' },
+    ]);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(decision.allowedUrls).toEqual(new Set(['https://example.com/foo.js']));
+  });
+});
+
+describe('applyExtensionPermissionDecision', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+    });
+    __resetSessionDeniedUrlsForTesting();
+  });
+
+  it('persists the chosen sandbox mode to advanced settings', () => {
+    expect(useSettingsStore.getState().advanced.extensionSandboxMode).toBe('worker');
+    applyExtensionPermissionDecision({
+      allowedUrls: new Set(),
+      sandboxMode: 'iframe',
+      sessionDeniedUrls: [],
+    });
+    expect(useSettingsStore.getState().advanced.extensionSandboxMode).toBe('iframe');
+  });
+
+  it('adds allowed URLs to the persistent allow-list', () => {
+    applyExtensionPermissionDecision({
+      allowedUrls: new Set(['https://example.com/a.js', 'https://example.com/b.js']),
+      sandboxMode: 'worker',
+      sessionDeniedUrls: [],
+    });
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual([
+      'https://example.com/a.js',
+      'https://example.com/b.js',
+    ]);
+  });
+
+  it('adds session-denied URLs to the in-memory deny list', () => {
+    applyExtensionPermissionDecision({
+      allowedUrls: new Set(),
+      sandboxMode: 'worker',
+      sessionDeniedUrls: ['https://example.com/bad.js'],
+    });
+    // Session deny list is module-private; we verify it via the security
+    // manager's behavior (see extension-security tests for that).
+    // The integration: importing the helper should not throw, and the
+    // settings store should not be polluted by denied URLs.
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual([]);
+  });
+
+  it('does not add anything when the decision has no URLs and mode is unchanged', () => {
+    const before = useSettingsStore.getState();
+    applyExtensionPermissionDecision({
+      allowedUrls: new Set(),
+      sandboxMode: 'worker',
+      sessionDeniedUrls: [],
+    });
+    const after = useSettingsStore.getState();
+    expect(after.allowedExtensionUrls).toEqual(before.allowedExtensionUrls);
+    expect(after.advanced.extensionSandboxMode).toBe('worker');
+  });
+
+  it('a previously session-denied URL can be allowed later in the same session', () => {
+    addSessionDeniedExtensionUrl('https://example.com/x.js');
+    applyExtensionPermissionDecision({
+      allowedUrls: new Set(['https://example.com/x.js']),
+      sandboxMode: 'worker',
+      sessionDeniedUrls: [],
+    });
+    // The persistent allow-list now contains the URL. The security
+    // manager consults the persistent list first, so this is enough for
+    // the VM to load it even though it was previously session-denied.
+    expect(useSettingsStore.getState().allowedExtensionUrls).toEqual(['https://example.com/x.js']);
   });
 });

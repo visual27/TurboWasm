@@ -13,13 +13,22 @@ export interface ConfigureScaffoldingArgs {
 async function loadCtor(): Promise<new () => ScaffoldingInstance> {
   if (ctorPromise) return ctorPromise;
   ctorPromise = (async () => {
+    // The Scaffolding package ships a UMD bundle. Under Vite (and esbuild's
+    // CJS-to-ESM conversion) the bundle's `module.exports = factory()` becomes
+    // the module's `default` export, with no automatic named-export
+    // promotion. We therefore have to look in two places:
+    //   1. `mod.Scaffolding` — when the loader emits named exports directly
+    //   2. `mod.default.Scaffolding` — when the module is the CJS default
+    //      wrapper around the UMD factory result
     const mod = (await import('@turbowarp/scaffolding')) as unknown as {
       Scaffolding?: new () => ScaffoldingInstance;
+      default?: { Scaffolding?: new () => ScaffoldingInstance };
     };
-    if (!mod.Scaffolding) {
+    const Ctor = mod.Scaffolding || mod.default?.Scaffolding;
+    if (!Ctor) {
       throw new Error('@turbowarp/scaffolding: Scaffolding constructor not found');
     }
-    return mod.Scaffolding;
+    return Ctor;
   })();
   return ctorPromise;
 }

@@ -25,10 +25,9 @@ export const useErrorLogStore = create<ErrorLogState>((set) => ({
     counter += 1;
     const id = `err-${Date.now()}-${counter}`;
     set((state) => ({
-      entries: [
-        ...state.entries,
-        { id, severity, message, ts: Date.now(), visible: true },
-      ].slice(-20),
+      entries: [...state.entries, { id, severity, message, ts: Date.now(), visible: true }].slice(
+        -20,
+      ),
     }));
   },
   dismiss: (id) =>

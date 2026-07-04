@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ProjectMetadataPanel } from '@/features/stage/ProjectMetadataPanel';
+import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import type { ProjectMetadata } from '@/types/project';
 
@@ -33,19 +34,7 @@ describe('ProjectMetadataPanel', () => {
     useSettingsStore.setState({
       theme: 'system',
       volume: 100,
-      advanced: {
-        fps: 30,
-        interpolation: false,
-        highQualityPen: false,
-        warpTimer: false,
-        infiniteClones: false,
-        removeFencing: false,
-        removeMiscLimits: false,
-        turboMode: false,
-        disableCompiler: false,
-        stageWidth: 640,
-        stageHeight: 480,
-      },
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     });
   });
 
@@ -77,10 +66,7 @@ describe('ProjectMetadataPanel', () => {
     expect(authorLink).toHaveAttribute('href', 'https://scratch.mit.edu/users/tester/');
     expect(authorLink).toHaveAttribute('target', '_blank');
     expect(authorLink).toHaveAttribute('rel', 'noopener noreferrer');
-    expect(authorLink).toHaveAttribute(
-      'aria-label',
-      'Open Scratch profile for tester',
-    );
+    expect(authorLink).toHaveAttribute('aria-label', 'Open Scratch profile for tester');
     expect(authorLink).toHaveAttribute('title', "Open tester's Scratch profile");
     // The link contains only the username (not the "by" prefix).
     expect(authorLink).toHaveTextContent('tester');
@@ -118,6 +104,10 @@ describe('ProjectMetadataPanel', () => {
   });
 
   it('width matches the configured stage width', () => {
+    useSettingsStore.setState((s) => ({
+      ...s,
+      advanced: { ...s.advanced, stageWidth: 640 },
+    }));
     const { container } = render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
     const aside = container.querySelector('aside');
     expect(aside).not.toBeNull();
@@ -126,7 +116,7 @@ describe('ProjectMetadataPanel', () => {
 
   it('renders Introductions first and Notes & Credits second (no tabs)', () => {
     render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
-    // No tabs — sections are stacked.
+    // No tabs 窶・sections are stacked.
     expect(screen.queryByRole('tab')).toBeNull();
     // Each section is a real <section> with an h3 heading.
     const headings = screen.getAllByRole('heading', { level: 3 });
@@ -136,8 +126,7 @@ describe('ProjectMetadataPanel', () => {
 
   it('Introductions section contains the instructions text', () => {
     render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
-    const introductionsSection = screen
-      .getByTestId('metadata-section-introductions');
+    const introductionsSection = screen.getByTestId('metadata-section-introductions');
     expect(introductionsSection).toBeInTheDocument();
     expect(introductionsSection).toHaveTextContent('Click the flag to start.');
     // Introductions must NOT contain the notes text.
@@ -164,19 +153,17 @@ describe('ProjectMetadataPanel', () => {
     expect(screen.getByText('click the green flag')).toBeInTheDocument();
     // Introductions is shown (instructions are present).
     expect(screen.getByRole('heading', { name: 'Introductions' })).toBeInTheDocument();
-    // Notes is missing → its heading should not appear.
+    // Notes is missing 竊・its heading should not appear.
     expect(screen.queryByRole('heading', { name: /Notes/i })).toBeNull();
   });
 
   it('renders only Notes & Credits when Introductions is empty', () => {
     render(<ProjectMetadataPanel metadata={NOTES_ONLY} />);
     expect(screen.getByText('credits here')).toBeInTheDocument();
-    // Introductions is empty → its heading should not appear.
+    // Introductions is empty 竊・its heading should not appear.
     expect(screen.queryByRole('heading', { name: 'Introductions' })).toBeNull();
     // The h3 "Notes & Credits" section header is present.
-    expect(
-      screen.getByRole('heading', { level: 3, name: /Notes/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: /Notes/i })).toBeInTheDocument();
   });
 
   it('renders each section content in its own section (Notes text is NOT inside the Introductions section)', () => {

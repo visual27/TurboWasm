@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   setScaffoldingResizeMode,
   getScaffoldingInstance,
@@ -54,5 +54,54 @@ describe('scaffolding resize mode', () => {
 
     // Public surface: setScaffoldingResizeMode must not throw.
     expect(() => setScaffoldingResizeMode('dynamic-resize')).not.toThrow();
+  });
+});
+
+describe('scaffolding import interop', () => {
+  beforeEach(() => {
+    resetScaffoldingForTesting();
+    vi.resetModules();
+  });
+
+  it('reads the constructor from a CJS-style default export (vendored UMD bundle)', async () => {
+    // Simulate the esbuild-converted UMD bundle: only a `default` export whose
+    // value is the CJS module's exports object, with no top-level named
+    // exports promoted.
+    const Ctor = class FakeScaffolding {
+      width = 0;
+      height = 0;
+      setup(): void {
+        /* noop */
+      }
+    };
+    vi.doMock('@turbowarp/scaffolding', () => ({
+      Scaffolding: undefined,
+      default: { Scaffolding: Ctor, CloudVariables: {}, Packages: {} },
+    }));
+
+    const mod = await import('@/lib/scaffolding');
+    const inst = await mod.getScaffolding({ width: 480, height: 360 });
+    expect(inst).toBeInstanceOf(Ctor);
+    vi.doUnmock('@turbowarp/scaffolding');
+  });
+
+  it('reads the constructor from a named export when the loader provides one', async () => {
+    const Ctor = class FakeScaffolding {
+      width = 0;
+      height = 0;
+      setup(): void {
+        /* noop */
+      }
+    };
+    vi.doMock('@turbowarp/scaffolding', () => ({
+      Scaffolding: Ctor,
+      CloudVariables: {},
+      Packages: {},
+    }));
+
+    const mod = await import('@/lib/scaffolding');
+    const inst = await mod.getScaffolding({ width: 480, height: 360 });
+    expect(inst).toBeInstanceOf(Ctor);
+    vi.doUnmock('@turbowarp/scaffolding');
   });
 });

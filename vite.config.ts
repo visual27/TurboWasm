@@ -7,14 +7,26 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@turbowarp/scaffolding': path.resolve(
+        __dirname,
+        './vendored/scaffolding/dist/scaffolding-min.js',
+      ),
     },
+  },
+  optimizeDeps: {
+    // The vendored scaffolding-min.js is a UMD bundle. Pre-bundle it with
+    // esbuild so the dynamic `import('@turbowarp/scaffolding')` from
+    // src/lib/scaffolding.ts gets a proper ESM module namespace with named
+    // exports (Scaffolding, CloudVariables, Packages). Without this, Vite
+    // loads the UMD file directly and `mod.Scaffolding` is undefined.
+    include: ['@turbowarp/scaffolding'],
   },
   build: {
     target: 'esnext',
     rollupOptions: {
       output: {
         manualChunks: {
-          'scaffolding': ['@turbowarp/scaffolding'],
+          scaffolding: ['@turbowarp/scaffolding'],
           'react-vendor': ['react', 'react-dom'],
           'radix-vendor': [
             '@radix-ui/react-dialog',

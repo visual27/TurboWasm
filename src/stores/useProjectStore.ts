@@ -24,6 +24,5 @@ export const useProjectStore = create<ProjectState>((set) => ({
   setReadyFromFile: () =>
     set({ source: 'file', loadState: 'ready', metadata: null, currentId: null }),
   setError: () => set({ loadState: 'error' }),
-  reset: () =>
-    set({ currentId: null, metadata: null, source: null, loadState: 'idle' }),
+  reset: () => set({ currentId: null, metadata: null, source: null, loadState: 'idle' }),
 }));

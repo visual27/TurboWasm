@@ -1,12 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import {
-  setupScratchAssetStore,
-  resetScratchAssetStoreForTesting,
-} from '@/runtime/asset-store';
-import type {
-  ScaffoldingInstance,
-  ScratchStorageLike,
-} from '@/runtime/scaffolding-types';
+import { setupScratchAssetStore, resetScratchAssetStoreForTesting } from '@/runtime/asset-store';
+import type { ScaffoldingInstance, ScratchStorageLike } from '@/runtime/scaffolding-types';
 
 function makeScaffolding(storage: ScratchStorageLike | null): ScaffoldingInstance {
   return {
@@ -46,7 +40,9 @@ describe('scratch asset store', () => {
   });
 
   it('returns false when addWebStore is missing', () => {
-    const storage = { AssetType: { ImageVector: 1, ImageBitmap: 2, Sound: 3 } } as unknown as ScratchStorageLike;
+    const storage = {
+      AssetType: { ImageVector: 1, ImageBitmap: 2, Sound: 3 },
+    } as unknown as ScratchStorageLike;
     expect(setupScratchAssetStore(makeScaffolding(storage))).toBe(false);
   });
 
@@ -59,7 +55,10 @@ describe('scratch asset store', () => {
   });
 
   it('registers web store with the correct asset URL pattern', () => {
-    const calls: { types: unknown[]; fn: (a: { assetId: string; dataFormat: string }) => string }[] = [];
+    const calls: {
+      types: unknown[];
+      fn: (a: { assetId: string; dataFormat: string }) => string;
+    }[] = [];
     const storage: ScratchStorageLike = {
       AssetType: { ImageVector: 'iv', ImageBitmap: 'ib', Sound: 's' },
       addWebStore(types, fn) {
@@ -72,9 +71,7 @@ describe('scratch asset store', () => {
     expect(calls[0]?.types).toEqual(['iv', 'ib', 's']);
 
     const url = calls[0]!.fn({ assetId: 'abc/123', dataFormat: 'svg' });
-    expect(url).toBe(
-      'https://assets.scratch.mit.edu/internalapi/asset/abc%2F123.svg/get/',
-    );
+    expect(url).toBe('https://assets.scratch.mit.edu/internalapi/asset/abc%2F123.svg/get/');
   });
 
   it('is idempotent (does not register twice)', () => {
