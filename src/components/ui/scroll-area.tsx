@@ -22,7 +22,10 @@ const ScrollArea = React.forwardRef<
       against a flex parent's computed height, leaving the Viewport at
       its intrinsic content height and breaking overflow scrolling.
     */
-    className={cn('relative flex min-h-0 flex-col overflow-hidden', className)}
+    className={cn(
+      'relative flex min-h-0 flex-col overflow-hidden',
+      className,
+    )}
     {...props}
   >
     <ScrollAreaPrimitive.Viewport className="min-h-0 flex-1 rounded-[inherit]">
@@ -56,8 +59,16 @@ const ScrollBar = React.forwardRef<
     */
     className={cn(
       'flex touch-none select-none transition-colors',
+      /*
+        Radix positions the scrollbar flush against the Root's border
+        edge, so padding on the Root has no effect on the bar's gap to
+        the dialog border. We shift the bar inward by its own width
+        (-translate-x-1.5 / -6px) so it floats with breathing room
+        equal to its width on the right side, matching the visual
+        breathing room the inner content already has on the left.
+      */
       orientation === 'vertical' &&
-        'h-full w-1.5 border-l border-l-transparent p-px',
+        'h-full w-1.5 -translate-x-1.5 border-l border-l-transparent p-px',
       orientation === 'horizontal' &&
         'h-1.5 flex-col border-t border-t-transparent p-px',
       className,
