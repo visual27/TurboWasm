@@ -889,6 +889,44 @@ function resetScaffoldingStage(scaffolding: ScaffoldingInstance): void {
   }
 }
 
+/**
+ * Drop every monitor DOM node that the Scaffolding has appended for the
+ * currently-loaded project and clear its internal `_monitors` map.
+ *
+ * Why this exists:
+ *   - `runtime.dispose()` (vendored/scratch-vm/src/engine/runtime.js) emits
+ *     a `MONITORS_UPDATE` event with an *empty* MonitorState.
+ *   - `Scaffolding._onmonitorsupdate` (vendored/scaffolding/src/scaffolding.js)
+ *     only knows how to add new monitors to its `_monitors` map; it never
+ *     removes them, and it does not detach the corresponding DOM nodes from
+ *     `_monitorOverlay`.
+ *   - Without an explicit reset, the next `loadProject` keeps the previous
+ *     project's variable / list monitors visible on top of the new project's
+ *     monitors.
+ *
+ * The DOM teardown is a best-effort `removeChild` loop — monitor instances do
+ * not own any listeners outside their own `this.root` element, so removing
+ * the root is sufficient (matches how `Question.destroy()` works in the
+ * vendored Scaffolding).
+ *
+ * Exported for unit testing.
+ */
+export function resetScaffoldingMonitors(scaffolding: ScaffoldingInstance): void {
+  try {
+    const overlay = (scaffolding as unknown as { _monitorOverlay?: HTMLElement | null })
+      ._monitorOverlay;
+    if (overlay && overlay.firstChild) {
+      while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
+    }
+    const monitors = (scaffolding as unknown as { _monitors?: Map<unknown, unknown> })._monitors;
+    if (monitors && typeof monitors.clear === 'function') {
+      monitors.clear();
+    }
+  } catch {
+    /* ignore — best-effort reset */
+  }
+}
+
 export async function loadProjectFromArrayBuffer(
   buf: ArrayBuffer,
   options: { mergeTwconfig?: boolean } = {},
@@ -908,9 +946,15 @@ export async function loadProjectFromArrayBuffer(
   //   1. stopAll() to halt every running thread
   //   2. dispose() to clear all targets, variables, broadcasts, etc.
   //   3. force a renderer redraw so the stage shows an empty frame
+  //   4. detach the previous project's monitor DOM nodes and clear the
+  //      Scaffolding's `_monitors` map. `runtime.dispose()` only emits an
+  //      empty `MONITORS_UPDATE` event, which the vendored Scaffolding
+  //      treats as a no-op — without (4) the previous project's variable
+  //      monitors stay visible on top of the new project's monitors.
   // The Scaffolding's loadProject() also calls clear() internally — our
   // pre-reset is a no-op safety net, idempotent with the load.
   resetScaffoldingStage(attachedScaffolding);
+  resetScaffoldingMonitors(attachedScaffolding);
 
   if (options.mergeTwconfig !== false) {
     const overrides = await readTwconfigFromArrayBuffer(buf);

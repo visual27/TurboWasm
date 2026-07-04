@@ -17,23 +17,9 @@ function readWindowSize(): { w: number; h: number } {
   return { w: window.innerWidth, h: window.innerHeight };
 }
 
-// Cache of the last `advanced` snapshot seen by initPlayer / applySettings.
-// We re-read this snapshot from a ref so the mount-effect and the settings
-// effect can share a stable reference without re-subscribing on every render.
-function useAdvancedRef(): React.MutableRefObject<AdvancedSettings> {
-  const advanced = useSettingsStore((s) => s.advanced);
-  const ref = useRef<AdvancedSettings>(advanced);
-  useEffect(() => {
-    ref.current = advanced;
-  }, [advanced]);
-  return ref;
-}
-
 export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
-  // Subscribe to advanced via a ref so the component does NOT re-render on
-  // every advanced patch (e.g. while dragging a slider in Settings). The
-  // settings effect below still receives every change via the ref.
-  const advancedRef = useAdvancedRef();
+  // We intentionally do NOT subscribe to `advanced` via a hook here — see the
+  // settings effect below for the rationale.
   const stageWidth = useSettingsStore((s) => s.advanced.stageWidth);
   const stageHeight = useSettingsStore((s) => s.advanced.stageHeight);
   const volume = useSettingsStore((s) => s.volume);
@@ -51,14 +37,20 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
   const [windowSize, setWindowSize] = useState<{ w: number; h: number }>(readWindowSize);
 
   // Init player on mount — canvas mount must always be in DOM so dropping a
-  // file never races with init.
+  // file never races with init. We read the latest `advanced` snapshot
+  // synchronously from the store, so this call is always up to date even
+  // if the Settings dialog has been opened since the component first
+  // mounted.
   useEffect(() => {
     if (!stageMountRef.current || initializedRef.current) return;
     initializedRef.current = true;
     let cancelled = false;
     (async () => {
       try {
-        await initPlayer(stageMountRef.current as HTMLElement, advancedRef.current);
+        await initPlayer(
+          stageMountRef.current as HTMLElement,
+          useSettingsStore.getState().advanced,
+        );
         if (cancelled) return;
       } catch (err) {
         initializedRef.current = false;
@@ -69,32 +61,34 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Apply settings changes (immediate). We subscribe to advanced via a ref
-  // so this component doesn't re-render; the ref is updated by the
-  // `useAdvancedRef` hook above, and the manual subscription below catches
-  // every change.
+  // Apply settings changes. We pass the new snapshot directly into
+  // applySettings instead of caching it through a ref: zustand's subscribe
+  // fires synchronously inside `patchAdvanced`, which runs *before* any
+  // React `useEffect` that mirrors the store into a ref. A ref-based
+  // approach (the previous `useAdvancedRef` design) therefore re-applied
+  // the prior advanced snapshot for one tick, dropping stage-size changes
+  // and corrupting fps (mid-edit partials like `clampFps(0) = 1` would
+  // win because the committed value never reached applySettings in time).
+  // Subscribing with the live `state.advanced` lets us deliver the exact
+  // patch the caller just wrote.
   useEffect(() => {
-    const apply = (): void => {
+    const apply = (next: AdvancedSettings): void => {
       if (!initializedRef.current) return;
       try {
-        applySettings(advancedRef.current);
+        applySettings(next);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[stage] apply settings failed:', err);
       }
     };
-    // Subscribe to advanced changes via the store directly. We bypass the
-    // hook subscription here so this component does not re-render on
-    // advanced patches.
     const unsub = useSettingsStore.subscribe((state, prev) => {
-      if (state.advanced !== prev.advanced) apply();
+      if (state.advanced !== prev.advanced) apply(state.advanced);
     });
-    apply();
+    apply(useSettingsStore.getState().advanced);
     return unsub;
-  }, [advancedRef]);
+  }, []);
 
   // Apply volume
   useEffect(() => {

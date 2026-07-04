@@ -6,6 +6,7 @@ import {
   getExtensionPermissionRequest,
   initPlayer,
   isPlayerReady,
+  resetScaffoldingMonitors,
   setExtensionPermissionRequest,
   __resetPlayerReadyForTesting,
   pause,
@@ -529,5 +530,68 @@ describe('applyExtensionPermissionDecision', () => {
     // manager consults the persistent list first, so this is enough for
     // the VM to load it even though it was previously session-denied.
     expect(useSettingsStore.getState().allowedExtensionUrls).toEqual(['https://example.com/x.js']);
+  });
+});
+
+describe('resetScaffoldingMonitors', () => {
+  // The Scaffolding's internal monitor state lives behind private fields
+  // (`_monitorOverlay`, `_monitors`). resetScaffoldingMonitors is
+  // deliberately typed against the public `ScaffoldingInstance` but reaches
+  // into those private fields via `unknown` casts — exactly what the
+  // production code path does. The tests below exercise the contract:
+  // overlay children are detached, the monitors Map is cleared, and the
+  // helper is safe against scaffolding stubs that don't expose either.
+  it('detaches every child of `_monitorOverlay` and clears `_monitors`', () => {
+    const overlay = document.createElement('div');
+    overlay.appendChild(document.createElement('div'));
+    overlay.appendChild(document.createElement('div'));
+    const monitors = new Map<string, Record<string, unknown>>([
+      ['a', { dummy: 1 }],
+      ['b', { dummy: 2 }],
+    ]);
+    const fakeScaffolding = {
+      _monitorOverlay: overlay,
+      _monitors: monitors,
+    } as unknown as Parameters<typeof resetScaffoldingMonitors>[0];
+
+    resetScaffoldingMonitors(fakeScaffolding);
+
+    expect(overlay.childNodes.length).toBe(0);
+    expect(monitors.size).toBe(0);
+  });
+
+  it('is a safe no-op when scaffolding lacks `_monitorOverlay`', () => {
+    const monitors = new Map<string, unknown>();
+    const fakeScaffolding = { _monitors: monitors } as unknown as Parameters<
+      typeof resetScaffoldingMonitors
+    >[0];
+    expect(() => resetScaffoldingMonitors(fakeScaffolding)).not.toThrow();
+    expect(monitors.size).toBe(0);
+  });
+
+  it('is a safe no-op when scaffolding lacks `_monitors`', () => {
+    const overlay = document.createElement('div');
+    overlay.appendChild(document.createElement('div'));
+    const fakeScaffolding = {
+      _monitorOverlay: overlay,
+    } as unknown as Parameters<typeof resetScaffoldingMonitors>[0];
+    expect(() => resetScaffoldingMonitors(fakeScaffolding)).not.toThrow();
+    expect(overlay.childNodes.length).toBe(0);
+  });
+
+  it('is a safe no-op when scaffolding exposes neither field', () => {
+    const fakeScaffolding = {} as unknown as Parameters<typeof resetScaffoldingMonitors>[0];
+    expect(() => resetScaffoldingMonitors(fakeScaffolding)).not.toThrow();
+  });
+
+  it('tolerates a `_monitors` value without a clear() method', () => {
+    const overlay = document.createElement('div');
+    const fakeScaffolding = {
+      _monitorOverlay: overlay,
+      // Some hypothetical future Scaffolding might store monitors in a
+      // shape that doesn't expose Map.clear. The helper should not throw.
+      _monitors: { size: 0 },
+    } as unknown as Parameters<typeof resetScaffoldingMonitors>[0];
+    expect(() => resetScaffoldingMonitors(fakeScaffolding)).not.toThrow();
   });
 });

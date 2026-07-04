@@ -13,7 +13,7 @@ import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useSettingsStore } from '@/stores/useSettingsStore';
-import { clampFps, clampStageHeight, clampStageWidth, clampVolume } from '@/utils/format';
+import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger } from '@/utils/format';
 import type { AdvancedSettings } from '@/types/settings';
 import { Button } from '@/components/ui/button';
 
@@ -48,37 +48,112 @@ function FieldRow({ id, label, description, children }: FieldRowProps): React.JS
 interface NumberFieldProps {
   id: string;
   value: number;
-  onChange: (v: number) => void;
+  /**
+   * Called once, on commit (blur or Enter). Intermediate keystrokes do NOT
+   * invoke this callback — the field buffers them in local state and only
+   * writes the parsed value to the parent when the user finalizes the
+   * input. This keeps `patchAdvanced` (and the runtime side effects that
+   * hang off it, like `vm.setFramerate` / `vm.setStageSize`) from firing
+   * mid-edit, which previously let partial values like `clampFps(0) = 1`
+   * poison the runtime framerate.
+   */
+  onCommit: (v: number) => void;
   min?: number;
   max?: number;
   step?: number;
   ariaLabel?: string;
+  /**
+   * Optional override for the input's width utility classes. Defaults to
+   * `h-9 w-24 text-right tabular-nums` (the FPS / stage-size style). Pass
+   * `h-9 w-16 text-right tabular-nums` for the narrower volume input.
+   */
+  className?: string;
 }
 
 function NumberField({
   id,
   value,
-  onChange,
+  onCommit,
   min,
   max,
   step = 1,
   ariaLabel,
+  className = 'h-9 w-24 text-right tabular-nums',
 }: NumberFieldProps): React.JSX.Element {
+  const [draft, setDraft] = React.useState<string>(() => formatInteger(value));
+  const [focused, setFocused] = React.useState<boolean>(false);
+  // Set to true when the user pressed Escape. We check this in `onBlur`
+  // because rolling back via `setDraft` is asynchronous (React batches
+  // the state update), so by the time the synthetic blur fires the
+  // closure-captured `draft` is still the pre-rollback value. Without
+  // this flag, blurring after Escape would re-commit the now-rejected
+  // value (e.g. `999` → clamped to `240` for FPS) and overwrite the
+  // store with the rejected input.
+  const skipNextBlurCommitRef = React.useRef<boolean>(false);
+
+  // Re-sync the draft when the external value changes (reset, twconfig merge,
+  // programmatic patch, slider sync). We skip the sync while the input is
+  // focused so the user's mid-edit draft is never overwritten.
+  React.useEffect(() => {
+    if (!focused) setDraft(formatInteger(value));
+  }, [value, focused]);
+
+  const commit = React.useCallback((): void => {
+    const trimmed = draft.trim();
+    if (trimmed === '') {
+      setDraft(formatInteger(value));
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      setDraft(formatInteger(value));
+      return;
+    }
+    const rounded = Math.round(parsed);
+    const lo = typeof min === 'number' ? min : Number.NEGATIVE_INFINITY;
+    const hi = typeof max === 'number' ? max : Number.POSITIVE_INFINITY;
+    const clamped = Math.min(Math.max(rounded, lo), hi);
+    onCommit(clamped);
+    setDraft(formatInteger(clamped));
+  }, [draft, value, min, max, onCommit]);
+
+  const rollback = React.useCallback((): void => {
+    setDraft(formatInteger(value));
+  }, [value]);
+
   return (
     <Input
       id={id}
-      type="number"
+      type="text"
       inputMode="numeric"
-      value={Number.isFinite(value) ? value : 0}
+      value={draft}
       min={min}
       max={max}
       step={step}
       aria-label={ariaLabel}
-      onChange={(e) => {
-        const n = Number(e.target.value);
-        if (Number.isFinite(n)) onChange(n);
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        if (skipNextBlurCommitRef.current) {
+          skipNextBlurCommitRef.current = false;
+          return;
+        }
+        commit();
       }}
-      className="h-9 w-24 text-right tabular-nums"
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit();
+          e.currentTarget.blur();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          skipNextBlurCommitRef.current = true;
+          rollback();
+          e.currentTarget.blur();
+        }
+      }}
+      className={className}
     />
   );
 }
@@ -136,7 +211,7 @@ const RuntimeSection = React.memo(function RuntimeSection({
         <NumberField
           id="fps"
           value={advanced.fps}
-          onChange={(v) => patch({ fps: clampFps(v) })}
+          onCommit={(v) => patch({ fps: clampFps(v) })}
           min={1}
           max={240}
           ariaLabel="FPS"
@@ -201,7 +276,7 @@ const RenderingSection = React.memo(function RenderingSection({
           <NumberField
             id="stage-width"
             value={advanced.stageWidth}
-            onChange={(v) => patch({ stageWidth: clampStageWidth(v) })}
+            onCommit={(v) => patch({ stageWidth: clampStageWidth(v) })}
             min={1}
             max={8192}
             ariaLabel="Stage width"
@@ -210,7 +285,7 @@ const RenderingSection = React.memo(function RenderingSection({
           <NumberField
             id="stage-height"
             value={advanced.stageHeight}
-            onChange={(v) => patch({ stageHeight: clampStageHeight(v) })}
+            onCommit={(v) => patch({ stageHeight: clampStageHeight(v) })}
             min={1}
             max={8192}
             ariaLabel="Stage height"
@@ -277,8 +352,8 @@ const OthersSection = React.memo(function OthersSection({
     },
     [setVolume],
   );
-  const onNumberChange = React.useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => setVolume(clampVolume(Number(e.target.value))),
+  const onVolumeCommit = React.useCallback(
+    (v: number) => setVolume(clampVolume(v)),
     [setVolume],
   );
   // Stable reference so Radix Slider doesn't see a fresh `[volume]` array
@@ -297,16 +372,15 @@ const OthersSection = React.memo(function OthersSection({
             aria-label="Volume slider"
             className="w-32"
           />
-          <Input
+          <NumberField
             id="volume"
-            type="number"
             value={volume}
+            onCommit={onVolumeCommit}
             min={0}
             max={100}
             step={1}
-            onChange={onNumberChange}
+            ariaLabel="Volume number"
             className="h-9 w-16 text-right tabular-nums"
-            aria-label="Volume number"
           />
         </div>
       </FieldRow>

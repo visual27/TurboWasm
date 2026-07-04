@@ -100,3 +100,153 @@ describe('SettingsDialog — layout', () => {
     expect(useSettingsStore.getState().advanced.stageWidth).toBe(480);
   });
 });
+
+describe('SettingsDialog — NumberField commit semantics', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: {
+        fps: 30,
+        interpolation: false,
+        highQualityPen: false,
+        warpTimer: false,
+        infiniteClones: false,
+        removeFencing: false,
+        removeMiscLimits: false,
+        turboMode: false,
+        disableCompiler: false,
+        stageWidth: 480,
+        stageHeight: 360,
+        extensionSandboxMode: 'worker',
+      },
+      allowedExtensionUrls: [],
+    });
+  });
+
+  // The NumberField is now a controlled draft that only commits on blur or
+  // Enter. These tests pin that contract so future changes (e.g. wiring up
+  // a controlled form library) cannot regress it.
+
+  it('does not write to the store while the user is still typing in FPS', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    fpsInput.focus();
+    await user.keyboard('{Backspace}');
+    // The input is now empty, but we haven't blurred or pressed Enter, so
+    // the store must NOT have been updated with a partial value.
+    expect(useSettingsStore.getState().advanced.fps).toBe(30);
+    expect(fpsInput.value).toBe('');
+  });
+
+  it('commits FPS to the store on Enter', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    fpsInput.focus();
+    await user.keyboard('{Backspace}6');
+    await user.keyboard('{Enter}');
+    expect(useSettingsStore.getState().advanced.fps).toBe(6);
+  });
+
+  it('commits FPS to the store on blur', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    fpsInput.focus();
+    await user.keyboard('{Backspace}4');
+    fpsInput.blur();
+    expect(useSettingsStore.getState().advanced.fps).toBe(4);
+  });
+
+  it('rounds non-integer FPS on commit', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    fpsInput.focus();
+    await user.keyboard('{Backspace}25.7');
+    await user.keyboard('{Enter}');
+    expect(useSettingsStore.getState().advanced.fps).toBe(26);
+    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('26');
+  });
+
+  it('clamps out-of-range FPS on commit (500 → 240)', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    fpsInput.focus();
+    await user.keyboard('{Backspace}500');
+    await user.keyboard('{Enter}');
+    expect(useSettingsStore.getState().advanced.fps).toBe(240);
+  });
+
+  it('rolls back to the external value on Escape without committing', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    fpsInput.focus();
+    await user.keyboard('{Backspace}999');
+    await user.keyboard('{Escape}');
+    expect(useSettingsStore.getState().advanced.fps).toBe(30);
+    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('30');
+  });
+
+  it('rolls back to the external value when committing an empty string', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    fpsInput.focus();
+    await user.keyboard('{Backspace}');
+    await user.keyboard('{Enter}');
+    expect(useSettingsStore.getState().advanced.fps).toBe(30);
+    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('30');
+  });
+
+  it('rolls back when commit text is not parseable as a number', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    fpsInput.focus();
+    await user.keyboard('{Backspace}');
+    await user.keyboard('abc');
+    await user.keyboard('{Enter}');
+    expect(useSettingsStore.getState().advanced.fps).toBe(30);
+  });
+
+  it('commits stageWidth on Tab and reflects in the store', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const widthInput = screen.getByLabelText('Stage width') as HTMLInputElement;
+    widthInput.focus();
+    // `user.clear()` empties the field in one shot so we don't have to
+    // count how many `{Backspace}` presses we need for the default "480"
+    // value. The alternative (`{Backspace}800`) would have left "488" in
+    // the input.
+    await user.clear(widthInput);
+    await user.keyboard('800');
+    await user.keyboard('{Tab}');
+    expect(useSettingsStore.getState().advanced.stageWidth).toBe(800);
+  });
+
+  it('commits stageHeight on Tab and clamps out-of-range', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const heightInput = screen.getByLabelText('Stage height') as HTMLInputElement;
+    heightInput.focus();
+    await user.keyboard('{Backspace}99999');
+    await user.keyboard('{Tab}');
+    expect(useSettingsStore.getState().advanced.stageHeight).toBe(8192);
+  });
+
+  it('commits Volume on Enter and clamps out-of-range', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const volumeInput = screen.getByLabelText('Volume number') as HTMLInputElement;
+    volumeInput.focus();
+    await user.keyboard('{Backspace}250');
+    await user.keyboard('{Enter}');
+    expect(useSettingsStore.getState().volume).toBe(100);
+  });
+});

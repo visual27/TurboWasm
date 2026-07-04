@@ -48,8 +48,15 @@ export function applyAdvancedSettings(
   const renderer = scaffolding.renderer ? asRenderer(scaffolding.renderer) : undefined;
 
   vm.runtime.frameLoop.setFramerate(next.fps);
-  vm.runtime.frameLoop.setInterpolation(next.interpolation);
 
+  // Use `vm.setInterpolation` (vendored `runtime.setInterpolation`) rather
+  // than `runtime.frameLoop.setInterpolation` directly: the former also
+  // stores `runtime.interpolationEnabled` (read every frame by `_step()`
+  // to decide whether to draw interpolated positions) and emits
+  // INTERPOLATION_CHANGED, while internally calling
+  // `frameLoop.setInterpolation` once. Calling both APIs in sequence
+  // would produce two `_restart()` round-trips and would skip updating
+  // the `interpolationEnabled` flag, breaking interpolating projects.
   if (vm.setInterpolation) {
     vm.setInterpolation(next.interpolation);
   }
