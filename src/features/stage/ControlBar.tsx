@@ -64,6 +64,22 @@ function ControlBarImpl({
   // a fresh `[volume]` array on every render.
   const volumeArr = React.useMemo(() => [volume], [volume]);
 
+  // Suppress the focus shift that a mouse click would otherwise cause on the
+  // icon buttons. The vendored Scaffolding keydown handler
+  // (`vendored/scaffolding/src/scaffolding.js` `_onkeydown`) only forwards
+  // the event to the VM when `e.target === document || e.target ===
+  // document.body`, so leaving a button focused after a click would silently
+  // swallow every subsequent keystroke (arrow keys, space, etc.) and the
+  // browser's default Space/Enter activation would re-trigger the button.
+  // Calling `preventDefault()` on `mousedown` only blocks the focus shift;
+  // `click` still fires, and Tab-based keyboard focus still works for a11y.
+  const preventFocusOnMouseDown = React.useCallback(
+    (e: React.MouseEvent<HTMLElement>): void => {
+      e.preventDefault();
+    },
+    [],
+  );
+
   // Pause / Resume: while paused, the button shows a Play icon and resumes
   // the project; while running, it shows a Pause icon and pauses the project.
   // We use conditional JSX instead of a dynamic component reference so the
@@ -100,6 +116,7 @@ function ControlBarImpl({
                 size="icon"
                 aria-label="Start (green flag)"
                 onClick={onGreenFlagClick}
+                onMouseDown={preventFocusOnMouseDown}
                 data-testid="green-flag"
                 className="h-8 w-8 rounded-full"
               >
@@ -116,6 +133,7 @@ function ControlBarImpl({
                 size="icon"
                 aria-label={pauseResumeLabel}
                 onClick={onPauseResumeClick}
+                onMouseDown={preventFocusOnMouseDown}
                 disabled={!isPlaying && !isPaused}
                 data-testid={isPaused ? 'resume' : 'pause'}
                 className="h-8 w-8 rounded-full"
@@ -133,6 +151,7 @@ function ControlBarImpl({
                 size="icon"
                 aria-label="Stop"
                 onClick={onStopClick}
+                onMouseDown={preventFocusOnMouseDown}
                 data-testid="stop"
                 className="h-8 w-8 rounded-full"
               >
@@ -151,6 +170,7 @@ function ControlBarImpl({
                 size="icon"
                 aria-label={muted ? 'Unmute' : 'Mute'}
                 onClick={onMuteToggle}
+                onMouseDown={preventFocusOnMouseDown}
                 data-testid={muted ? 'unmute' : 'mute'}
                 className="h-8 w-8 rounded-full"
               >
@@ -186,6 +206,7 @@ function ControlBarImpl({
                 size="icon"
                 aria-label="Settings"
                 onClick={onOpenSettings}
+                onMouseDown={preventFocusOnMouseDown}
                 data-testid="open-settings"
                 className="h-8 w-8 rounded-full"
               >
@@ -202,6 +223,7 @@ function ControlBarImpl({
                 size="icon"
                 aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                 onClick={onToggleFullscreen}
+                onMouseDown={preventFocusOnMouseDown}
                 data-testid="toggle-fullscreen"
                 className="h-8 w-8 rounded-full"
               >

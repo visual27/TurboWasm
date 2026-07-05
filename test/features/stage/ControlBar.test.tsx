@@ -260,4 +260,48 @@ describe('ControlBar', () => {
       expect(useSettingsStore.getState().volume).toBe(100);
     });
   });
+
+  describe('mousedown does not steal focus from the document', () => {
+    // The vendored Scaffolding keydown handler in
+    // `vendored/scaffolding/src/scaffolding.js` `_onkeydown` only forwards a
+    // key event to the VM when `e.target === document || e.target ===
+    // document.body`. If clicking a ControlBar button leaves focus on the
+    // <button>, every subsequent keystroke silently fails to reach the
+    // stage. To prevent that we suppress the focus shift via
+    // `e.preventDefault()` on `mousedown` for every icon button. The test
+    // pins that contract: any future regression that re-introduces focus on
+    // click will fail here.
+    const interactiveTestIds = [
+      'green-flag',
+      'stop',
+      'pause',
+      'mute',
+      'open-settings',
+      'toggle-fullscreen',
+    ] as const;
+
+    interactiveTestIds.forEach((testId) => {
+      it(`calls preventDefault() on mousedown for the ${testId} button so it does not steal focus`, () => {
+        useSettingsStore.setState({ volume: 50, lastNonMuteVolume: 50 });
+        usePlayerStore.setState({ isPlaying: true, isPaused: false });
+        renderWithProviders(
+          <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+        );
+        const btn = screen.getByTestId(testId);
+        const ev = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+        const preventDefaultSpy = vi.spyOn(ev, 'preventDefault');
+        btn.dispatchEvent(ev);
+        expect(preventDefaultSpy).toHaveBeenCalled();
+      });
+    });
+
+    it('still fires onClick even when mousedown.preventDefault suppresses focus', () => {
+      usePlayerStore.setState({ isPlaying: true, isPaused: false });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      fireEvent.click(screen.getByTestId('green-flag'));
+      expect(playerMocks.greenFlag).toHaveBeenCalledTimes(1);
+    });
+  });
 });
