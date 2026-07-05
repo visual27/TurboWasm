@@ -61,10 +61,21 @@ function isExtensionSandboxMode(v: unknown): v is ExtensionSandboxMode {
   return v === 'worker' || v === 'iframe' || v === 'unsandboxed';
 }
 
-function sanitizeAdvanced(input: unknown): AdvancedSettings {
+/**
+ * Parse an arbitrary object into a sanitized AdvancedSettings. Used for both
+ * the runtime `advanced` and the saved `defaultAdvanced`.
+ *
+ * @param forceDisableCompilerOff When true, the returned object's
+ *   `disableCompiler` is always `false`. Used for the runtime advanced so
+ *   the toggle never silently carries an old `true` from a pre-migration
+ *   save into a fresh session.
+ */
+function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): AdvancedSettings {
   const base = DEFAULT_ADVANCED_SETTINGS;
   if (!input || typeof input !== 'object') return { ...base };
   const r = input as Record<string, unknown>;
+  const disableCompiler =
+    forceDisableCompilerOff ? false : typeof r.disableCompiler === 'boolean' ? r.disableCompiler : base.disableCompiler;
   return {
     fps: typeof r.fps === 'number' ? clampFps(r.fps) : base.fps,
     interpolation: typeof r.interpolation === 'boolean' ? r.interpolation : base.interpolation,
@@ -75,8 +86,7 @@ function sanitizeAdvanced(input: unknown): AdvancedSettings {
     removeMiscLimits:
       typeof r.removeMiscLimits === 'boolean' ? r.removeMiscLimits : base.removeMiscLimits,
     turboMode: typeof r.turboMode === 'boolean' ? r.turboMode : base.turboMode,
-    disableCompiler:
-      typeof r.disableCompiler === 'boolean' ? r.disableCompiler : base.disableCompiler,
+    disableCompiler,
     stageWidth: typeof r.stageWidth === 'number' ? clampStageWidth(r.stageWidth) : base.stageWidth,
     stageHeight:
       typeof r.stageHeight === 'number' ? clampStageHeight(r.stageHeight) : base.stageHeight,
@@ -106,28 +116,32 @@ function sanitizeAllowedExtensionUrls(input: unknown): string[] {
   return out;
 }
 
+function emptyShape(): SettingsStoreShape {
+  return {
+    theme: 'system',
+    volume: 100,
+    lastNonMuteVolume: 100,
+    advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+    defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+    allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
+  };
+}
+
 export function readSettings(): SettingsStoreShape {
   const raw = storage.get(STORAGE_KEYS.settings);
-  if (!raw) {
-    return {
-      theme: 'system',
-      volume: 100,
-      lastNonMuteVolume: 100,
-      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
-      allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
-    };
-  }
+  if (!raw) return emptyShape();
   try {
     const parsed = JSON.parse(raw) as SettingsStoreSerialized;
-    if (!parsed || typeof parsed !== 'object' || parsed.version !== STORAGE_VERSION) {
-      return {
-        theme: 'system',
-        volume: 100,
-        lastNonMuteVolume: 100,
-        advanced: { ...DEFAULT_ADVANCED_SETTINGS },
-        allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
-      };
+    if (!parsed || typeof parsed !== 'object') return emptyShape();
+
+    // v1 payloads (single `advanced` field) are accepted as long as the
+    // payload was at least tagged version 1. v2 payloads use two distinct
+    // fields (`advanced` + `defaultAdvanced`). Anything else (including
+    // untagged / wrong-version / corrupt blobs) resets to defaults.
+    if (parsed.version !== 1 && parsed.version !== STORAGE_VERSION) {
+      return emptyShape();
     }
+
     const theme = isTheme(parsed.state?.theme) ? parsed.state.theme : 'system';
     const volume =
       typeof parsed.state?.volume === 'number' ? clampVolume(parsed.state.volume) : 100;
@@ -135,23 +149,39 @@ export function readSettings(): SettingsStoreShape {
       typeof parsed.state?.lastNonMuteVolume === 'number'
         ? clampVolume(parsed.state.lastNonMuteVolume)
         : volume;
-    const advanced = sanitizeAdvanced(parsed.state?.advanced);
     const allowedExtensionUrls = sanitizeAllowedExtensionUrls(parsed.state?.allowedExtensionUrls);
+
+    if (parsed.version === 1) {
+      // v1 → v2 migration: a single `advanced` field acted as both the
+      // runtime and the default. Force `disableCompiler` off so a previously
+      // saved `true` does not silently re-enable the toggle.
+      const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
+      return {
+        theme,
+        volume,
+        lastNonMuteVolume,
+        advanced,
+        defaultAdvanced: { ...advanced, disableCompiler: false },
+        allowedExtensionUrls,
+      };
+    }
+
+    // v2
+    const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
+    const defaultAdvanced = sanitizeAdvanced(
+      parsed.state?.defaultAdvanced ?? parsed.state?.advanced,
+      true,
+    );
     return {
       theme,
       volume,
       lastNonMuteVolume,
       advanced,
+      defaultAdvanced,
       allowedExtensionUrls,
     };
   } catch {
-    return {
-      theme: 'system',
-      volume: 100,
-      lastNonMuteVolume: 100,
-      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
-      allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
-    };
+    return emptyShape();
   }
 }
 

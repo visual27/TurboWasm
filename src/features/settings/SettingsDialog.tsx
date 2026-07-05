@@ -403,7 +403,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
   const advanced = useSettingsStore((s) => s.advanced);
   const patch = useSettingsStore((s) => s.patchAdvanced);
   const resetAdvanced = useSettingsStore((s) => s.resetAdvanced);
+  const saveAdvancedAsDefault = useSettingsStore((s) => s.saveAdvancedAsDefault);
   const onResetClick = React.useCallback(() => resetAdvanced(), [resetAdvanced]);
+  const onSetDefaultClick = React.useCallback(() => saveAdvancedAsDefault(), [saveAdvancedAsDefault]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -413,7 +415,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
           - ScrollArea fills the rest of the dialog, holding the
             vertically-stacked SettingsSection blocks separated by
             horizontal rules.
-          - Footer (Reset) pinned to the bottom.
+          - Footer (Reset / Set as default) pinned to the bottom.
         Padding on the header / footer is supplied by the section itself;
         the ScrollArea only provides vertical scrolling.
       */}
@@ -444,7 +446,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
         </ScrollArea>
 
         <Separator />
-        <DialogFooter className="flex-row justify-end px-8 pb-6 pt-4 sm:justify-end">
+        <DialogFooter className="flex-row flex-wrap items-center justify-end gap-2 px-8 pb-6 pt-4 sm:justify-end">
           <Button
             variant="ghost"
             size="sm"
@@ -453,6 +455,15 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
             data-testid="settings-reset"
           >
             Reset to defaults
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={onSetDefaultClick}
+            aria-label="Save current advanced settings as the new defaults"
+            data-testid="settings-set-default"
+          >
+            Set as default
           </Button>
         </DialogFooter>
       </DialogContent>

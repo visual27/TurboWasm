@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { readSettings, writeSettings } from '@/lib/persistence';
-import { STORAGE_KEYS, DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
+import { STORAGE_KEYS, STORAGE_VERSION, DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
 
 describe('persistence', () => {
   beforeEach(() => {
@@ -13,6 +13,7 @@ describe('persistence', () => {
       theme: 'system',
       volume: 100,
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
     });
   });
@@ -23,6 +24,7 @@ describe('persistence', () => {
       volume: 42,
       lastNonMuteVolume: 42,
       advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 60, stageWidth: 800 },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
       allowedExtensionUrls: ['https://example.com/a.js'],
     });
     const settings = readSettings();
@@ -31,6 +33,7 @@ describe('persistence', () => {
     expect(settings.lastNonMuteVolume).toBe(42);
     expect(settings.advanced.fps).toBe(60);
     expect(settings.advanced.stageWidth).toBe(800);
+    expect(settings.defaultAdvanced.fps).toBe(30);
     expect(settings.allowedExtensionUrls).toEqual(['https://example.com/a.js']);
   });
 
@@ -43,7 +46,7 @@ describe('persistence', () => {
           volume: 500,
           advanced: { fps: 9999, stageWidth: -1, stageHeight: NaN },
         },
-        version: 1,
+        version: STORAGE_VERSION,
       }),
     );
     const settings = readSettings();
@@ -80,6 +83,7 @@ describe('persistence', () => {
         ...DEFAULT_ADVANCED_SETTINGS,
         extensionSandboxMode: 'iframe',
       },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
     });
     const settings = readSettings();
@@ -97,8 +101,9 @@ describe('persistence', () => {
           volume: 100,
           lastNonMuteVolume: 100,
           advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+          defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
         },
-        version: 1,
+        version: STORAGE_VERSION,
       }),
     );
     const settings = readSettings();
@@ -116,8 +121,9 @@ describe('persistence', () => {
             ...DEFAULT_ADVANCED_SETTINGS,
             extensionSandboxMode: 'nonsense',
           },
+          defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
         },
-        version: 1,
+        version: STORAGE_VERSION,
       }),
     );
     const settings2 = readSettings();
@@ -139,8 +145,9 @@ describe('persistence', () => {
             ...DEFAULT_ADVANCED_SETTINGS,
             allowProjectExtensions: true,
           },
+          defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
         },
-        version: 1,
+        version: STORAGE_VERSION,
       }),
     );
     const settings = readSettings();
@@ -171,6 +178,7 @@ describe('persistence', () => {
       volume: 100,
       lastNonMuteVolume: 100,
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [
         'https://example.com/a.js',
         'https://example.com/a.js', // duplicate
@@ -193,6 +201,7 @@ describe('persistence', () => {
           volume: 100,
           lastNonMuteVolume: 100,
           advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+          defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
           allowedExtensionUrls: [
             'https://example.com/a.js',
             '',
@@ -202,7 +211,7 @@ describe('persistence', () => {
             'https://example.com/b.js',
           ],
         },
-        version: 1,
+        version: STORAGE_VERSION,
       }),
     );
     const settings = readSettings();
@@ -210,5 +219,56 @@ describe('persistence', () => {
       'https://example.com/a.js',
       'https://example.com/b.js',
     ]);
+  });
+
+  describe('v1 → v2 migration', () => {
+    it('reads a v1 payload and seeds both advanced and defaultAdvanced from it', () => {
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'dark',
+            volume: 80,
+            lastNonMuteVolume: 80,
+            advanced: {
+              ...DEFAULT_ADVANCED_SETTINGS,
+              fps: 60,
+              stageWidth: 800,
+            },
+          },
+          version: 1,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.theme).toBe('dark');
+      expect(settings.volume).toBe(80);
+      expect(settings.advanced.fps).toBe(60);
+      expect(settings.advanced.stageWidth).toBe(800);
+      expect(settings.defaultAdvanced.fps).toBe(60);
+      expect(settings.defaultAdvanced.stageWidth).toBe(800);
+    });
+
+    it('forces disableCompiler off in both advanced and defaultAdvanced on v1 load', () => {
+      // A user previously persisted disableCompiler: true under v1. After
+      // the schema split the toggle must always start as false.
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: {
+              ...DEFAULT_ADVANCED_SETTINGS,
+              disableCompiler: true,
+            },
+          },
+          version: 1,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.advanced.disableCompiler).toBe(false);
+      expect(settings.defaultAdvanced.disableCompiler).toBe(false);
+    });
   });
 });

@@ -32,7 +32,11 @@ export const STORAGE_KEYS = {
   settings: 'tw-viewer:settings:v1',
 } as const;
 
-export const STORAGE_VERSION = 1;
+// Bumped to 2 when the schema split `advanced` (runtime state) and
+// `defaultAdvanced` (saved defaults) into separate fields, and forced
+// `disableCompiler` to always start as `false`. v1 payloads are read and
+// migrated on the fly — see `src/lib/persistence.ts`.
+export const STORAGE_VERSION = 2;
 
 export const ENV = {
   githubRepoUrl:

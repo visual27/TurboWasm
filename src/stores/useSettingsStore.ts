@@ -1,8 +1,7 @@
 import { create } from 'zustand';
-import type { AdvancedSettings, Theme } from '@/types/settings';
+import type { AdvancedSettings, ExtensionSandboxMode, Theme } from '@/types/settings';
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
-  DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_ALLOWED_EXTENSION_URLS,
   VOLUME_MAX,
   VOLUME_MIN,
@@ -27,7 +26,18 @@ export interface SettingsState {
    *    unknown" case from the spec).
    */
   lastNonMuteVolume: number;
+  /**
+   * Current effective advanced settings. Reflects runtime `project.json`
+   * overrides and in-session edits via the Settings dialog. The runtime
+   * SettingsView subscribes to this slice.
+   */
   advanced: AdvancedSettings;
+  /**
+   * Saved default advanced settings. Only updated when the user explicitly
+   * presses the "Set as default" button in the Settings dialog. Excludes
+   * the Others-section fields: `disableCompiler` is always `false` here.
+   */
+  defaultAdvanced: AdvancedSettings;
   /**
    * Persistent allow-list of custom extension URLs the user has previously
    * approved. These URLs are loaded automatically on subsequent project
@@ -46,8 +56,45 @@ export interface SettingsState {
    * Returns the new volume.
    */
   toggleMute: () => number;
-  setAdvanced: (next: AdvancedSettings) => void;
+  /**
+   * Update one or more runtime advanced settings in memory. Does NOT write
+   * to localStorage — the user must press "Set as default" to make the
+   * change permanent. This is what the Settings dialog's switches / number
+   * fields call.
+   */
   patchAdvanced: (patch: Partial<AdvancedSettings>) => void;
+  /**
+   * Apply runtime settings overrides parsed from a `project.json`
+   * `_twconfig_` comment. Merged into `advanced` (in memory only) so the
+   * Settings dialog reflects the same values the VM is currently using.
+   * Does NOT persist.
+   */
+  applyRuntimeOverrides: (overrides: Partial<AdvancedSettings>) => void;
+  /**
+   * Promote the current runtime `advanced` into the saved
+   * `defaultAdvanced`. The Others-section fields are excluded:
+   * `disableCompiler` is always forced to `false` (and volume lives at the
+   * top level so it is not part of this snapshot either). All other
+   * advanced settings — including the current `extensionSandboxMode` —
+   * become the new defaults.
+   *
+   * Persists immediately.
+   */
+  saveAdvancedAsDefault: () => void;
+  /**
+   * Dedicated setter for `extensionSandboxMode`. Treated as a user
+   * preference that should persist across reloads (mirroring how volume
+   * persists immediately), so the call updates both the runtime
+   * `advanced` AND the saved `defaultAdvanced`, then persists.
+   */
+  setExtensionSandboxMode: (mode: ExtensionSandboxMode) => void;
+  /**
+   * Reset runtime `advanced` to the saved `defaultAdvanced`. Forces
+   * `disableCompiler` back to `false` so the runtime toggle is never
+   * silently re-enabled by stale persisted state.
+   *
+   * Persists immediately.
+   */
   resetAdvanced: () => void;
   /**
    * Append one URL to the persistent allow-list. No-op if already present
@@ -94,12 +141,17 @@ export function computeMuteToggle(
   return { volume: VOLUME_MIN, lastNonMuteVolume: currentVolume };
 }
 
-// High-frequency setters (setVolume, patchAdvanced) coalesce their disk
-// writes through this microtask + idle debouncer. The latest snapshot wins;
-// intermediate states are skipped. We still flush synchronously on
-// setTheme / setAdvanced / resetAdvanced / toggleMute so the rare but
-// user-meaningful "Settings closed, expect the next page load to keep my
+// High-frequency setters (setVolume, setExtensionSandboxMode) coalesce their
+// disk writes through this microtask + idle debouncer. The latest snapshot
+// wins; intermediate states are skipped. We still flush synchronously on
+// setTheme / saveAdvancedAsDefault / resetAdvanced / toggleMute so the rare
+// but user-meaningful "Settings closed, expect the next page load to keep my
 // choice" expectation is preserved.
+//
+// `patchAdvanced` and `applyRuntimeOverrides` are intentionally NOT
+// debounced here: they only mutate the in-memory runtime `advanced` and
+// must not touch localStorage until the user explicitly presses "Set as
+// default".
 let pendingSnapshot: SettingsState | null = null;
 let scheduled = false;
 function schedulePersist(snapshot: SettingsState): void {
@@ -120,6 +172,7 @@ function schedulePersist(snapshot: SettingsState): void {
           volume: snap.volume,
           lastNonMuteVolume: snap.lastNonMuteVolume,
           advanced: snap.advanced,
+          defaultAdvanced: snap.defaultAdvanced,
           allowedExtensionUrls: snap.allowedExtensionUrls,
         });
       }
@@ -147,6 +200,7 @@ function persistImmediate(state: SettingsState): void {
     volume: state.volume,
     lastNonMuteVolume: state.lastNonMuteVolume,
     advanced: state.advanced,
+    defaultAdvanced: state.defaultAdvanced,
     allowedExtensionUrls: state.allowedExtensionUrls,
   });
 }
@@ -159,6 +213,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // 100 % fallback is applied at toggle time, so we can keep this 0 here.
   lastNonMuteVolume: initial.lastNonMuteVolume ?? initial.volume,
   advanced: initial.advanced,
+  defaultAdvanced: initial.defaultAdvanced,
   allowedExtensionUrls: [...initial.allowedExtensionUrls],
   setTheme: (theme) => {
     set({ theme });
@@ -181,18 +236,50 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persistImmediate(get());
     return next;
   },
-  setAdvanced: (next) => {
-    set({ advanced: next });
-    persistImmediate(get());
-  },
   patchAdvanced: (patch) => {
+    // In-memory only. The Settings dialog edits the runtime `advanced`
+    // without persisting — the user must press "Set as default" to make
+    // changes survive a reload.
     const merged: AdvancedSettings = { ...get().advanced, ...patch };
     set({ advanced: merged });
+  },
+  applyRuntimeOverrides: (overrides) => {
+    // Mirrors `patchAdvanced` but is its own action so call sites are
+    // grep-able. Used by the project loader to push `_twconfig_` overrides
+    // from `project.json` into the Settings dialog.
+    if (Object.keys(overrides).length === 0) return;
+    const merged: AdvancedSettings = { ...get().advanced, ...overrides };
+    set({ advanced: merged });
+  },
+  saveAdvancedAsDefault: () => {
+    // "Set as default": snapshot the current runtime advanced into
+    // `defaultAdvanced`, excluding the Others-section fields. Volume is
+    // already persisted via `setVolume`, and `disableCompiler` is always
+    // forced off per spec.
+    const { advanced } = get();
+    const snapshot: AdvancedSettings = { ...advanced, disableCompiler: false };
+    set({ defaultAdvanced: snapshot });
+    persistImmediate(get());
+  },
+  setExtensionSandboxMode: (mode) => {
+    // Special case: extension sandbox mode is treated like volume — it
+    // persists immediately. Both the runtime `advanced` and the saved
+    // `defaultAdvanced` are kept in sync so "Reset to defaults" keeps the
+    // user's most recent sandbox choice.
+    const nextAdvanced: AdvancedSettings = { ...get().advanced, extensionSandboxMode: mode };
+    const nextDefault: AdvancedSettings = {
+      ...get().defaultAdvanced,
+      extensionSandboxMode: mode,
+    };
+    set({ advanced: nextAdvanced, defaultAdvanced: nextDefault });
     schedulePersist(get());
   },
   resetAdvanced: () => {
+    // Reset the runtime to the saved defaults (with disableCompiler forced
+    // off) and clear the extension allow-list.
+    const next: AdvancedSettings = { ...get().defaultAdvanced, disableCompiler: false };
     set({
-      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      advanced: next,
       allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
     });
     persistImmediate(get());
@@ -254,6 +341,7 @@ export function flushSettingsPersistForTesting(): void {
       volume: snap.volume,
       lastNonMuteVolume: snap.lastNonMuteVolume,
       advanced: snap.advanced,
+      defaultAdvanced: snap.defaultAdvanced,
       allowedExtensionUrls: snap.allowedExtensionUrls,
     });
   }

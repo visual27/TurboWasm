@@ -9,6 +9,7 @@ function resetStore(): void {
     volume: 100,
     lastNonMuteVolume: 100,
     advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+    defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [],
   });
 }
@@ -34,22 +35,119 @@ describe('useSettingsStore — basic', () => {
     expect(useSettingsStore.getState().volume).toBe(0);
   });
 
-  it('patchAdvanced merges partial', () => {
+  it('patchAdvanced merges partial into the runtime advanced only', () => {
     useSettingsStore.getState().patchAdvanced({ fps: 60, turboMode: true });
     const s = useSettingsStore.getState();
     expect(s.advanced.fps).toBe(60);
     expect(s.advanced.turboMode).toBe(true);
     expect(s.advanced.stageWidth).toBe(DEFAULT_ADVANCED_SETTINGS.stageWidth);
+    // patchAdvanced must NOT touch the saved defaults — only "Set as
+    // default" (saveAdvancedAsDefault) does that.
+    expect(s.defaultAdvanced).toEqual(DEFAULT_ADVANCED_SETTINGS);
   });
 
-  it('resetAdvanced restores defaults including the allow-list', () => {
-    useSettingsStore.getState().patchAdvanced({ fps: 60, stageWidth: 1000 });
+  it('patchAdvanced does NOT write to localStorage', async () => {
+    useSettingsStore.getState().patchAdvanced({ fps: 60 });
+    // Wait for any potential debounce flush.
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    if (raw) {
+      const parsed = JSON.parse(raw) as { state: { advanced: { fps: number } } };
+      // If a previous test left a v2 payload, the saved fps should still be
+      // the saved default (30), not the patched runtime value (60).
+      expect(parsed.state.advanced.fps).toBe(30);
+    }
+  });
+
+  it('saveAdvancedAsDefault snapshots runtime into defaultAdvanced (minus disableCompiler)', () => {
+    useSettingsStore.getState().patchAdvanced({
+      fps: 60,
+      stageWidth: 800,
+      turboMode: true,
+      disableCompiler: true,
+    });
+    useSettingsStore.getState().saveAdvancedAsDefault();
+    const s = useSettingsStore.getState();
+    // Runtime advanced still reflects the in-session edits.
+    expect(s.advanced.fps).toBe(60);
+    expect(s.advanced.disableCompiler).toBe(true);
+    // defaultAdvanced matches the runtime, but disableCompiler is forced off.
+    expect(s.defaultAdvanced.fps).toBe(60);
+    expect(s.defaultAdvanced.stageWidth).toBe(800);
+    expect(s.defaultAdvanced.turboMode).toBe(true);
+    expect(s.defaultAdvanced.disableCompiler).toBe(false);
+  });
+
+  it('saveAdvancedAsDefault persists immediately', () => {
+    useSettingsStore.getState().patchAdvanced({ fps: 77 });
+    useSettingsStore.getState().saveAdvancedAsDefault();
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    expect(raw).toBeTruthy();
+    const parsed = JSON.parse(raw as string) as {
+      state: { advanced: { fps: number }; defaultAdvanced: { fps: number } };
+    };
+    expect(parsed.state.advanced.fps).toBe(77);
+    expect(parsed.state.defaultAdvanced.fps).toBe(77);
+  });
+
+  it('applyRuntimeOverrides mirrors patchAdvanced but does not persist', () => {
+    useSettingsStore.getState().saveAdvancedAsDefault(); // clean slate
+    useSettingsStore.getState().applyRuntimeOverrides({ fps: 60, stageWidth: 640 });
+    const s = useSettingsStore.getState();
+    expect(s.advanced.fps).toBe(60);
+    expect(s.advanced.stageWidth).toBe(640);
+    // Defaults are untouched.
+    expect(s.defaultAdvanced.fps).toBe(DEFAULT_ADVANCED_SETTINGS.fps);
+  });
+
+  it('setExtensionSandboxMode updates both advanced and defaultAdvanced and persists', async () => {
+    useSettingsStore.getState().setExtensionSandboxMode('iframe');
+    const s = useSettingsStore.getState();
+    expect(s.advanced.extensionSandboxMode).toBe('iframe');
+    expect(s.defaultAdvanced.extensionSandboxMode).toBe('iframe');
+    // It must persist (debounced).
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    expect(raw).toBeTruthy();
+    const parsed = JSON.parse(raw as string) as {
+      state: {
+        advanced: { extensionSandboxMode: string };
+        defaultAdvanced: { extensionSandboxMode: string };
+      };
+    };
+    expect(parsed.state.advanced.extensionSandboxMode).toBe('iframe');
+    expect(parsed.state.defaultAdvanced.extensionSandboxMode).toBe('iframe');
+  });
+
+  it('resetAdvanced restores defaults from defaultAdvanced and forces disableCompiler off', () => {
+    useSettingsStore.getState().saveAdvancedAsDefault(); // defaultAdvanced = DEFAULT_ADVANCED_SETTINGS
+    useSettingsStore.getState().patchAdvanced({
+      fps: 60,
+      stageWidth: 1000,
+      disableCompiler: true,
+    });
     useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/x.js');
     useSettingsStore.getState().resetAdvanced();
     const s = useSettingsStore.getState();
+    // defaultAdvanced was DEFAULT_ADVANCED_SETTINGS, so advanced resets there.
     expect(s.advanced.fps).toBe(30);
     expect(s.advanced.stageWidth).toBe(480);
+    // disableCompiler is always forced off on reset, regardless of what was
+    // patched into the runtime advanced just before.
+    expect(s.advanced.disableCompiler).toBe(false);
     expect(s.allowedExtensionUrls).toEqual([]);
+  });
+
+  it('resetAdvanced picks up the saved defaults after "Set as default"', () => {
+    useSettingsStore.getState().patchAdvanced({ fps: 60, stageWidth: 800 });
+    useSettingsStore.getState().saveAdvancedAsDefault();
+    useSettingsStore.getState().patchAdvanced({ fps: 90 });
+    useSettingsStore.getState().resetAdvanced();
+    const s = useSettingsStore.getState();
+    expect(s.advanced.fps).toBe(60);
+    expect(s.advanced.stageWidth).toBe(800);
   });
 });
 
@@ -179,6 +277,7 @@ describe('useSettingsStore.toggleMute (smart restore)', () => {
       volume: 50,
       lastNonMuteVolume: 50,
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
     });
   });

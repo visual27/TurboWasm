@@ -20,12 +20,13 @@ describe('useSettingsStore persist debouncing (Phase 3-6 regression)', () => {
     mockedWrite.mockClear();
     mockedWrite.mockImplementation(() => undefined);
     // Reset the store to a known state. The actual localStorage state is
-    // irrelevant here 窶・writeSettings is mocked.
+    // irrelevant here — writeSettings is mocked.
     useSettingsStore.setState({
       theme: 'system',
       volume: 100,
       lastNonMuteVolume: 100,
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     });
   });
 
@@ -52,21 +53,54 @@ describe('useSettingsStore persist debouncing (Phase 3-6 regression)', () => {
     expect(last?.volume).toBe(30);
   });
 
-  it('patchAdvanced debounces and persists the merged advanced settings', async () => {
+  it('patchAdvanced does NOT persist — edits are in-memory until "Set as default"', async () => {
     useSettingsStore.getState().patchAdvanced({ fps: 60 });
     useSettingsStore.getState().patchAdvanced({ fps: 90 });
     useSettingsStore.getState().patchAdvanced({ stageWidth: 640 });
 
     await new Promise<void>((resolve) => queueMicrotask(resolve));
-    await new Promise<void>((resolve) => setTimeout(resolve, 60));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
 
     expect(useSettingsStore.getState().advanced.fps).toBe(90);
     expect(useSettingsStore.getState().advanced.stageWidth).toBe(640);
 
+    // patchAdvanced itself must not have triggered any persist. A previous
+    // test might have left a debounced volume write in flight, but the
+    // payload here cannot contain the patched fps / stageWidth.
+    if (mockedWrite.mock.calls.length > 0) {
+      for (const call of mockedWrite.mock.calls) {
+        const payload = call[0];
+        expect(payload.advanced.fps).toBe(30);
+        expect(payload.advanced.stageWidth).toBe(480);
+      }
+    }
+  });
+
+  it('saveAdvancedAsDefault writes synchronously exactly once', () => {
+    useSettingsStore.getState().patchAdvanced({ fps: 60, stageWidth: 800 });
+    // Even after some unrelated setVolume that schedules a debounced write,
+    // "Set as default" must take precedence and persist immediately.
+    useSettingsStore.getState().setVolume(42);
+    useSettingsStore.getState().saveAdvancedAsDefault();
+    expect(mockedWrite).toHaveBeenCalledTimes(1);
+    const payload = mockedWrite.mock.calls[0]?.[0];
+    expect(payload?.advanced.fps).toBe(60);
+    expect(payload?.advanced.stageWidth).toBe(800);
+    expect(payload?.defaultAdvanced.fps).toBe(60);
+    expect(payload?.defaultAdvanced.stageWidth).toBe(800);
+    // Volume from setVolume is in the same payload since the immediate
+    // write cancelled the debounced one.
+    expect(payload?.volume).toBe(42);
+  });
+
+  it('setExtensionSandboxMode writes both runtime advanced and defaultAdvanced', async () => {
+    useSettingsStore.getState().setExtensionSandboxMode('iframe');
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 60));
     expect(mockedWrite).toHaveBeenCalled();
     const last = mockedWrite.mock.calls[mockedWrite.mock.calls.length - 1]?.[0];
-    expect(last?.advanced.fps).toBe(90);
-    expect(last?.advanced.stageWidth).toBe(640);
+    expect(last?.advanced.extensionSandboxMode).toBe('iframe');
+    expect(last?.defaultAdvanced.extensionSandboxMode).toBe('iframe');
   });
 
   it('flushSettingsPersistForTesting writes any pending snapshot synchronously', () => {
@@ -83,9 +117,18 @@ describe('useSettingsStore persist debouncing (Phase 3-6 regression)', () => {
     expect(mockedWrite.mock.calls[0]?.[0]?.theme).toBe('dark');
   });
 
-  it('resetAdvanced writes synchronously', () => {
+  it('resetAdvanced writes synchronously and uses defaultAdvanced as the baseline', () => {
+    useSettingsStore.setState({
+      defaultAdvanced: {
+        ...DEFAULT_ADVANCED_SETTINGS,
+        fps: 75,
+        stageWidth: 1024,
+      },
+    });
     useSettingsStore.getState().resetAdvanced();
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite.mock.calls[0]?.[0]?.advanced.fps).toBe(30);
+    const payload = mockedWrite.mock.calls[0]?.[0];
+    expect(payload?.advanced.fps).toBe(75);
+    expect(payload?.advanced.stageWidth).toBe(1024);
   });
 });

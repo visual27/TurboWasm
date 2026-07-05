@@ -112,9 +112,10 @@ export function applyExtensionPermissionDecision(decision: ExtensionPermissionDe
     decision.sandboxMode === 'iframe' ||
     decision.sandboxMode === 'unsandboxed';
   if (sandboxChanged) {
-    useSettingsStore.getState().patchAdvanced({
-      extensionSandboxMode: decision.sandboxMode,
-    });
+    // extensionSandboxMode is treated like volume: a user preference that
+    // persists immediately (mirrored into both runtime `advanced` and saved
+    // `defaultAdvanced`).
+    useSettingsStore.getState().setExtensionSandboxMode(decision.sandboxMode);
     if (currentAdvanced) {
       currentAdvanced = { ...currentAdvanced, extensionSandboxMode: decision.sandboxMode };
     }
@@ -995,6 +996,11 @@ export async function loadProjectFromArrayBuffer(
     const overrides = await readTwconfigFromArrayBuffer(buf);
     if (Object.keys(overrides).length > 0) {
       currentAdvanced = { ...currentAdvanced, ...overrides };
+      // Also push the overrides into the React-side settings store so the
+      // Settings dialog reflects the same values the VM is currently using.
+      // This was previously module-local only, leaving the dialog out of
+      // sync with the runtime stage.
+      useSettingsStore.getState().applyRuntimeOverrides(overrides);
     }
   }
   // Always apply the resolved settings so Scaffolding's internal width/height

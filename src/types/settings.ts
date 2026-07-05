@@ -60,7 +60,19 @@ export interface UISettings {
   theme: Theme;
   volume: number;
   lastNonMuteVolume: number;
+  /**
+   * Current effective advanced settings. May diverge from `defaultAdvanced`
+   * after in-session edits or `project.json` runtime settings overrides.
+   */
   advanced: AdvancedSettings;
+  /**
+   * Saved default advanced settings. Only updated when the user explicitly
+   * presses the "Set as default" button in the Settings dialog, and it
+   * excludes the Others-section fields (volume + disableCompiler). The
+   * `disableCompiler` value here is always `false` regardless of what the
+   * runtime `advanced.disableCompiler` happens to be.
+   */
+  defaultAdvanced: AdvancedSettings;
   /**
    * Persistent allow-list of custom extension URLs the user has previously
    * approved. These URLs are loaded automatically on subsequent project
@@ -74,6 +86,7 @@ export interface SettingsStoreShape {
   volume: number;
   lastNonMuteVolume: number;
   advanced: AdvancedSettings;
+  defaultAdvanced: AdvancedSettings;
   allowedExtensionUrls: string[];
 }
 

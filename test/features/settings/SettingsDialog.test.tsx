@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
 
 describe('SettingsDialog — layout', () => {
   beforeEach(() => {
@@ -10,20 +11,8 @@ describe('SettingsDialog — layout', () => {
       theme: 'system',
       volume: 100,
       lastNonMuteVolume: 100,
-      advanced: {
-        fps: 30,
-        interpolation: false,
-        highQualityPen: false,
-        warpTimer: false,
-        infiniteClones: false,
-        removeFencing: false,
-        removeMiscLimits: false,
-        turboMode: false,
-        disableCompiler: false,
-        stageWidth: 480,
-        stageHeight: 360,
-        extensionSandboxMode: 'worker',
-      },
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
     });
   });
@@ -88,9 +77,10 @@ describe('SettingsDialog — layout', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     expect(screen.getByTestId('settings-scroll-area')).toBeInTheDocument();
     expect(screen.getByTestId('settings-reset')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-set-default')).toBeInTheDocument();
   });
 
-  it('resetAdvanced restores defaults', async () => {
+  it('resetAdvanced restores defaults from defaultAdvanced', async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().patchAdvanced({ fps: 60, stageWidth: 800 });
     expect(useSettingsStore.getState().advanced.fps).toBe(60);
@@ -98,6 +88,39 @@ describe('SettingsDialog — layout', () => {
     await user.click(screen.getByTestId('settings-reset'));
     expect(useSettingsStore.getState().advanced.fps).toBe(30);
     expect(useSettingsStore.getState().advanced.stageWidth).toBe(480);
+  });
+
+  it('"Set as default" promotes the runtime advanced into defaultAdvanced (minus disableCompiler)', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().patchAdvanced({
+      fps: 60,
+      stageWidth: 800,
+      turboMode: true,
+      disableCompiler: true,
+    });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-set-default'));
+    const s = useSettingsStore.getState();
+    // Runtime advanced keeps the in-session edits.
+    expect(s.advanced.fps).toBe(60);
+    expect(s.advanced.disableCompiler).toBe(true);
+    // defaultAdvanced is the runtime snapshot with disableCompiler forced off.
+    expect(s.defaultAdvanced.fps).toBe(60);
+    expect(s.defaultAdvanced.stageWidth).toBe(800);
+    expect(s.defaultAdvanced.turboMode).toBe(true);
+    expect(s.defaultAdvanced.disableCompiler).toBe(false);
+  });
+
+  it('"Set as default" then "Reset to defaults" restores the saved defaults', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().patchAdvanced({ fps: 60, stageWidth: 800 });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-set-default'));
+    useSettingsStore.getState().patchAdvanced({ fps: 90 });
+    await user.click(screen.getByTestId('settings-reset'));
+    const s = useSettingsStore.getState();
+    expect(s.advanced.fps).toBe(60);
+    expect(s.advanced.stageWidth).toBe(800);
   });
 });
 
@@ -107,20 +130,8 @@ describe('SettingsDialog — NumberField commit semantics', () => {
       theme: 'system',
       volume: 100,
       lastNonMuteVolume: 100,
-      advanced: {
-        fps: 30,
-        interpolation: false,
-        highQualityPen: false,
-        warpTimer: false,
-        infiniteClones: false,
-        removeFencing: false,
-        removeMiscLimits: false,
-        turboMode: false,
-        disableCompiler: false,
-        stageWidth: 480,
-        stageHeight: 360,
-        extensionSandboxMode: 'worker',
-      },
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
     });
   });
