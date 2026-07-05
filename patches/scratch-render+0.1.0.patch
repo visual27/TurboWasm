@@ -1,17 +1,18 @@
 diff --git a/node_modules/scratch-render/src/PenSkin.js b/node_modules/scratch-render/src/PenSkin.js
-index 762bfbe..df778f6 100644
+index 762bfbe..a41b446 100644
 --- a/node_modules/scratch-render/src/PenSkin.js
 +++ b/node_modules/scratch-render/src/PenSkin.js
-@@ -475,6 +475,16 @@ class PenSkin extends Skin {
+@@ -475,6 +475,22 @@ class PenSkin extends Skin {
      _setCanvasSize (canvasSize) {
          const [width, height] = canvasSize;
  
 +        // TurboWasm: degenerate native-size guard. Zero, non-finite, or
 +        // negative dimensions would cause the WebGL texture / framebuffer
-+        // creation below and `new ImageData(width, height)` (line 528) to
-+        // throw or render garbage. Skip the resize entirely; the next valid
-+        // resize will rebuild everything correctly. This can happen when a
-+        // custom extension drives the stage size to 0 during project load.
++        // creation below and `new ImageData(width, height)` (line below
++        // this guard) to throw or render garbage. Skip the resize entirely;
++        // the next valid resize will rebuild everything correctly. This can
++        // happen when a custom extension drives the stage size to 0 during
++        // project load.
 +        if (!(width >= 1) || !(height >= 1)) {
 +            // Clear stale silhouette buffers so a later updateSilhouette()
 +            // call uses the empty 1x1 fallback in Skin.js instead of trying
@@ -24,11 +25,12 @@ index 762bfbe..df778f6 100644
          // tw: do not resize if new size === old size
          if (this._size && this._size[0] === width && this._size[1] === height) {
              return;
+
 diff --git a/node_modules/scratch-render/src/RenderWebGL.js b/node_modules/scratch-render/src/RenderWebGL.js
-index 5363d68..ecd836c 100644
+index 5363d68..5562485 100644
 --- a/node_modules/scratch-render/src/RenderWebGL.js
 +++ b/node_modules/scratch-render/src/RenderWebGL.js
-@@ -1494,8 +1494,24 @@ class RenderWebGL extends EventEmitter {
+@@ -1494,8 +1496,24 @@ class RenderWebGL extends EventEmitter {
  
          // Set a reasonable max limit width and height for the bufferInfo bounds
          const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);

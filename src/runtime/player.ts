@@ -1102,9 +1102,8 @@ export async function loadProjectFromArrayBuffer(
     // TurboWasm: emit full diagnostic context to the browser console.
     // The user-visible `Failed to load project: ...` text is still produced
     // by the ProjectLoadError below, but this gives us the underlying stack
-    // trace and cause chain when chasing intermittent DOMException /
-    // ImageData errors raised by custom extensions (e.g. pen+, SPjson,
-    // SPimgEditor). See docs/extension-imagedata-investigation.md.
+    // trace and cause chain when chasing project-load failures that bubble
+    // up from custom extensions or vendored scratch-vm.
     // eslint-disable-next-line no-console
     console.error('[player] loadProject failed:', err);
     if (err instanceof Error && err.stack) {
