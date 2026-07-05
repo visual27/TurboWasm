@@ -220,4 +220,101 @@ describe('ProjectMetadataPanel', () => {
     // the UI surfaces.
     expect(cls).not.toMatch(/bg-card/);
   });
+
+  describe('inline linkification (URLs and @mentions)', () => {
+    const WITH_URL_IN_INSTRUCTIONS: ProjectMetadata = {
+      id: '1',
+      title: 'Has URL',
+      instructions: 'See https://example.com for the source code.',
+    };
+
+    const WITH_MENTION_IN_INSTRUCTIONS: ProjectMetadata = {
+      id: '2',
+      title: 'Has mention',
+      instructions: 'Thanks to @grape for the music!',
+    };
+
+    const WITH_URL_AND_MENTION_IN_NOTES: ProjectMetadata = {
+      id: '3',
+      title: 'Mixed',
+      notesAndCredits: 'See https://example.com and cc @apple',
+    };
+
+    const WITH_TRAILING_PUNCT: ProjectMetadata = {
+      id: '4',
+      title: 'Trailing punct',
+      instructions: 'Open https://example.com.',
+    };
+
+    it('renders an https URL in Introductions as an outbound anchor', () => {
+      render(<ProjectMetadataPanel metadata={WITH_URL_IN_INSTRUCTIONS} />);
+      const link = screen.getByTestId('metadata-link');
+      expect(link.tagName).toBe('A');
+      expect(link).toHaveAttribute('href', 'https://example.com');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+      expect(link.textContent).toBe('https://example.com');
+    });
+
+    it('renders an @-mention in Introductions as a profile anchor', () => {
+      render(<ProjectMetadataPanel metadata={WITH_MENTION_IN_INSTRUCTIONS} />);
+      const link = screen.getByTestId('metadata-mention');
+      expect(link.tagName).toBe('A');
+      expect(link).toHaveAttribute(
+        'href',
+        'https://scratch.mit.edu/users/grape/',
+      );
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+      expect(link).toHaveAttribute('data-mention-username', 'grape');
+      expect(link.textContent).toBe('@grape');
+    });
+
+    it('renders both URL anchors and mention anchors in Notes & Credits', () => {
+      render(<ProjectMetadataPanel metadata={WITH_URL_AND_MENTION_IN_NOTES} />);
+      const intro = screen.queryByTestId('metadata-section-introductions');
+      const notes = screen.getByTestId('metadata-section-notes');
+      expect(intro).toBeNull();
+      // Notes & Credits must contain both anchors within its own scope.
+      const links = notes.querySelectorAll('a[data-testid="metadata-link"]');
+      const mentions = notes.querySelectorAll('a[data-testid="metadata-mention"]');
+      expect(links).toHaveLength(1);
+      expect(mentions).toHaveLength(1);
+      expect(links[0]).toHaveAttribute('href', 'https://example.com');
+      expect(mentions[0]).toHaveAttribute(
+        'href',
+        'https://scratch.mit.edu/users/apple/',
+      );
+    });
+
+    it('keeps the surrounding <p> structure intact and preserves testId', () => {
+      render(<ProjectMetadataPanel metadata={WITH_MENTION_IN_INSTRUCTIONS} />);
+      const introSection = screen.getByTestId('metadata-section-introductions');
+      const p = introSection.querySelector('p[data-testid="metadata-instructions"]');
+      expect(p).not.toBeNull();
+      // Three children: leading text span, mention anchor, trailing text span.
+      const children = p ? Array.from(p.children) : [];
+      expect(children).toHaveLength(3);
+      // The anchor is the middle child.
+      expect(children[1]?.tagName).toBe('A');
+    });
+
+    it('strips trailing sentence punctuation from a URL inside the prose', () => {
+      render(<ProjectMetadataPanel metadata={WITH_TRAILING_PUNCT} />);
+      const link = screen.getByTestId('metadata-link');
+      // The URL must not include the trailing period.
+      expect(link).toHaveAttribute('href', 'https://example.com');
+      expect(link.textContent).toBe('https://example.com');
+      // The period is still rendered as plain text inside the section.
+      const introSection = screen.getByTestId('metadata-section-introductions');
+      expect(introSection).toHaveTextContent('Open https://example.com.');
+    });
+
+    it('does not linkify plain text', () => {
+      render(<ProjectMetadataPanel metadata={FULL_METADATA} />);
+      // FULL_METADATA has no URL or @-mention in its prose.
+      expect(screen.queryByTestId('metadata-link')).toBeNull();
+      expect(screen.queryByTestId('metadata-mention')).toBeNull();
+    });
+  });
 });

@@ -3,6 +3,8 @@ import type { ProjectMetadata } from '@/types/project';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+import { linkifyMetadataText, scratchProfileUrl } from '@/utils/linkify';
+import { LinkedText } from '@/features/stage/LinkedText';
 
 export interface ProjectMetadataPanelProps {
   metadata: ProjectMetadata;
@@ -30,11 +32,6 @@ function Section({ title, testId, children }: SectionProps): React.JSX.Element {
 // Build the canonical Scratch URL for a project page.
 function scratchProjectUrl(id: string): string {
   return `https://scratch.mit.edu/projects/${encodeURIComponent(id)}/`;
-}
-
-// Build the canonical Scratch URL for a user profile page.
-function scratchProfileUrl(username: string): string {
-  return `https://scratch.mit.edu/users/${encodeURIComponent(username)}/`;
 }
 
 /**
@@ -69,6 +66,14 @@ export const ProjectMetadataPanel = React.memo(function ProjectMetadataPanel({
 
   const instructions = metadata.instructions?.trim() ?? '';
   const notes = metadata.notesAndCredits?.trim() ?? '';
+
+  // Inline-linkify the prose sections so URLs become clickable and
+  // `@username` references become profile links. The linkify helper is
+  // pure and cheap enough to run inline; we don't memoise because the
+  // text is already memoised by React.memo on the parent component and
+  // linkify is single-pass.
+  const instructionSegments = linkifyMetadataText(instructions);
+  const noteSegments = linkifyMetadataText(notes);
 
   const hasInstructions = instructions.length > 0;
   const hasNotes = notes.length > 0;
@@ -178,13 +183,17 @@ export const ProjectMetadataPanel = React.memo(function ProjectMetadataPanel({
         <div className="space-y-5 pr-1">
           {hasIntroductions && (
             <Section title="Introductions" testId="metadata-section-introductions">
-              <p data-testid="metadata-instructions">{instructions}</p>
+              <p data-testid="metadata-instructions">
+                <LinkedText segments={instructionSegments} />
+              </p>
             </Section>
           )}
 
           {hasNotes && (
             <Section title="Notes & Credits" testId="metadata-section-notes">
-              <p data-testid="metadata-notes">{notes}</p>
+              <p data-testid="metadata-notes">
+                <LinkedText segments={noteSegments} />
+              </p>
             </Section>
           )}
         </div>
