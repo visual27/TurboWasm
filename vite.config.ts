@@ -25,20 +25,18 @@ export default defineConfig({
     target: 'esnext',
     rollupOptions: {
       output: {
-        manualChunks: {
-          scaffolding: ['@turbowarp/scaffolding'],
-          'react-vendor': ['react', 'react-dom'],
-          'radix-vendor': [
-            '@radix-ui/react-dialog',
-            '@radix-ui/react-label',
-            '@radix-ui/react-slider',
-            '@radix-ui/react-switch',
-            '@radix-ui/react-tabs',
-            '@radix-ui/react-tooltip',
-            '@radix-ui/react-separator',
-            '@radix-ui/react-scroll-area',
-            '@radix-ui/react-slot',
-          ],
+        manualChunks(id: string): string | undefined {
+          if (id.includes('@turbowarp/scaffolding')) return 'scaffolding';
+          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
+            return 'react-vendor';
+          }
+          if (
+            id.includes('node_modules/@radix-ui/') &&
+            !id.includes('node_modules/@radix-ui/react-popover')
+          ) {
+            return 'radix-vendor';
+          }
+          return undefined;
         },
       },
     },

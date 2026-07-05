@@ -106,7 +106,19 @@ if (!existsSync(scratchVmPatch)) {
 }
 
 // 1. Clone vendored/scratch-vm and apply the local fork patch.
-if (!existsSync(resolve(scratchVmDir, '.git'))) {
+//
+// Use package.json as the sentinel: `.git` alone could be a leftover from a
+// previous failed setup (or a copied `.git` with no working tree), which
+// the naive `.git`-exists check would treat as "already cloned" and then
+// the subsequent `git apply` would fail with missing-file context. When the
+// sentinel is missing, remove the stale directory before re-cloning so
+// `git clone` does not bail out on a non-empty target.
+const scratchVmSentinel = resolve(scratchVmDir, 'package.json');
+if (!existsSync(scratchVmSentinel)) {
+  if (existsSync(scratchVmDir)) {
+    log('Stale vendored/scratch-vm (no package.json); removing before re-clone.');
+    rmSync(scratchVmDir, { recursive: true, force: true });
+  }
   log(`Cloning ${SCRATCH_VM_REPO} (${SCRATCH_VM_REF}) into vendored/scratch-vm`);
   run('git', [
     'clone',
@@ -122,7 +134,16 @@ if (!existsSync(resolve(scratchVmDir, '.git'))) {
 }
 
 log(`Applying ${scratchVmPatch} to vendored/scratch-vm`);
-run('git', ['apply', '--3way', scratchVmPatch], { cwd: scratchVmDir });
+// `--ignore-whitespace`: the upstream `.gitattributes` marks `*.js` as
+// `text eol=lf` and the global `core.autocrlf=true` setting on Git for
+// Windows normalizes line endings at checkout time. When both `git clone`
+// and `git apply` are invoked from this Node process via `spawnSync`, the
+// rehydrated working tree can end up with whitespace that does not
+// byte-equal the patch context (which was generated against the raw blob
+// content). `--ignore-whitespace` accepts whitespace-incompatible context
+// and makes the patch apply cleanly. We keep `--3way` so any genuine
+// non-whitespace conflict still surfaces.
+run('git', ['apply', '--3way', '--ignore-whitespace', scratchVmPatch], { cwd: scratchVmDir });
 
 // 2. Clone vendored/scaffolding (unpatched; the dep still points at the
 //    upstream github: ref so npm will fetch and hoist scratch-vm + its deps).
@@ -157,7 +178,11 @@ run(
 
 // 4. Apply the scaffolding patch (now switches scratch-vm to file:).
 log(`Applying ${scaffoldingPatch}`);
-run('git', ['apply', '--3way', scaffoldingPatch], { cwd: scaffoldingDir });
+// `--ignore-whitespace` for the same reason as the scratch-vm patch
+// above: Git for Windows + `core.autocrlf=true` + the auto-attached
+// npm-regenerated package-lock.json contents cause context bytes to
+// mismatch the recorded patch if both clone and apply run via spawnSync.
+run('git', ['apply', '--3way', '--ignore-whitespace', scaffoldingPatch], { cwd: scaffoldingDir });
 
 // 5. Mirror the patched vendored/scratch-vm over the just-installed
 //    vendored/scaffolding/node_modules/scratch-vm. npm strips .git and

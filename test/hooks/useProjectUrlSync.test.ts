@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import {
   readProjectIdFromHash,
@@ -51,7 +51,7 @@ describe('URL hash utilities', () => {
 });
 
 describe('useProjectUrlSync', () => {
-  let loadByIdMock: ReturnType<typeof vi.fn>;
+  let loadByIdMock: Mock<(id: string) => Promise<unknown>>;
 
   beforeEach(() => {
     window.history.replaceState(null, '', '/');
@@ -61,7 +61,7 @@ describe('useProjectUrlSync', () => {
       source: null,
       loadState: 'idle',
     });
-    loadByIdMock = vi.fn().mockResolvedValue(undefined);
+    loadByIdMock = vi.fn<(id: string) => Promise<unknown>>(() => Promise.resolve(undefined));
   });
 
   afterEach(() => {
