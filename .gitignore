@@ -13,8 +13,10 @@ vendored/
 !.vscode/extensions.json
 .idea
 .DS_Store
+AGENTS.md
 
 # Logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -22,4 +24,12 @@ pnpm-debug.log*
 
 # Build
 *.tsbuildinfo
-*.log
+.tsbuildinfo-node/
+
+# Test coverage
+coverage/
+*.lcov
+
+# Env (only .env.example is meant to be tracked)
+.env
+.env.*.bak
