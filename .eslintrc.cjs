@@ -17,6 +17,8 @@ module.exports = {
     'dist',
     'node_modules',
     'vendored',
+    'wasm-collision/target',
+    'wasm-collision/pkg',
     '.eslintrc.cjs',
     'vite.config.ts',
     '*.config.*',

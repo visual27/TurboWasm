@@ -20,9 +20,11 @@ export default defineConfig({
     // exports (Scaffolding, CloudVariables, Packages). Without this, Vite
     // loads the UMD file directly and `mod.Scaffolding` is undefined.
     include: ['@turbowarp/scaffolding'],
+    exclude: ['@tw-viewer/wasm-collision'],
   },
   build: {
-    target: 'esnext',
+    target: 'es2022',
+    assetsInlineLimit: 0,
     rollupOptions: {
       output: {
         manualChunks(id: string): string | undefined {

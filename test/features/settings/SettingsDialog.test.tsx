@@ -65,6 +65,7 @@ describe('SettingsDialog — layout', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     expect(screen.getByText('Volume')).toBeInTheDocument();
     expect(screen.getByText('Disable Compiler')).toBeInTheDocument();
+    expect(screen.getByText('TurboWasm Acceleration')).toBeInTheDocument();
   });
 
   it('does NOT render an Extensions tab', () => {
@@ -121,6 +122,44 @@ describe('SettingsDialog — layout', () => {
     const s = useSettingsStore.getState();
     expect(s.advanced.fps).toBe(60);
     expect(s.advanced.stageWidth).toBe(800);
+  });
+});
+
+describe('SettingsDialog — TurboWasm Acceleration toggle', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+    });
+  });
+
+  it('defaults the toggle to ON', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText('TurboWasm Acceleration toggle') as HTMLButtonElement;
+    expect(toggle.getAttribute('data-state')).toBe('checked');
+    expect(useSettingsStore.getState().advanced.turboWasmAccelerationEnabled).toBe(true);
+  });
+
+  it('flips the toggle OFF and propagates to the store', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText('TurboWasm Acceleration toggle');
+    await user.click(toggle);
+    expect(useSettingsStore.getState().advanced.turboWasmAccelerationEnabled).toBe(false);
+  });
+
+  it('forces defaultAdvanced.turboWasmAccelerationEnabled to true on "Set as default"', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().patchAdvanced({ turboWasmAccelerationEnabled: false });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-set-default'));
+    const s = useSettingsStore.getState();
+    expect(s.advanced.turboWasmAccelerationEnabled).toBe(false);
+    expect(s.defaultAdvanced.turboWasmAccelerationEnabled).toBe(true);
   });
 });
 

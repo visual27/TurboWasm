@@ -23,11 +23,21 @@ import { setCloudProvider, getCloudProvider } from '@/runtime/cloud-provider';
 import { fetchProjectFromId } from '@/services/scratch-project';
 import type { ProjectFetchResult, ProjectMetadata } from '@/types/project';
 import { ProjectLoadError } from '@/types/project';
+import {
+  applyTurboWasmAcceleration,
+  removeTurboWasmAcceleration,
+} from '@/runtime/tw-wasm/applyTurboWasmAcceleration';
+import {
+  detectCapabilities,
+  type RuntimeCapabilities,
+} from '@/runtime/tw-wasm/capabilities';
+import { initWasmCollision } from '@/runtime/tw-wasm/wasm-collision-client';
 
 let attachedContainer: HTMLElement | null = null;
 let attachedScaffolding: ScaffoldingInstance | null = null;
 let currentAdvanced: AdvancedSettings | null = null;
 let projectLoadToken = 0;
+let runtimeCapabilities: RuntimeCapabilities | null = null;
 
 let readyPromise: Promise<ScaffoldingInstance> | null = null;
 
@@ -158,6 +168,19 @@ export function __resetPlayerReadyForTesting(): void {
   playerReadyPromise = new Promise<void>((resolve) => {
     playerReadyResolve = resolve;
   });
+}
+
+/**
+ * Drop the cached runtime capability snapshot and detach any TurboWasm hooks
+ * from the live Scaffolding's renderer. Intended for tests that need to
+ * re-evaluate `detectCapabilities` between cases without re-instantiating
+ * the Scaffolding.
+ */
+export function __resetTurboWasmForTesting(): void {
+  runtimeCapabilities = null;
+  if (attachedScaffolding) {
+    removeTurboWasmAcceleration(attachedScaffolding);
+  }
 }
 
 /**
@@ -491,6 +514,24 @@ async function initScaffolding(
   );
   // Register Scratch's official asset CDN so project ID loads can resolve assets.
   setupScratchAssetStore(attachedScaffolding);
+  // TurboWasm acceleration: detect capabilities + initialise the WASM
+  // module in parallel with the renderer setup so the renderer hook can be
+  // installed the moment we have a renderer reference. If the WASM fails to
+  // load we silently fall back to the JS path — no toasts, no modal, just
+  // a one-time info entry the user can inspect via the error log.
+  if (!runtimeCapabilities) {
+    runtimeCapabilities = await detectCapabilities().catch(() => ({
+      wasmSimd: false,
+      webgpu: false,
+    }));
+  }
+  if (advanced.turboWasmAccelerationEnabled && runtimeCapabilities.wasmSimd) {
+    await initWasmCollision();
+  }
+  applyTurboWasmAcceleration(attachedScaffolding, {
+    enabled: advanced.turboWasmAccelerationEnabled,
+    caps: runtimeCapabilities,
+  });
   attachedScaffolding.appendTo(container);
   return attachedScaffolding;
 }
@@ -517,6 +558,7 @@ function getCurrentAdvanced(): AdvancedSettings {
     stageWidth: 480,
     stageHeight: 360,
     extensionSandboxMode: 'worker',
+    turboWasmAccelerationEnabled: true,
   };
 }
 
@@ -534,6 +576,7 @@ function defaultAdvanced(): AdvancedSettings {
     stageWidth: 480,
     stageHeight: 360,
     extensionSandboxMode: 'worker',
+    turboWasmAccelerationEnabled: true,
   };
 }
 
@@ -597,11 +640,21 @@ export async function ensurePlayerReady(): Promise<ScaffoldingInstance> {
 
 export function applySettings(advanced: AdvancedSettings): void {
   if (!attachedScaffolding || !currentAdvanced) return;
+  const previous = currentAdvanced;
   currentAdvanced = { ...advanced };
   applyAdvancedSettings(attachedScaffolding, currentAdvanced);
   const vm = asVm(attachedScaffolding.vm);
   if (vm.setStageSize) {
     vm.setStageSize(currentAdvanced.stageWidth, currentAdvanced.stageHeight);
+  }
+  if (runtimeCapabilities && previous.turboWasmAccelerationEnabled !== advanced.turboWasmAccelerationEnabled) {
+    if (advanced.turboWasmAccelerationEnabled && runtimeCapabilities.wasmSimd) {
+      void initWasmCollision();
+    }
+    applyTurboWasmAcceleration(attachedScaffolding, {
+      enabled: advanced.turboWasmAccelerationEnabled,
+      caps: runtimeCapabilities,
+    });
   }
 }
 

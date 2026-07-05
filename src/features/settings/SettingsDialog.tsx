@@ -395,6 +395,18 @@ const OthersSection = React.memo(function OthersSection({
           onChange={(v) => patch({ disableCompiler: v })}
         />
       </FieldRow>
+      <FieldRow
+        id="turbo-wasm-acceleration"
+        label="TurboWasm Acceleration"
+        description="Offload collision detection to a WebAssembly SIMD module. Falls back to the JS path automatically when unsupported."
+      >
+        <SwitchField
+          id="turbo-wasm-acceleration"
+          checked={advanced.turboWasmAccelerationEnabled}
+          onChange={(v) => patch({ turboWasmAccelerationEnabled: v })}
+          ariaLabel="TurboWasm Acceleration toggle"
+        />
+      </FieldRow>
     </SettingsSection>
   );
 });

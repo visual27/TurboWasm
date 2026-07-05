@@ -97,6 +97,10 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
     extensionSandboxMode: isExtensionSandboxMode(r.extensionSandboxMode)
       ? r.extensionSandboxMode
       : base.extensionSandboxMode,
+    turboWasmAccelerationEnabled:
+      typeof r.turboWasmAccelerationEnabled === 'boolean'
+        ? r.turboWasmAccelerationEnabled
+        : base.turboWasmAccelerationEnabled,
   };
 }
 

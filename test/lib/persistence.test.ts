@@ -167,6 +167,7 @@ describe('persistence', () => {
         'stageHeight',
         'stageWidth',
         'turboMode',
+        'turboWasmAccelerationEnabled',
         'warpTimer',
       ].sort(),
     );

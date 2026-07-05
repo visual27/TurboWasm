@@ -254,10 +254,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   saveAdvancedAsDefault: () => {
     // "Set as default": snapshot the current runtime advanced into
     // `defaultAdvanced`, excluding the Others-section fields. Volume is
-    // already persisted via `setVolume`, and `disableCompiler` is always
-    // forced off per spec.
+    // already persisted via `setVolume`; `disableCompiler` is always
+    // forced off and `turboWasmAccelerationEnabled` is always forced on
+    // so a user who disabled acceleration cannot lock themselves into the
+    // legacy path via "Set as default".
     const { advanced } = get();
-    const snapshot: AdvancedSettings = { ...advanced, disableCompiler: false };
+    const snapshot: AdvancedSettings = {
+      ...advanced,
+      disableCompiler: false,
+      turboWasmAccelerationEnabled: true,
+    };
     set({ defaultAdvanced: snapshot });
     persistImmediate(get());
   },

@@ -8,6 +8,11 @@ dist-ssr
 # Local vendored forks (scratch-vm, scaffolding) for VM perf work
 /vendored/
 
+# Rust/WASM toolchain outputs (TurboWasm collision crate)
+wasm-collision/target/
+wasm-collision/pkg/
+wasm-collision/Cargo.lock
+
 # Editors
 .vscode/*
 !.vscode/extensions.json

@@ -15,6 +15,7 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   stageWidth: 480,
   stageHeight: 360,
   extensionSandboxMode: 'worker',
+  turboWasmAccelerationEnabled: true,
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];

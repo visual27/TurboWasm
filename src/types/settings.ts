@@ -48,6 +48,20 @@ export interface AdvancedSettings {
    * Default: 'worker' (safe).
    */
   extensionSandboxMode: ExtensionSandboxMode;
+  /**
+   * Whether CPU-heavy collision detection (`isTouchingColor`,
+   * `isTouchingDrawables`) is offloaded to the TurboWasm WebAssembly module.
+   *
+   * When `true` and the runtime detected `WASM SIMD` support, the vendored
+   * scratch-render falls through to the WASM batch collision API. When
+   * `false`, the original JavaScript loop in `RenderWebGL` is used
+   * unconditionally (useful for debugging parity).
+   *
+   * This is an Others-section field: it persists across reloads via the
+   * settings store, but `saveAdvancedAsDefault()` forces it back to `true`
+   * so the user cannot accidentally lock themselves into the legacy path.
+   */
+  turboWasmAccelerationEnabled: boolean;
 }
 
 /**
