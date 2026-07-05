@@ -5,6 +5,7 @@
   "type": "module",
   "description": "A minimal, statically-deployed SB3 viewer built on TurboWarp Scaffolding.",
   "scripts": {
+    "setup": "node scripts/setup-vendored.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json && vite build",
     "preview": "vite preview",

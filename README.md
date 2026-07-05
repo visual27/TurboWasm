@@ -21,20 +21,32 @@ This project is **not** a Scratch editor — it is a read-only player for `.sb3`
 ## Quick start
 
 ```bash
-npm install
-cd vendored/scaffolding && npm install && npm run build && cd ../..
-npm run dev      # start dev server
-npm run build    # production build → dist/
-npm run preview  # preview built output
-npm test         # run unit tests
-npm run lint     # run ESLint
+npm install        # root deps + postinstall reapplies patches/scratch-render+0.1.0.patch
+npm run setup      # clone vendored/{scaffolding,scratch-vm} + apply local patches + build (idempotent)
+npm run dev        # start dev server
+npm run build      # production build → dist/
+npm run preview    # preview built output
+npm test           # run unit tests
+npm run lint       # run ESLint
 npm run typecheck
 ```
 
-### Vendored scaffolding & scratch-render patch
+`npm run setup` materializes `vendored/` (which is `.gitignore`'d) from the
+upstream `TurboWarp/scaffolding` and `TurboWarp/scratch-vm` repos, applies the
+local fork patches under `patches/vendored/`, installs its dependencies, and
+runs its build. It is a no-op once `vendored/scaffolding/dist/scaffolding-min.js`
+exists. To re-bootstrap from scratch, run `npm run setup -- --force`.
 
-`vendored/scaffolding/node_modules/scratch-render` carries a small in-tree patch
-(see `patches/scratch-render+0.1.0.patch`) that guards against the
+### Vendored scaffolding, scratch-vm & scratch-render patches
+
+`vendored/` contains local forks of `TurboWarp/scaffolding` and
+`TurboWarp/scratch-vm` (see `patches/vendored/scaffolding+0.4.0.patch` and
+`patches/vendored/scratch-vm.patch`). The scratch-vm fork carries VM
+hot-path optimizations consumed via `vendored/scaffolding`'s `file:../scratch-vm`
+dependency link. Both patches are applied automatically by `npm run setup`.
+
+In addition, `vendored/scaffolding/node_modules/scratch-render` carries a small
+in-tree patch (`patches/scratch-render+0.1.0.patch`) that guards against the
 `Failed to construct 'ImageData': The source height is zero or not a number`
 DOMException thrown by `RenderWebGL.extractDrawableScreenSpace` /
 `PenSkin._setCanvasSize` when a custom extension drives a drawable or the
@@ -49,7 +61,9 @@ npm run apply:scratch-render-patch
 If you ever need to regenerate the patch after touching scratch-render sources,
 use `npx patch-package scratch-render --cwd vendored/scaffolding` (then move
 the resulting `patches/scratch-render+0.1.0.patch` to the project root if it
-was generated inside `vendored/`).
+was generated inside `vendored/`). For the vendored scaffolding / scratch-vm
+patches, regenerate from the vendored working copies with
+`git -C vendored/<repo> diff > patches/vendored/<repo>.patch`.
 
 The build output in `dist/` is a fully static site. Deploy the contents of `dist/` to any static host (Cloudflare Pages, GitHub Pages, Netlify, Vercel static, etc.) — no server-side runtime required.
 

@@ -6,7 +6,7 @@ dist-ssr
 .env.*.local
 
 # Local vendored forks (scratch-vm, scaffolding) for VM perf work
-vendored/
+/vendored/
 
 # Editors
 .vscode/*

@@ -1,0 +1,351 @@
+diff --git a/src/engine/runtime.js b/src/engine/runtime.js
+index 1df8dff..5c49ee5 100644
+--- a/src/engine/runtime.js
++++ b/src/engine/runtime.js
+@@ -273,6 +273,13 @@ class Runtime extends EventEmitter {
+          * @type {Object.<string, Object>}
+          */
+         this._hats = {};
++        /**
++         * Cached array of [hatOpcode, hatMeta] pairs for the hot-path iteration
++         * in Runtime._step. Built lazily and invalidated whenever this._hats is
++         * mutated. Avoids the per-frame `for...in + hasOwnProperty.call` walk.
++         * @type {?Array.<[string, {edgeActivated: boolean, restartExistingThreads: boolean}]>}
++         */
++        this._hatsCache = null;
+ 
+         /**
+          * Map of opcode to information about whether the block's return value should be interpreted
+@@ -282,10 +289,11 @@ class Runtime extends EventEmitter {
+         this._flowing = {};
+ 
+         /**
+-         * A list of script block IDs that were glowing during the previous frame.
+-         * @type {!Array.<!string>}
++         * A set of script block IDs that were glowing during the previous frame.
++         * Stored as a Set for O(1) membership checks in the per-frame glow diff.
++         * @type {!Set.<!string>}
+          */
+-        this._scriptGlowsPreviousFrame = [];
++        this._scriptGlowsPreviousFrame = new Set();
+ 
+         /**
+          * Number of non-monitor threads running during the previous frame.
+@@ -1005,6 +1013,7 @@ class Runtime extends EventEmitter {
+                     for (const hatName in packageHats) {
+                         if (Object.prototype.hasOwnProperty.call(packageHats, hatName)) {
+                             this._hats[hatName] = packageHats[hatName];
++                            this._hatsCache = null;
+                         }
+                     }
+                 }
+@@ -1173,6 +1182,7 @@ class Runtime extends EventEmitter {
+                             edgeActivated: blockInfo.isEdgeActivated,
+                             restartExistingThreads: blockInfo.shouldRestartExistingThreads
+                         };
++                        this._hatsCache = null;
+                     } else if (blockInfo.blockType === BlockType.CONDITIONAL) {
+                         this._flowing[opcode] = {
+                             conditional: true,
+@@ -2520,16 +2530,45 @@ class Runtime extends EventEmitter {
+             this.profiler.start(stepProfilerId);
+         }
+ 
+-        // Clean up threads that were told to stop during or since the last step
+-        this.threads = this.threads.filter(thread => !thread.isKilled);
+-        this.updateThreadMap();
++        // Clean up threads that were told to stop during or since the last step.
++        // In-place compaction: only walk the array if at least one thread is killed.
++        // The threadMap is maintained incrementally by _pushThread / _restartThread /
++        // Sequencer.stepThreads, so no full rebuild is needed here.
++        const threads = this.threads;
++        let needsCompaction = false;
++        for (let i = 0; i < threads.length; i++) {
++            if (threads[i].isKilled) {
++                needsCompaction = true;
++                break;
++            }
++        }
++        if (needsCompaction) {
++            let writeIndex = 0;
++            for (let readIndex = 0; readIndex < threads.length; readIndex++) {
++                const thread = threads[readIndex];
++                if (thread.isKilled) {
++                    if (!thread.stackClick && !thread.updateMonitor) {
++                        this.threadMap.delete(thread.getId());
++                    }
++                } else {
++                    threads[writeIndex++] = thread;
++                }
++            }
++            threads.length = writeIndex;
++        }
+ 
+         // Find all edge-activated hats, and add them to threads to be evaluated.
+-        for (const hatType in this._hats) {
+-            if (!Object.prototype.hasOwnProperty.call(this._hats, hatType)) continue;
+-            const hat = this._hats[hatType];
+-            if (hat.edgeActivated) {
+-                this.startHats(hatType);
++        // Iterate the cached [key, value] array to avoid per-frame property walks
++        // and `hasOwnProperty` calls. The cache is rebuilt lazily whenever _hats
++        // is mutated (see _registerBlockPackages, _registerExtensionPrimitives).
++        if (this._hatsCache === null) {
++            this._hatsCache = Object.entries(this._hats);
++        }
++        const hatsCache = this._hatsCache;
++        for (let h = 0; h < hatsCache.length; h++) {
++            const entry = hatsCache[h];
++            if (entry[1].edgeActivated) {
++                this.startHats(entry[0]);
+             }
+         }
+         this.redrawRequested = false;
+@@ -2551,7 +2590,7 @@ class Runtime extends EventEmitter {
+         // flag will still indicate that a script ran.
+         this._emitProjectRunStatus(
+             this.threads.length + doneThreads.length -
+-                this._getMonitorThreadCount([...this.threads, ...doneThreads]));
++                this._getMonitorThreadCount(this.threads, doneThreads));
+         // Store threads that completed this iteration for testing and other
+         // internal purposes.
+         this._lastStepDoneThreads = doneThreads;
+@@ -2595,16 +2634,24 @@ class Runtime extends EventEmitter {
+     }
+ 
+     /**
+-     * Get the number of threads in the given array that are monitor threads (threads
++     * Get the number of threads in the given arrays that are monitor threads (threads
+      * that update monitor values, and don't count as running a script).
+-     * @param {!Array.<Thread>} threads The set of threads to look through.
+-     * @return {number} The number of monitor threads in threads.
++     * @param {!Array.<Thread>} threadsA Primary set of threads to look through.
++     * @param {Array.<Thread>=} threadsB Optional secondary set; pass to count both
++     *     the live and just-finished threads in a single pass without allocating
++     *     a combined array via spread.
++     * @return {number} The number of monitor threads across the inputs.
+      */
+-    _getMonitorThreadCount (threads) {
++    _getMonitorThreadCount (threadsA, threadsB) {
+         let count = 0;
+-        threads.forEach(thread => {
+-            if (thread.updateMonitor) count++;
+-        });
++        for (let i = 0; i < threadsA.length; i++) {
++            if (threadsA[i].updateMonitor) count++;
++        }
++        if (threadsB) {
++            for (let i = 0; i < threadsB.length; i++) {
++                if (threadsB[i].updateMonitor) count++;
++            }
++        }
+         return count;
+     }
+ 
+@@ -2627,7 +2674,7 @@ class Runtime extends EventEmitter {
+         const oldEditingTarget = this._editingTarget;
+         this._editingTarget = editingTarget;
+         // Script glows must be cleared.
+-        this._scriptGlowsPreviousFrame = [];
++        this._scriptGlowsPreviousFrame = new Set();
+         this._updateGlows();
+ 
+         if (oldEditingTarget !== this._editingTarget) {
+@@ -2960,22 +3007,36 @@ class Runtime extends EventEmitter {
+      * @param {Array.<Thread>=} optExtraThreads Optional list of inactive threads.
+      */
+     _updateGlows (optExtraThreads) {
+-        const searchThreads = [];
+-        searchThreads.push(...this.threads);
++        // When no editing target is set (e.g. pure player), skip the whole pass.
++        if (this._editingTarget === null) {
++            return;
++        }
++        // Reuse a per-instance array for the merged thread list to avoid the
++        // per-frame `[...this.threads, ...optExtraThreads]` spread allocation.
++        let searchThreads = this._glowSearchThreads;
++        if (!searchThreads) {
++            searchThreads = this._glowSearchThreads = [];
++        }
++        searchThreads.length = 0;
++        const liveThreads = this.threads;
++        for (let i = 0; i < liveThreads.length; i++) {
++            searchThreads.push(liveThreads[i]);
++        }
+         if (optExtraThreads) {
+-            searchThreads.push(...optExtraThreads);
++            for (let i = 0; i < optExtraThreads.length; i++) {
++                searchThreads.push(optExtraThreads[i]);
++            }
+         }
+-        // Set of scripts that request a glow this frame.
+-        const requestedGlowsThisFrame = [];
+-        // Final set of scripts glowing during this frame.
+-        const finalScriptGlows = [];
+-        // Find all scripts that should be glowing.
++        // Build the set of scripts that request a glow this frame, as a Set
++        // for O(1) membership checks. Avoids the previous O(N*M) indexOf walk.
++        const requestedGlows = new Set();
++        const editingTarget = this._editingTarget;
+         for (let i = 0; i < searchThreads.length; i++) {
+             const thread = searchThreads[i];
+             const target = thread.target;
+-            if (target === this._editingTarget) {
+-                const blockForThread = thread.blockGlowInFrame;
++            if (target === editingTarget) {
+                 if (thread.requestScriptGlowInFrame || thread.stackClick) {
++                    const blockForThread = thread.blockGlowInFrame;
+                     let script = target.blocks.getTopLevelScript(blockForThread);
+                     if (!script) {
+                         // Attempt to find in flyout blocks.
+@@ -2984,31 +3045,30 @@ class Runtime extends EventEmitter {
+                         );
+                     }
+                     if (script) {
+-                        requestedGlowsThisFrame.push(script);
++                        requestedGlows.add(script);
+                     }
+                 }
+             }
+         }
+-        // Compare to previous frame.
+-        for (let j = 0; j < this._scriptGlowsPreviousFrame.length; j++) {
+-            const previousFrameGlow = this._scriptGlowsPreviousFrame[j];
+-            if (requestedGlowsThisFrame.indexOf(previousFrameGlow) < 0) {
+-                // Glow turned off.
++        // Diff against previous frame and emit on/off events.
++        const previous = this._scriptGlowsPreviousFrame;
++        const next = new Set();
++        // Scripts that were glowing last frame but no longer: turn off.
++        for (const previousFrameGlow of previous) {
++            if (!requestedGlows.has(previousFrameGlow)) {
+                 this.glowScript(previousFrameGlow, false);
+             } else {
+-                // Still glowing.
+-                finalScriptGlows.push(previousFrameGlow);
++                next.add(previousFrameGlow);
+             }
+         }
+-        for (let k = 0; k < requestedGlowsThisFrame.length; k++) {
+-            const currentFrameGlow = requestedGlowsThisFrame[k];
+-            if (this._scriptGlowsPreviousFrame.indexOf(currentFrameGlow) < 0) {
+-                // Glow turned on.
++        // Scripts newly glowing this frame: turn on.
++        for (const currentFrameGlow of requestedGlows) {
++            if (!previous.has(currentFrameGlow)) {
+                 this.glowScript(currentFrameGlow, true);
+-                finalScriptGlows.push(currentFrameGlow);
++                next.add(currentFrameGlow);
+             }
+         }
+-        this._scriptGlowsPreviousFrame = finalScriptGlows;
++        this._scriptGlowsPreviousFrame = next;
+     }
+ 
+     /**
+@@ -3034,10 +3094,7 @@ class Runtime extends EventEmitter {
+      * @param {!string} scriptBlockId Id of top-level block in script to quiet.
+      */
+     quietGlow (scriptBlockId) {
+-        const index = this._scriptGlowsPreviousFrame.indexOf(scriptBlockId);
+-        if (index > -1) {
+-            this._scriptGlowsPreviousFrame.splice(index, 1);
+-        }
++        this._scriptGlowsPreviousFrame.delete(scriptBlockId);
+     }
+ 
+     /**
+diff --git a/src/engine/sequencer.js b/src/engine/sequencer.js
+index c374fb6..bf67037 100644
+--- a/src/engine/sequencer.js
++++ b/src/engine/sequencer.js
+@@ -54,6 +54,16 @@ class Sequencer {
+         this.runtime = runtime;
+ 
+         this.activeThread = null;
++
++        /**
++         * Reusable array for collecting threads that completed during stepThreads.
++         * Reset at the start of each stepThreads call. The array reference is
++         * reused across calls to avoid per-step allocation; the contents are
++         * read-only from the caller's perspective (Runtime._step) and must not
++         * be mutated before the next stepThreads call.
++         * @type {Array.<!Thread>}
++         */
++        this._doneThreads = [];
+     }
+ 
+     /**
+@@ -81,7 +91,10 @@ class Sequencer {
+         let numActiveThreads = Infinity;
+         // Whether `stepThreads` has run through a full single tick.
+         let ranFirstTick = false;
+-        const doneThreads = [];
++        // Reuse the per-instance doneThreads array to avoid per-step allocation.
++        // Caller must not retain a reference beyond the next stepThreads call.
++        const doneThreads = this._doneThreads;
++        doneThreads.length = 0;
+         // Conditions for continuing to stepping threads:
+         // 1. We must have threads in the list, and some must be active.
+         // 2. Time elapsed must be less than WORK_TIME.
+@@ -193,8 +206,10 @@ class Sequencer {
+             }
+         }
+         // Save the current block ID to notice if we did control flow.
+-        while ((currentBlockId = thread.peekStack())) {
+-            const initialStackSize = thread.stack.length;
++        // Inline peekStack to avoid the helper function call per iteration.
++        const stack = thread.stack;
++        while ((currentBlockId = stack[stack.length - 1])) {
++            const initialStackSize = stack.length;
+             let isWarpMode = thread.peekStackFrame().warpMode;
+             if (isWarpMode && !thread.warpTimer) {
+                 // Initialize warp-mode timer if it hasn't been already.
+diff --git a/src/engine/tw-frame-loop.js b/src/engine/tw-frame-loop.js
+index bf2554b..a75a652 100644
+--- a/src/engine/tw-frame-loop.js
++++ b/src/engine/tw-frame-loop.js
+@@ -10,12 +10,19 @@ const _cancelAnimationFrame = typeof requestAnimationFrame === 'function' ?
+     clearTimeout;
+ 
+ const animationFrameWrapper = callback => {
++    // Allocate the cancel function once. The handle closure is shared across
++    // every animation frame so we do not allocate a fresh closure per frame.
+     let id;
++    let cancelled = false;
+     const handle = () => {
++        if (cancelled) return;
+         id = _requestAnimationFrame(handle);
+         callback();
+     };
+-    const cancel = () => _cancelAnimationFrame(id);
++    const cancel = () => {
++        cancelled = true;
++        if (id !== undefined) _cancelAnimationFrame(id);
++    };
+     id = _requestAnimationFrame(handle);
+     return {
+         cancel
+diff --git a/src/sprites/rendered-target.js b/src/sprites/rendered-target.js
+index eeb029f..0bebdd2 100644
+--- a/src/sprites/rendered-target.js
++++ b/src/sprites/rendered-target.js
+@@ -807,8 +807,16 @@ class RenderedTarget extends Target {
+         // Filter out dragging targets. This means a sprite that is being dragged
+         // can detect other sprites using touching <sprite>, but cannot be detected
+         // by other sprites while it is being dragged. This matches Scratch 2.0 behavior.
+-        const drawableCandidates = firstClone.sprite.clones.filter(clone => !clone.dragging)
+-            .map(clone => clone.drawableID);
++        // Single-pass loop building the drawableID array directly; no intermediate
++        // array from filter+map.
++        const clones = firstClone.sprite.clones;
++        const drawableCandidates = [];
++        for (let i = 0; i < clones.length; i++) {
++            const clone = clones[i];
++            if (!clone.dragging) {
++                drawableCandidates.push(clone.drawableID);
++            }
++        }
+         return this.renderer.isTouchingDrawables(
+             this.drawableID, drawableCandidates);
+     }
