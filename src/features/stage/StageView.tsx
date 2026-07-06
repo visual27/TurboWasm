@@ -22,11 +22,20 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
   // settings effect below for the rationale.
   const stageWidth = useSettingsStore((s) => s.advanced.stageWidth);
   const stageHeight = useSettingsStore((s) => s.advanced.stageHeight);
+  const highQualityPen = useSettingsStore((s) => s.advanced.highQualityPen);
   const volume = useSettingsStore((s) => s.volume);
   const setPlaying = usePlayerStore((s) => s.setPlaying);
   const setPaused = usePlayerStore((s) => s.setPaused);
   const loadState = useProjectStore((s) => s.loadState);
   const { resolved } = useTheme();
+
+  // When fullscreen is active AND the user has High Quality Pen enabled, let
+  // the Scaffolding's `_root` fill the viewport directly. This makes
+  // `Scaffolding.relayout()` (preserve-ratio mode) size the renderer canvas to
+  // the viewport-fit dimensions, raising `PenSkin.renderQuality` from `dpr`
+  // to `viewportFitW × dpr / nativeSize[0]` so pen stamps render at
+  // significantly higher resolution. Matches TurboWarp's fullscreen behavior.
+  const useFullscreenPenResize = isFullscreen && highQualityPen;
 
   const fsContainerRef = useRef<HTMLDivElement>(null);
   const stageMountRef = useRef<HTMLDivElement>(null);
@@ -110,9 +119,10 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
   }, [setPlaying, setPaused]);
 
   // Single coalesced relayout trigger. Any layout-affecting change
-  // (fullscreen, ready, stage-size) schedules at most one double-rAF
-  // relayout per frame. This replaces the three independent effects that
-  // previously could schedule overlapping relayouts.
+  // (fullscreen, ready, stage-size, high-quality-pen) schedules at most one
+  // double-rAF relayout per frame. `highQualityPen` is in the deps so that
+  // toggling it while in fullscreen flips the layout box between 100%/100%
+  // and stageWidth/stageHeight and forces a canvas resize.
   const isReady = loadState === 'ready';
   useEffect(() => {
     setScaffoldingResizeMode('preserve-ratio');
@@ -126,7 +136,7 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
       cancelAnimationFrame(raf1);
       cancelAnimationFrame(raf2);
     };
-  }, [isFullscreen, isReady, stageWidth, stageHeight]);
+  }, [isFullscreen, isReady, stageWidth, stageHeight, highQualityPen]);
 
   // Mark the previous ready state for the ready → not-ready transition check
   // (kept for any future transition that needs to differ from the regular
@@ -163,10 +173,17 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
 
   // Compute scale to fit (preserve aspect ratio).
   // - Normal mode: scale down to fit the available container, never up.
-  // - Fullscreen mode: scale up to fill the entire viewport while keeping
-  //   the project's aspect ratio. The underlying Scaffolding canvas is NOT
-  //   resized — only the displayed frame is enlarged via CSS transform.
+  // - Fullscreen + HQ-pen-off: scale up to fill the entire viewport while
+  //   keeping the project's aspect ratio. The Scaffolding canvas stays at
+  //   stageWidth × stageHeight CSS pixels and is enlarged via CSS transform.
+  // - Fullscreen + HQ-pen-on: the Scaffolding canvas is resized to the
+  //   viewport-fit dimensions directly, so no CSS transform is applied
+  //   here (the `useFullscreenPenResize` branch in the render omits the
+  //   `transform` inline style entirely).
   const scale = useMemo(() => {
+    if (useFullscreenPenResize) {
+      return 1;
+    }
     if (isFullscreen) {
       return Math.min(
         (windowSize.w || stageWidth) / stageWidth,
@@ -179,6 +196,7 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
       (containerSize.h || stageHeight) / stageHeight,
     );
   }, [
+    useFullscreenPenResize,
     isFullscreen,
     windowSize.w,
     windowSize.h,
@@ -202,17 +220,21 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
       )}
     >
       {/*
-        Stable DOM structure — only inline styles change between normal and
-        fullscreen. This avoids the "stage disappears" bug caused by swapping
-        element hierarchies during a fullscreen transition.
+        Stable DOM structure — only inline styles change between the three
+        layout modes. Swapping element hierarchies caused the "stage
+        disappears" bug during fullscreen transitions, so we keep the same
+        skeleton everywhere and branch on inline styles instead.
 
-        Fullscreen: innerRef fills the entire viewport with flex centering so
-        that the transform-scaled canvas (whose CSS layout box stays at
-        stageWidth × stageHeight) is centered, and the visual content can
-        extend beyond the layout box without being clipped.
-
-        Normal: innerRef sizes to the configured stage width and aspect ratio,
-        and the canvas is centered inside.
+        Normal: innerRef sizes to stageWidth × aspectRatio, layout box is
+        stageWidth × stageHeight, transform: scale(≤1) (no visual scale).
+        Fullscreen + HQ pen OFF: innerRef fills the viewport with flex
+        centering, layout box stays at stageWidth × stageHeight and is
+        upscaled by transform: scale(>1) to fill the viewport visually.
+        Fullscreen + HQ pen ON: innerRef fills the viewport, layout box
+        itself is 100% × 100% (no transform). The Scaffolding's natural
+        preserve-ratio relayout then sizes the renderer canvas to the
+        viewport-fit dimensions and PenSkin.renderQuality rises to
+        viewportFitW × dpr / nativeSize[0].
       */}
       <div
         ref={innerRef}
@@ -232,16 +254,25 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
       >
         <div
           className="relative shrink-0"
-          style={{
-            // In both modes, the Scaffolding canvas mount stays at its native
-            // (stageWidth × stageHeight) size. The transform enlarges the
-            // displayed frame to fill the available space while preserving
-            // the project's aspect ratio.
-            width: stageWidth,
-            height: stageHeight,
-            transform: `scale(${scale})`,
-            transformOrigin: 'center center',
-          }}
+          style={useFullscreenPenResize
+            ? {
+                // Layout box fills innerRef (= viewport in fullscreen). The
+                // Scaffolding's `_root` then inherits this size, so its
+                // preserve-ratio `relayout()` computes the viewport-fit
+                // canvas dimensions and `PenSkin.renderQuality` is bumped
+                // to a multi-dpr multiple of `nativeSize[0]`.
+                width: '100%',
+                height: '100%',
+              }
+            : {
+                // Layout box stays at stageWidth × stageHeight CSS pixels
+                // and is enlarged by a CSS transform in fullscreen. No
+                // transform is needed in normal mode (scale clamps to 1).
+                width: stageWidth,
+                height: stageHeight,
+                transform: `scale(${scale})`,
+                transformOrigin: 'center center',
+              }}
         >
           <div
             ref={stageMountRef}
