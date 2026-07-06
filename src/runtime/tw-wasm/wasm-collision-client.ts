@@ -107,7 +107,7 @@ function getOrCreateSilhouette(silhouette: SilhouetteLike): SilhouetteBuffer | n
 
 function syncSilhouette(
   buf: SilhouetteBuffer,
-  colorData: Uint8ClampedArray | null | undefined,
+  silhouette: SilhouetteLike | null | undefined,
   w: number,
   h: number,
 ): void {
@@ -118,6 +118,25 @@ function syncSilhouette(
   }
   const ptr = buf.data_ptr();
   const dst = new Uint8Array(memory.buffer, ptr, w * h * 4);
+  if (!silhouette) {
+    dst.fill(0);
+    return;
+  }
+  // Lazy silhouettes keep `_colorData = null` until the first `unlazy()`
+  // call from the JS collision path. Without forcing it here, the very
+  // first frame after a costume change sees an empty silhouette and
+  // our WASM path reports a false negative for any touching block. The
+  // JS baseline does this implicitly via `_isTouchingNearest` ->
+  // `colorAtNearest`, so the WASM hook has to match.
+  let colorData = silhouette._colorData;
+  if (!colorData && typeof (silhouette as { unlazy?: () => void }).unlazy === 'function') {
+    try {
+      (silhouette as { unlazy: () => void }).unlazy();
+    } catch {
+      /* ignore — worst case we sync zeros */
+    }
+    colorData = silhouette._colorData;
+  }
   if (!colorData || colorData.length < w * h * 4) {
     dst.fill(0);
     return;
@@ -149,7 +168,7 @@ function buildCallArgs(
   const selfSil = self.skin._silhouette;
   const selfBuf = getOrCreateSilhouette(selfSil);
   if (!selfBuf) return null;
-  syncSilhouette(selfBuf, selfSil._colorData, selfBuf.width(), selfBuf.height());
+  syncSilhouette(selfBuf, selfSil, selfBuf.width(), selfBuf.height());
 
   const visibleCandidates = candidateIDs.filter(
     (id) => drawables[id]?._visible === undefined || Boolean(drawables[id]?._visible),
@@ -191,7 +210,7 @@ function buildCallArgs(
     const inv = ensure16(cand.drawable._inverseMatrix);
     if (inv) candInv.set(inv, i * 16);
     const ptr = buf.data_ptr();
-    syncSilhouette(buf, sil._colorData, buf.width(), buf.height());
+    syncSilhouette(buf, sil, buf.width(), buf.height());
     candOffsets[i] = (ptr - base) >>> 0;
     candDims[i * 2] = buf.width();
     candDims[i * 2 + 1] = buf.height();

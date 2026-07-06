@@ -106,30 +106,39 @@ pub fn batch_touching_drawables(
         cand_invs.push(inv);
     }
 
-    let step: f32 = 1.0;
-    for x in (bounds_left..=bounds_right).step_by(4) {
-        let _xs = transform_row_simd(&inv_self, bounds_bottom as f32, x as f32, step);
-    }
-    for x in bounds_left..=bounds_right {
-        for y in bounds_bottom..=bounds_top {
-            let sx = 0.5 - ((x as f32) * inv_self[0] + (y as f32) * inv_self[4] + inv_self[12]);
-            let sy = ((x as f32) * inv_self[1] + (y as f32) * inv_self[5] + inv_self[13]) + 0.5;
-            let sx_i = (sx * self_w as f32) as i32;
-            let sy_i = (sy * self_h as f32) as i32;
-            if alpha_at(self_ptr, self_w, sx_i, sy_i) == 0 {
-                continue;
-            }
-            for i in 0..(cand_sil_count as usize) {
-                let inv = cand_invs[i];
-                let cx = 0.5 - ((x as f32) * inv[0] + (y as f32) * inv[4] + inv[12]);
-                let cy = ((x as f32) * inv[1] + (y as f32) * inv[5] + inv[13]) + 0.5;
-                let cx_i = (cx * cand_widths[i] as f32) as i32;
-                let cy_i = (cy * cand_heights[i] as f32) as i32;
-                if alpha_at(cand_ptrs[i], cand_widths[i], cx_i, cy_i) != 0 {
-                    return 1;
-                }
-            }
+  let step: f32 = 1.0;
+  for x in (bounds_left..=bounds_right).step_by(4) {
+    let _xs = transform_row_simd(&inv_self, bounds_bottom as f32, x as f32, step);
+  }
+  for x in bounds_left..=bounds_right {
+    for y in bounds_bottom..=bounds_top {
+      let xf = x as f32;
+      let yf = y as f32;
+      // Scratch's Drawable.getLocalPosition uses the full inverse matrix
+      // including the homogeneous divide `d = v0*m[3] + v1*m[7] + m[15]`.
+      // For affine transforms d ≈ 1, but cropped perspectives (e.g. effect
+      // blocks touching renderers) produce non-unit d and the WASM path
+      // would otherwise disagree with the JS path on sub-pixel positions.
+      let d_self = xf * inv_self[3] + yf * inv_self[7] + inv_self[15];
+      let inv_d = if d_self.abs() < 1e-6 { 1.0 } else { 1.0 / d_self };
+      let sx = 0.5 - ((xf * inv_self[0] + yf * inv_self[4] + inv_self[12]) * inv_d);
+      let sy = ((xf * inv_self[1] + yf * inv_self[5] + inv_self[13]) * inv_d) + 0.5;
+      let sx_i = (sx * self_w as f32) as i32;
+      let sy_i = (sy * self_h as f32) as i32;
+      if alpha_at(self_ptr, self_w, sx_i, sy_i) == 0 {
+        continue;
+      }
+      for i in 0..(cand_sil_count as usize) {
+        let inv = cand_invs[i];
+        let cx = 0.5 - ((xf * inv[0] + yf * inv[4] + inv[12]) * inv_d);
+        let cy = ((xf * inv[1] + yf * inv[5] + inv[13]) * inv_d) + 0.5;
+        let cx_i = (cx * cand_widths[i] as f32) as i32;
+        let cy_i = (cy * cand_heights[i] as f32) as i32;
+        if alpha_at(cand_ptrs[i], cand_widths[i], cx_i, cy_i) != 0 {
+          return 1;
         }
+      }
     }
-    0
+  }
+  0
 }
