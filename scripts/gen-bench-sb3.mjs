@@ -26,120 +26,56 @@ function svgCostume(svg) {
   };
 }
 
+// SB3 input relationship constants. See vendored/scratch-vm/src/serialization/sb3.js
+// INPUT_SAME_BLOCK_SHADOW = 1: a single block (no obscuring block, only a shadow)
+// INPUT_BLOCK_NO_SHADOW = 2: a real block with no shadow
+// INPUT_DIFF_BLOCK_SHADOW = 3: an obscuring block AND a separate shadow
+const INPUT_SAME_BLOCK_SHADOW = 1;
+const INPUT_BLOCK_NO_SHADOW = 2;
+
+// SB3 primitive type constants. See vendored/scratch-vm/src/serialization/sb3.js
+// When the shadow of an input is a primitive (math_number, colour_picker, ...),
+// it can be inlined into the input array as [PRIMITIVE, value, ...].
+const MATH_NUM_PRIMITIVE = 4;
+const COLOR_PICKER_PRIMITIVE = 9;
+
 let nextId = 1;
 const nextBlockId = () => `b${nextId++}`;
+const nextShadowId = () => `s${nextId++}`;
 const resetBlockCounter = () => {
   nextId = 1;
 };
 
 function makeBlock({ opcode, inputs = {}, fields = {}, next = null, parent = null, topLevel = false, shadow = false, x = 0, y = 0 }) {
-  const id = shadow ? `s${nextId++}` : nextBlockId();
+  const id = shadow ? nextShadowId() : nextBlockId();
   return { id, block: { opcode, inputs, fields, next, parent, topLevel, shadow, x, y } };
 }
 
-function literalNum(value, parentId, inputName) {
-  const id = `s${nextId++}`;
-  return {
-    id,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: [String(value), null] },
-      next: null,
-      parent: parentId,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-    ref: [1, [id]],
-  };
+// Inline-primitive input: stores the value directly in the input array so that
+// scratch-vm's deserializer hydrates it without requiring a separate shadow
+// block entry in `blocks`. Format: [INPUT_SAME_BLOCK_SHADOW, [PRIMITIVE, value]].
+function inlinePrimitiveInput(value, primitive = MATH_NUM_PRIMITIVE) {
+  return [INPUT_SAME_BLOCK_SHADOW, [primitive, String(value)]];
 }
 
-function literalText(value, parentId) {
-  const id = `s${nextId++}`;
-  return {
-    id,
-    block: {
-      opcode: 'text',
-      inputs: {},
-      fields: { TEXT: [value, null] },
-      next: null,
-      parent: parentId,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-    ref: [1, [id]],
-  };
+// Block-reference shadow input: stores the shadow block id and emits a
+// separate shadow block entry. Format: [INPUT_SAME_BLOCK_SHADOW, shadowBlockId].
+// Use this when the shadow is a non-primitive menu block (e.g. sensing_touchingobjectmenu).
+function menuShadowInput(shadowBlockId) {
+  return [INPUT_SAME_BLOCK_SHADOW, shadowBlockId];
 }
 
-function blockRef(blockId) {
-  return [1, blockId];
-}
-
-function shadowInput(name, value, parentId) {
-  return { [name]: [1, [`s${nextId++}`]] };
-}
-
-function buildBlocks(builders) {
-  const all = {};
-  const topLevel = [];
-  for (const b of builders) {
-    const { id, block } = b;
-    all[id] = block;
-    if (block.topLevel) topLevel.push(id);
-  }
-  return { all, topLevel };
-}
-
-function chain(...builders) {
-  let prevId = null;
-  for (let i = 0; i < builders.length; i += 1) {
-    const b = builders[i];
-    if (prevId) {
-      b.block.parent = prevId;
-      const prev = builders[i - 1];
-      if (prev) prev.block.next = b.id;
-    }
-  }
-  return builders;
-}
-
-function makeSprite(name, blocks, costumes, opts = {}) {
-  return {
-    isStage: false,
-    name,
-    variables: opts.variables ?? {},
-    lists: {},
-    broadcasts: {},
-    blocks: blocks.all,
-    comments: {},
-    currentCostume: 0,
-    costumes,
-    sounds: [],
-    volume: 100,
-    layerOrder: opts.layerOrder ?? 1,
-    visible: opts.visible ?? true,
-    x: opts.x ?? 0,
-    y: opts.y ?? 0,
-    size: opts.size ?? 100,
-    direction: opts.direction ?? 90,
-    draggable: opts.draggable ?? false,
-    rotationStyle: opts.rotationStyle ?? 'all around',
-    isOriginalSprite: opts.isOriginalSprite ?? true,
-  };
+// Empty-block input (no shadow): [INPUT_BLOCK_NO_SHADOW, blockId].
+function blockInput(blockId) {
+  return [INPUT_BLOCK_NO_SHADOW, blockId];
 }
 
 function touchingObjectBlock(parentId, spriteName) {
   const id = nextBlockId();
-  const inputId = `s${nextId++}`;
+  const shadowId = nextShadowId();
   const block = {
     opcode: 'sensing_touchingobject',
-    inputs: { TOUCHINGOBJECTMENU: [3, spriteName, inputId] },
+    inputs: { TOUCHINGOBJECTMENU: menuShadowInput(shadowId) },
     fields: {},
     next: null,
     parent: parentId,
@@ -150,7 +86,7 @@ function touchingObjectBlock(parentId, spriteName) {
     id,
   };
   const shadow = {
-    id: inputId,
+    id: shadowId,
     block: {
       opcode: 'sensing_touchingobjectmenu',
       inputs: {},
@@ -168,10 +104,9 @@ function touchingObjectBlock(parentId, spriteName) {
 
 function sensingOfColorBlock(parentId, color) {
   const id = nextBlockId();
-  const inputId = `s${nextId++}`;
   const block = {
     opcode: 'sensing_touchingcolor',
-    inputs: { COLOR: [3, color, inputId] },
+    inputs: { COLOR: [INPUT_SAME_BLOCK_SHADOW, [COLOR_PICKER_PRIMITIVE, color]] },
     fields: {},
     next: null,
     parent: parentId,
@@ -181,30 +116,15 @@ function sensingOfColorBlock(parentId, color) {
     y: 0,
     id,
   };
-  const shadow = {
-    id: inputId,
-    block: {
-      opcode: 'colour_picker',
-      inputs: {},
-      fields: { COLOUR: [color, null] },
-      next: null,
-      parent: id,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-    },
-  };
-  return { id, block, shadow };
+  return { id, block };
 }
 
 function changeVarBlock(varName, parentId, delta) {
   const id = nextBlockId();
-  const inputId = `s${nextId++}`;
-  const shadowId = `s${nextId++}`;
+  const shadowId = nextShadowId();
   const block = {
     opcode: 'data_changevariableby',
-    inputs: { VALUE: [3, String(delta), shadowId] },
+    inputs: { VALUE: [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(delta)]] },
     fields: { VARIABLE: [varName, null] },
     next: null,
     parent: parentId,
@@ -215,7 +135,7 @@ function changeVarBlock(varName, parentId, delta) {
     id,
   };
   const shadow = {
-    id: inputId,
+    id: shadowId,
     block: {
       opcode: 'data_variable',
       inputs: {},
@@ -231,12 +151,29 @@ function changeVarBlock(varName, parentId, delta) {
   return { id, block, shadow };
 }
 
+function setVarBlock(varName, parentId, value) {
+  const id = nextBlockId();
+  const block = {
+    opcode: 'data_setvariableto',
+    inputs: { VALUE: [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(value)]] },
+    fields: { VARIABLE: [varName, null] },
+    next: null,
+    parent: parentId,
+    topLevel: false,
+    shadow: false,
+    x: 0,
+    y: 0,
+    id,
+  };
+  return { id, block };
+}
+
 function pointTowardsBlock(target, parentId) {
   const id = nextBlockId();
-  const inputId = `s${nextId++}`;
+  const shadowId = nextShadowId();
   const block = {
     opcode: 'motion_pointtowards',
-    inputs: { TOWARDS: [3, target, inputId] },
+    inputs: { TOWARDS: menuShadowInput(shadowId) },
     fields: {},
     next: null,
     parent: parentId,
@@ -247,7 +184,7 @@ function pointTowardsBlock(target, parentId) {
     id,
   };
   const shadow = {
-    id: inputId,
+    id: shadowId,
     block: {
       opcode: 'motion_pointtowards_menu',
       inputs: {},
@@ -265,10 +202,9 @@ function pointTowardsBlock(target, parentId) {
 
 function moveStepsBlock(steps, parentId) {
   const id = nextBlockId();
-  const shadowId = `s${nextId++}`;
   const block = {
     opcode: 'motion_movesteps',
-    inputs: { STEPS: [3, String(steps), shadowId] },
+    inputs: { STEPS: [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(steps)]] },
     fields: {},
     next: null,
     parent: parentId,
@@ -278,33 +214,16 @@ function moveStepsBlock(steps, parentId) {
     y: 0,
     id,
   };
-  const shadow = {
-    id: shadowId,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: [String(steps), null] },
-      next: null,
-      parent: id,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
-  return { id, block, shadow };
+  return { id, block };
 }
 
 function gotoXYBlock(x, y, parentId) {
   const id = nextBlockId();
-  const shadowX = `s${nextId++}`;
-  const shadowY = `s${nextId++}`;
   const block = {
     opcode: 'motion_gotoxy',
     inputs: {
-      X: [3, String(x), shadowX],
-      Y: [3, String(y), shadowY],
+      X: [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(x)]],
+      Y: [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(y)]],
     },
     fields: {},
     next: null,
@@ -315,45 +234,14 @@ function gotoXYBlock(x, y, parentId) {
     y: 0,
     id,
   };
-  const shadow1 = {
-    id: shadowX,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: [String(x), null] },
-      next: null,
-      parent: id,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
-  const shadow2 = {
-    id: shadowY,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: [String(y), null] },
-      next: null,
-      parent: id,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
-  return { id, block, shadows: [shadow1, shadow2] };
+  return { id, block };
 }
 
 function setSizeBlock(size, parentId) {
   const id = nextBlockId();
-  const shadowId = `s${nextId++}`;
   const block = {
     opcode: 'motion_setsize',
-    inputs: { SIZE: [3, String(size), shadowId] },
+    inputs: { SIZE: [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(size)]] },
     fields: {},
     next: null,
     parent: parentId,
@@ -363,30 +251,14 @@ function setSizeBlock(size, parentId) {
     y: 0,
     id,
   };
-  const shadow = {
-    id: shadowId,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: [String(size), null] },
-      next: null,
-      parent: id,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
-  return { id, block, shadow };
+  return { id, block };
 }
 
 function setEffectBlock(effect, value, parentId) {
   const id = nextBlockId();
-  const shadowId = `s${nextId++}`;
   const block = {
     opcode: 'looks_seteffectto',
-    inputs: { VALUE: [3, String(value), shadowId] },
+    inputs: { VALUE: [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(value)]] },
     fields: { EFFECT: [effect, null] },
     next: null,
     parent: parentId,
@@ -396,30 +268,15 @@ function setEffectBlock(effect, value, parentId) {
     y: 0,
     id,
   };
-  const shadow = {
-    id: shadowId,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: [String(value), null] },
-      next: null,
-      parent: id,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
-  return { id, block, shadow };
+  return { id, block };
 }
 
 function switchCostumeBlock(name, parentId) {
   const id = nextBlockId();
-  const inputId = `s${nextId++}`;
+  const shadowId = nextShadowId();
   const block = {
     opcode: 'looks_switchcostumeto',
-    inputs: { COSTUME: [3, name, inputId] },
+    inputs: { COSTUME: menuShadowInput(shadowId) },
     fields: {},
     next: null,
     parent: parentId,
@@ -430,7 +287,7 @@ function switchCostumeBlock(name, parentId) {
     id,
   };
   const shadow = {
-    id: inputId,
+    id: shadowId,
     block: {
       opcode: 'looks_costume',
       inputs: {},
@@ -448,12 +305,11 @@ function switchCostumeBlock(name, parentId) {
 
 function repeatBlock(count, parentId) {
   const id = nextBlockId();
-  const shadowId = `s${nextId++}`;
   const block = {
     opcode: 'control_repeat',
     inputs: {
-      TIMES: [3, String(count), shadowId],
-      SUBSTACK: [2, 'placeholder'],
+      TIMES: [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(count)]],
+      SUBSTACK: blockInput('placeholder'),
     },
     fields: {},
     next: null,
@@ -464,30 +320,11 @@ function repeatBlock(count, parentId) {
     y: 0,
     id,
   };
-  const shadow = {
-    id: shadowId,
-    block: {
-      opcode: 'math_integer',
-      inputs: {},
-      fields: { NUM: [String(count), null] },
-      next: null,
-      parent: id,
-      topLevel: false,
-      shadow: true,
-      x: 0,
-      y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
-  return { id, block, shadow };
+  return { id, block };
 }
 
 function setSubstack(parentBlock, firstChildId) {
-  parentBlock.inputs.SUBSTACK = [2, firstChildId];
-}
-
-function setSubstack2(parentBlock, firstChildId) {
-  parentBlock.inputs.SUBSTACK2 = [2, firstChildId];
+  parentBlock.inputs.SUBSTACK = blockInput(firstChildId);
 }
 
 function collectAll(builderOutputs) {
@@ -540,55 +377,13 @@ export function buildBenchTouching() {
 
   // ========== Stage: when flag clicked, reset variables ==========
   const stageFlag = makeBlock({ opcode: 'event_whenflagclicked', topLevel: true, x: 100, y: 100 });
-  const stageReset1 = makeBlock({ opcode: 'data_setvariableto', inputs: {}, fields: { VARIABLE: ['counter', null] }, parent: stageFlag.id, x: 0, y: 0 });
-  const stageReset1Shadow = {
-    id: `s${nextId++}`,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: ['0', null] },
-      next: null,
-      parent: stageReset1.id,
-      topLevel: false,
-      shadow: true,
-      x: 0, y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
-  const stageReset2 = makeBlock({ opcode: 'data_setvariableto', inputs: {}, fields: { VARIABLE: ['actor_hits', null] }, parent: stageReset1.id, x: 0, y: 0 });
-  const stageReset2Shadow = {
-    id: `s${nextId++}`,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: ['0', null] },
-      next: null,
-      parent: stageReset2.id,
-      topLevel: false,
-      shadow: true,
-      x: 0, y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
-  const stageReset3 = makeBlock({ opcode: 'data_setvariableto', inputs: {}, fields: { VARIABLE: ['other_hits', null] }, parent: stageReset2.id, x: 0, y: 0 });
-  const stageReset3Shadow = {
-    id: `s${nextId++}`,
-    block: {
-      opcode: 'math_number',
-      inputs: {},
-      fields: { NUM: ['0', null] },
-      next: null,
-      parent: stageReset3.id,
-      topLevel: false,
-      shadow: true,
-      x: 0, y: 0,
-      mutation: { tagName: 'mutation', children: [] },
-    },
-  };
+  const stageReset1 = setVarBlock('counter', stageFlag.id, 0);
+  const stageReset2 = setVarBlock('actor_hits', stageReset1.id, 0);
+  const stageReset3 = setVarBlock('other_hits', stageReset2.id, 0);
   stageFlag.block.next = stageReset1.id;
   stageReset1.block.next = stageReset2.id;
   stageReset2.block.next = stageReset3.id;
-  addBlocks(allBlocks, [stageFlag, stageReset1, stageReset2, stageReset3, stageReset1Shadow, stageReset2Shadow, stageReset3Shadow]);
+  addBlocks(allBlocks, [stageFlag, stageReset1, stageReset2, stageReset3]);
 
   // ========== Other sprite (positioned at center) ==========
   const otherFlag = makeBlock({ opcode: 'event_whenflagclicked', topLevel: true, x: 100, y: 100 });
@@ -606,19 +401,40 @@ export function buildBenchTouching() {
   otherChangeY.block.next = null;
 
   otherIf.block.inputs = {
-    CONDITION: [2, otherTouchEdge.block.id, otherTouchEdge.shadow.id],
-    SUBSTACK: [2, otherChangeY.block.id],
+    CONDITION: blockInput(otherTouchEdge.block.id),
+    SUBSTACK: blockInput(otherChangeY.block.id),
   };
   otherForever.block.x = 200;
 
-  addBlocks(allBlocks, [otherFlag, otherGoto, otherGoto.shadows[0], otherGoto.shadows[1], otherForever, otherIf, otherTouchEdge, otherChangeY]);
+  addBlocks(allBlocks, [otherFlag, otherGoto, otherForever, otherIf, otherTouchEdge, otherChangeY]);
 
   // ========== Actor sprite (original) ==========
   const actorFlag = makeBlock({ opcode: 'event_whenflagclicked', topLevel: true, x: 100, y: 100 });
   const actorGoto = gotoXYBlock(-200, 0, actorFlag.id);
   actorFlag.block.next = actorGoto.block.id;
 
-  const actorCreateClones = makeBlock({ opcode: 'control_create_clone_of', inputs: {}, fields: { CLONE_OPTION: ['_myself_', null] }, parent: actorGoto.block.id, x: 0, y: 0 });
+  // control_create_clone_of uses an INPUT (menu shadow) for CLONE_OPTION,
+  // not a field. The menu shadow is the built-in control_create_clone_of_menu.
+  const cloneMenuShadowId = nextShadowId();
+  const actorCreateClones = makeBlock({
+    opcode: 'control_create_clone_of',
+    parent: actorGoto.block.id,
+  });
+  actorCreateClones.block.inputs = { CLONE_OPTION: menuShadowInput(cloneMenuShadowId) };
+  actorCreateClones.shadow = {
+    id: cloneMenuShadowId,
+    block: {
+      opcode: 'control_create_clone_of_menu',
+      inputs: {},
+      fields: { CLONE_OPTION: ['_myself_', null] },
+      next: null,
+      parent: actorCreateClones.id,
+      topLevel: false,
+      shadow: true,
+      x: 0,
+      y: 0,
+    },
+  };
   actorGoto.block.next = actorCreateClones.id;
 
   const actorForever = makeBlock({ opcode: 'control_forever', parent: actorCreateClones.id, x: 0, y: 0 });
@@ -629,22 +445,27 @@ export function buildBenchTouching() {
   pointMouse.block.next = move1.block.id;
 
   const actorIf = makeBlock({ opcode: 'control_if', parent: move1.block.id, x: 0, y: 0 });
+  move1.block.next = actorIf.id;
   const actorTouch = touchingObjectBlock(actorIf.id, 'Other');
   const actorChange = changeVarBlock('actor_hits', actorIf.id, 1);
   actorChange.block.next = null;
 
   actorIf.block.inputs = {
-    CONDITION: [2, actorTouch.block.id, actorTouch.shadow.id],
-    SUBSTACK: [2, actorChange.block.id],
+    CONDITION: blockInput(actorTouch.block.id),
+    SUBSTACK: blockInput(actorChange.block.id),
   };
   setSubstack(actorForever.block, pointMouse.block.id);
 
   actorForever.block.x = 300;
 
-  addBlocks(allBlocks, [actorFlag, actorGoto, actorGoto.shadows[0], actorGoto.shadows[1], actorCreateClones, actorForever, pointMouse, move1, actorIf, actorTouch, actorChange]);
+  addBlocks(allBlocks, [actorFlag, actorGoto, actorCreateClones, actorForever, pointMouse, move1, actorIf, actorTouch, actorChange]);
 
   // ========== Actor sprite: when I start as a clone ==========
-  const cloneStart = makeBlock({ opcode: 'event_whenstartedasclone', topLevel: true, x: 100, y: 700 });
+  // NOTE: the official opcode is `control_start_as_clone` (snake_case under
+  // the `control` namespace), not `event_whenstartedasclone`. Using the
+  // wrong one makes scratch-vm drop the hat entirely, leaving the clone
+  // without a startup script.
+  const cloneStart = makeBlock({ opcode: 'control_start_as_clone', topLevel: true, x: 100, y: 700 });
   const cloneGoto = gotoXYBlock(0, 0, cloneStart.id);
   cloneStart.block.next = cloneGoto.block.id;
 
@@ -654,17 +475,24 @@ export function buildBenchTouching() {
   const cloneMove = moveStepsBlock(2, cloneForever.id);
   clonePointMouse.block.next = cloneMove.block.id;
   const cloneIf = makeBlock({ opcode: 'control_if', parent: cloneMove.block.id, x: 0, y: 0 });
+  cloneMove.block.next = cloneIf.id;
   const cloneTouch = touchingObjectBlock(cloneIf.id, 'Other');
   const cloneChange = changeVarBlock('counter', cloneIf.id, 1);
   cloneChange.block.next = null;
 
   cloneIf.block.inputs = {
-    CONDITION: [2, cloneTouch.block.id, cloneTouch.shadow.id],
-    SUBSTACK: [2, cloneChange.block.id],
+    CONDITION: blockInput(cloneTouch.block.id),
+    SUBSTACK: blockInput(cloneChange.block.id),
   };
   setSubstack(cloneForever.block, clonePointMouse.block.id);
 
-  addBlocks(allBlocks, [cloneStart, cloneGoto, cloneGoto.shadows[0], cloneGoto.shadows[1], cloneForever, clonePointMouse, cloneMove, cloneIf, cloneTouch, cloneChange]);
+  addBlocks(allBlocks, [cloneStart, cloneGoto, cloneForever, clonePointMouse, cloneMove, cloneIf, cloneTouch, cloneChange]);
+
+  // Stage target only contains the Stage-specific blocks (the variable
+  // resets). Sprite blocks live in their own target's `blocks` table.
+  const stageBlocks = collectAll([
+    stageFlag, stageReset1, stageReset2, stageReset3,
+  ]);
 
   const stageTarget = {
     isStage: true,
@@ -672,9 +500,7 @@ export function buildBenchTouching() {
     variables: stageVars,
     lists: {},
     broadcasts: {},
-    blocks: {
-      ...collectAll([stageFlag, stageReset1, stageReset2, stageReset3, stageReset1Shadow, stageReset2Shadow, stageReset3Shadow]),
-    },
+    blocks: stageBlocks,
     comments: {},
     currentCostume: 0,
     costumes: [stageCostume],
@@ -686,8 +512,59 @@ export function buildBenchTouching() {
     textToSpeechLanguage: null,
   };
 
-  const otherSprite = makeSprite('Other', { all: collectAll([otherFlag, otherGoto, otherForever, otherIf, otherTouchEdge, otherChangeY]), topLevel: [] }, [otherCostume], { layerOrder: 1, size: 200 });
-  const actorSprite = makeSprite('Actor', { all: collectAll([actorFlag, actorGoto, actorCreateClones, actorForever, pointMouse, move1, actorIf, actorTouch, actorChange, cloneStart, cloneGoto, cloneForever, clonePointMouse, cloneMove, cloneIf, cloneTouch, cloneChange]), topLevel: [] }, [actorCostume], { layerOrder: 2 });
+  // Actors and Other sprite are stored on their own target entries with
+  // their own blocks table, mirroring the Scratch multi-target layout.
+  const otherSpriteBlocks = collectAll([otherFlag, otherGoto, otherForever, otherIf, otherTouchEdge, otherChangeY]);
+  const otherSprite = {
+    isStage: false,
+    name: 'Other',
+    variables: {},
+    lists: {},
+    broadcasts: {},
+    blocks: otherSpriteBlocks,
+    comments: {},
+    currentCostume: 0,
+    costumes: [otherCostume],
+    sounds: [],
+    volume: 100,
+    layerOrder: 1,
+    visible: true,
+    x: 0,
+    y: 0,
+    size: 200,
+    direction: 90,
+    draggable: false,
+    rotationStyle: 'all around',
+    isOriginalSprite: true,
+  };
+
+  const actorSpriteBlocks = collectAll([
+    actorFlag, actorGoto, actorCreateClones, actorForever,
+    pointMouse, move1, actorIf, actorTouch, actorChange,
+    cloneStart, cloneGoto, cloneForever, clonePointMouse, cloneMove, cloneIf, cloneTouch, cloneChange,
+  ]);
+  const actorSprite = {
+    isStage: false,
+    name: 'Actor',
+    variables: {},
+    lists: {},
+    broadcasts: {},
+    blocks: actorSpriteBlocks,
+    comments: {},
+    currentCostume: 0,
+    costumes: [actorCostume],
+    sounds: [],
+    volume: 100,
+    layerOrder: 2,
+    visible: true,
+    x: -200,
+    y: 0,
+    size: 100,
+    direction: 90,
+    draggable: false,
+    rotationStyle: 'all around',
+    isOriginalSprite: true,
+  };
 
   return {
     targets: [stageTarget, otherSprite, actorSprite],
