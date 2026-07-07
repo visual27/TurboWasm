@@ -398,7 +398,7 @@ const OthersSection = React.memo(function OthersSection({
       <FieldRow
         id="turbo-wasm-acceleration"
         label="TurboWasm Acceleration"
-        description="Offload collision detection to a WebAssembly SIMD module. Falls back to the JS path automatically when unsupported."
+        description="Offload collision detection to a WebAssembly SIMD module. Falls back to the JS path automatically when SIMD is unavailable, when a sprite has a shape-changing visual effect (mosaic, pixelate, whirl, fisheye) active, or when the color-matching path is exercised under a color/brightness effect."
       >
         <SwitchField
           id="turbo-wasm-acceleration"

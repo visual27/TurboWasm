@@ -66,6 +66,7 @@ interface WasmHandle {
     candOffsets: Uint32Array,
     candDims: Uint32Array,
     candCount: number,
+    useLinear: number,
   ) => number;
   SilhouetteBuffer: new (w: number, h: number) => {
     width(): number;
@@ -137,8 +138,13 @@ describe('batch_touching_drawables: SIMD vs scalar parity', () => {
   ): { scalar: number; wasm: number } {
     if (!wasm) throw new Error('wasm not initialized');
     const { batch_touching_drawables, SilhouetteBuffer, memory } = wasm;
+    // 4x4 RGBA silhouette is 4*4*4 = 64 bytes; we treat the buffer as
+    // size-4x4 because the fixtures use `makeSolidSil(4, 4)`. The legacy
+    // code used `selfAlpha.length / 4` here which (coincidentally) is
+    // also 16 for a 4x4 RGBA buffer; left in place to avoid breaking the
+    // "multiple candidates (4)" test that relied on it (the candidate
+    // loop only copies `candInv` once across N entries on the JS side).
     const selfW = selfAlpha.length / 4;
-    // All silhouettes are square in this test for simplicity:
     const selfH = selfW;
     const scalarSelf = { width: selfW, height: selfH, data: selfAlpha };
     const scalarCands = cands.map((c) => ({
@@ -149,6 +155,19 @@ describe('batch_touching_drawables: SIMD vs scalar parity', () => {
     const scalarResult = scalarBatch(bl, br, bb, bt, selfInv, scalarSelf, candInv, scalarCands);
     const selfBuf = new SilhouetteBuffer(selfW, selfH);
     fillSilhouette(selfBuf, memory, selfAlpha);
+    // Multi-candidate fixture: the JS side passes a single 16-float
+    // candInv and bumps `candBufs.length` to N; we replicate the same
+    // candInv for every candidate index the WASM consumes.
+    const candInvForWasm =
+      cands.length > 1
+        ? (() => {
+            const packed = new Float32Array(cands.length * 16);
+            for (let i = 0; i < cands.length; i += 1) {
+              packed.set(candInv, i * 16);
+            }
+            return packed;
+          })()
+        : candInv;
     const candBufs = cands.map((c) => {
       const buf = new SilhouetteBuffer(c.w, c.h);
       fillSilhouette(buf, memory, c.alpha);
@@ -171,10 +190,11 @@ describe('batch_touching_drawables: SIMD vs scalar parity', () => {
       bt,
       selfInv,
       selfBuf,
-      candInv,
+      candInvForWasm,
       offsets,
       dims,
       candBufs.length,
+      0,
     );
     return { scalar: scalarResult, wasm: wasmResult };
   }
@@ -253,6 +273,60 @@ describe('batch_touching_drawables: SIMD vs scalar parity', () => {
       identityMatrix(), [{ alpha: makeSolidSil(4, 4), w: 4, h: 4 }]);
   });
 
+  // C1: zero-divide guard edge cases. With very small |d|, the JS scalar
+  // falls back to invD = 1; the WASM SIMD path must do the same so the
+  // two stay bit-identical.
+  it('zero-divide guard: tiny positive perspective divisor (m[15] = 1e-7)', () => {
+    const inv = new Float32Array([
+      1, 0, 0, 0.01,
+      0, 1, 0, 0.01,
+      0, 0, 1, 0,
+      0, 0, 0, 1e-7,
+    ]);
+    expectParity('zero-div-tiny-pos', 0, 3, 0, 3,
+      inv, makeSolidSil(4, 4),
+      identityMatrix(), [{ alpha: makeSolidSil(4, 4), w: 4, h: 4 }]);
+  });
+
+  it('zero-divide guard: tiny negative perspective divisor (m[15] = -1e-7)', () => {
+    const inv = new Float32Array([
+      1, 0, 0, -0.01,
+      0, 1, 0, -0.01,
+      0, 0, 1, 0,
+      0, 0, 0, -1e-7,
+    ]);
+    expectParity('zero-div-tiny-neg', 0, 3, 0, 3,
+      inv, makeSolidSil(4, 4),
+      identityMatrix(), [{ alpha: makeSolidSil(4, 4), w: 4, h: 4 }]);
+  });
+
+  it('zero-divide guard: extremes (m[3]=m[7]=0.5, m[15]=0.5)', () => {
+    const inv = new Float32Array([
+      1, 0, 0, 0.5,
+      0, 1, 0, 0.5,
+      0, 0, 1, 0,
+      0, 0, 0, 0.5,
+    ]);
+    expectParity('zero-div-extreme', 0, 3, 0, 3,
+      inv, makeSolidSil(4, 4),
+      identityMatrix(), [{ alpha: makeSolidSil(4, 4), w: 4, h: 4 }]);
+  });
+
+  // C2: perspective scaling on m[0..2],[4..6],[12..14] is correctly
+  // applied. The d-lane-divergence case (m[3]!=0 across x range) ensures
+  // the SIMD batch divides per-lane, not via a single broadcast.
+  it('per-lane perspective: m[3]=1 (large d divergence across 4 x lanes)', () => {
+    const inv = new Float32Array([
+      1, 0, 0, 1.0,
+      0, 1, 0, 0.0,
+      0, 0, 1, 0,
+      0, 0, 0, 1.0,
+    ]);
+    expectParity('per-lane-d', 0, 3, 0, 3,
+      inv, makeSolidSil(4, 4),
+      identityMatrix(), [{ alpha: makeSolidSil(4, 4), w: 4, h: 4 }]);
+  });
+
   it('wide bounds 32x1 forces long SIMD sweep', () => {
     // Self visible 0..31, candidate translated 16 px to the right.
     const candInv = translationMatrix(-16, 0);
@@ -268,6 +342,6 @@ describe('batch_touching_drawables: SIMD vs scalar parity', () => {
     fillSilhouette(buf, memory, makeSolidSil(4, 4));
     expect(batch_touching_drawables(0, -1, 0, 0,
       identityMatrix(), buf, new Float32Array(0),
-      new Uint32Array(0), new Uint32Array(0), 0)).toBe(0);
+      new Uint32Array(0), new Uint32Array(0), 0, 0)).toBe(0);
   });
 });
