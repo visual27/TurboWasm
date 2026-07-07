@@ -21,11 +21,7 @@ wasm-collision/Cargo.lock
 AGENTS.md
 
 # Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+logs/
 
 # Build
 *.tsbuildinfo
