@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -298,5 +298,45 @@ describe('SettingsDialog — NumberField commit semantics', () => {
     await user.keyboard('{Backspace}250');
     await user.keyboard('{Enter}');
     expect(useSettingsStore.getState().volume).toBe(100);
+  });
+
+  it('reflects external `value` changes in the input even when it is focused (dirtyRef gate)', async () => {
+    // Regression test for the `focused`-gated draft sync. The Settings
+    // dialog is rendered inside a Radix Dialog that auto-focuses the
+    // first interactive element on open; if the draft sync were gated
+    // on `focused`, the FPS input would freeze at its last in-memory
+    // value whenever a project load pushed a new `advanced.fps` from
+    // the `// _twconfig_` comment. The fix uses a `dirtyRef` that is
+    // only set by an actual `onChange` event, so an unedited-but-
+    // focused input still re-syncs.
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+    // Use a real user interaction (click) to put the input into a
+    // focused state via the synthetic event system, not just the DOM
+    // .focus() setter. The bug only manifested with the React synthetic
+    // onFocus/onBlur path.
+    await user.click(fpsInput);
+    expect(document.activeElement).toBe(fpsInput);
+    // The input started at 30 (DEFAULT_ADVANCED_SETTINGS). No typing has
+    // happened yet, so the dirty ref is false and the input is in sync
+    // with the store.
+    expect(fpsInput.value).toBe('30');
+    // Push a new FPS through the store (e.g. via a twconfig merge).
+    act(() => {
+      useSettingsStore.getState().patchAdvanced({ fps: 60 });
+    });
+    // The input must re-render to "60" even though it is still focused.
+    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('60');
+    // Sanity check: typing DOES still set the dirty ref, so a follow-up
+    // external change does NOT clobber a mid-edit draft.
+    await user.click(fpsInput);
+    await user.clear(fpsInput);
+    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('');
+    act(() => {
+      useSettingsStore.getState().patchAdvanced({ fps: 90 });
+    });
+    // The user's empty mid-edit draft survives the external change.
+    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('');
   });
 });

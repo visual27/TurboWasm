@@ -81,7 +81,6 @@ function NumberField({
   className = 'h-9 w-24 text-right tabular-nums',
 }: NumberFieldProps): React.JSX.Element {
   const [draft, setDraft] = React.useState<string>(() => formatInteger(value));
-  const [focused, setFocused] = React.useState<boolean>(false);
   // Set to true when the user pressed Escape. We check this in `onBlur`
   // because rolling back via `setDraft` is asynchronous (React batches
   // the state update), so by the time the synthetic blur fires the
@@ -92,21 +91,28 @@ function NumberField({
   const skipNextBlurCommitRef = React.useRef<boolean>(false);
 
   // Re-sync the draft when the external value changes (reset, twconfig merge,
-  // programmatic patch, slider sync). We skip the sync while the input is
-  // focused so the user's mid-edit draft is never overwritten.
+  // programmatic patch, slider sync). We skip the sync only when the user
+  // has actually edited the draft (i.e. typed something) — using `focused`
+  // here was wrong because Radix's `Dialog` auto-focuses the first input
+  // on open, which would otherwise block the dialog from ever reflecting
+  // external `value` changes while a `NumberField` is the autofocus target.
+  // `dirtyRef` is set by `onChange` and cleared on commit / rollback.
+  const dirtyRef = React.useRef<boolean>(false);
   React.useEffect(() => {
-    if (!focused) setDraft(formatInteger(value));
-  }, [value, focused]);
+    if (!dirtyRef.current) setDraft(formatInteger(value));
+  }, [value]);
 
   const commit = React.useCallback((): void => {
     const trimmed = draft.trim();
     if (trimmed === '') {
       setDraft(formatInteger(value));
+      dirtyRef.current = false;
       return;
     }
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed)) {
       setDraft(formatInteger(value));
+      dirtyRef.current = false;
       return;
     }
     const rounded = Math.round(parsed);
@@ -115,10 +121,15 @@ function NumberField({
     const clamped = Math.min(Math.max(rounded, lo), hi);
     onCommit(clamped);
     setDraft(formatInteger(clamped));
+    // The committed value now matches the store, so the draft is no
+    // longer "dirty" — subsequent external `value` changes can sync
+    // freely again.
+    dirtyRef.current = false;
   }, [draft, value, min, max, onCommit]);
 
   const rollback = React.useCallback((): void => {
     setDraft(formatInteger(value));
+    dirtyRef.current = false;
   }, [value]);
 
   return (
@@ -131,16 +142,18 @@ function NumberField({
       max={max}
       step={step}
       aria-label={ariaLabel}
-      onFocus={() => setFocused(true)}
+      onFocus={() => undefined}
       onBlur={() => {
-        setFocused(false);
         if (skipNextBlurCommitRef.current) {
           skipNextBlurCommitRef.current = false;
           return;
         }
         commit();
       }}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        dirtyRef.current = true;
+        setDraft(e.target.value);
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
