@@ -15,7 +15,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlayerStore } from '@/stores/usePlayerStore';
 import type { ScaffoldingInstance } from '@/runtime/scaffolding-types';
 import { applyPreSetupConfig, ensureSetup, getScaffolding } from '@/lib/scaffolding';
-import { readTwconfigFromArrayBuffer } from '@/runtime/twconfig';
+import { readTwconfigFromArrayBuffer, buildProjectAdvanced } from '@/runtime/twconfig';
 import type { AdvancedSettings, ExtensionSandboxMode } from '@/types/settings';
 import { buildPreSetupConfig } from '@/runtime/pre-setup';
 import { isValidProjectFile } from '@/lib/validation';
@@ -1045,13 +1045,23 @@ export async function loadProjectFromArrayBuffer(
   resetScaffoldingStage(attachedScaffolding);
   resetScaffoldingMonitors(attachedScaffolding);
 
-  if (options.mergeTwconfig !== false) {
-    const overrides = await readTwconfigFromArrayBuffer(buf);
-    if (Object.keys(overrides).length > 0) {
-      currentAdvanced = { ...currentAdvanced, ...overrides };
-      // Also push the overrides into the React-side settings store so the
-      // Settings dialog reflects the same values the VM is currently using.
-      // This was previously module-local only, leaving the dialog out of
+    if (options.mergeTwconfig !== false) {
+      const overrides = await readTwconfigFromArrayBuffer(buf);
+      if (Object.keys(overrides).length > 0) {
+        // Reset to the saved defaults first, then layer the project's
+        // overrides on top. This is the canonical "TurboWarp twconfig
+        // takes priority" merge — keys present in `overrides` win, keys
+        // absent fall back to the saved defaults, and the previous
+        // project's overrides never leak forward. The same merge runs
+        // on the React side via {@link buildProjectAdvanced} in
+        // `applyRuntimeOverrides` so the module-local `currentAdvanced`
+        // and the store-side `advanced` are computed by the same
+        // function and can never drift.
+        const baseline = useSettingsStore.getState().defaultAdvanced;
+        currentAdvanced = buildProjectAdvanced(baseline, overrides);
+        // Also push the overrides into the React-side settings store so the
+        // Settings dialog reflects the same values the VM is currently using.
+        // This was previously module-local only, leaving the dialog out of
       // sync with the runtime stage.
       useSettingsStore.getState().applyRuntimeOverrides(overrides);
     }

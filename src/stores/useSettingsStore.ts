@@ -14,6 +14,7 @@ import {
 } from '@/utils/constants';
 import { clampVolume } from '@/utils/format';
 import { readSettings, writeSettings } from '@/lib/persistence';
+import { buildProjectAdvanced } from '@/runtime/twconfig';
 
 export interface SettingsState {
   theme: Theme;
@@ -266,11 +267,24 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ advanced: merged });
   },
   applyRuntimeOverrides: (overrides) => {
-    // Mirrors `patchAdvanced` but is its own action so call sites are
-    // grep-able. Used by the project loader to push `_twconfig_` overrides
-    // from `project.json` into the Settings dialog.
-    if (Object.keys(overrides).length === 0) return;
-    const merged: AdvancedSettings = { ...get().advanced, ...overrides };
+    // Project-scoped runtime settings: always reset to the saved
+    // `defaultAdvanced` first, then apply the project's overrides on
+    // top. This is the canonical "TurboWarp twconfig takes priority"
+    // merge: keys present in `overrides` win, keys absent fall back to
+    // the saved defaults, and the previous project's overrides never
+    // leak forward.
+    //
+    // We always reset (even with an empty `overrides`) so that loading
+    // a project without a `// _twconfig_` comment still clears the
+    // prior project's overrides from the runtime `advanced` — the
+    // player calls this on every project load for that reason.
+    //
+    // The actual merge logic lives in
+    // {@link buildProjectAdvanced} (src/runtime/twconfig.ts) so the
+    // module-local `currentAdvanced` in player.ts and the store-side
+    // `advanced` here are computed by the same function and can never
+    // drift.
+    const merged = buildProjectAdvanced(get().defaultAdvanced, overrides);
     set({ advanced: merged });
   },
   saveAdvancedAsDefault: () => {
