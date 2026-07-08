@@ -80,3 +80,29 @@ index 0000001..0000003 100644
 +        }
          const pixels = new Uint8Array(Math.floor(bounds.width * (bounds.height - stop) * 4));
          gl.readPixels(0, 0, bounds.width, (bounds.height - stop), gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+@@ -2092,6 +2148,26 @@ class RenderWebGL extends EventEmitter {
+     _drawThese (drawables, drawMode, projection, opts = {}) {
+
+         const gl = this._gl;
++        // TurboWasm: optional WebGPU instanced rendering. The host
++        // application installs a `_twWasmDrawSprites` hook on the
++        // renderer. When the hook returns `true`, the sprite drawable
++        // list has been submitted to the WebGPU batch renderer and the
++        // WebGL path below is skipped for this `_drawThese` invocation.
++        // Pen / text-bubble / debug-canvas layers keep using WebGL by
++        // their own draw-mode calls into `_drawThese` with non-default
++        // `drawMode` values that the host hook rejects.
++        if (
++            drawMode === ShaderManager.DRAW_MODE.default &&
++            typeof this._twWasmDrawSprites === 'function'
++        ) {
++            try {
++                if (this._twWasmDrawSprites(this, drawables, projection, opts)) {
++                    this._regionId = null;
++                    return;
++                }
++            } catch (e) { /* fall through to the WebGL path */ }
++        }
+         let currentShader = null;
+
+         const framebufferSpaceScaleDiffers = (

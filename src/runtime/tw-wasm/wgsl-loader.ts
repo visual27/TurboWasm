@@ -14,12 +14,14 @@
 
 import touchingColorWgsl from './wgsl/touching-color.wgsl?raw';
 import touchingDrawablesWgsl from './wgsl/touching-drawables.wgsl?raw';
+import spriteInstancedWgsl from './wgsl/sprite-instanced.wgsl?raw';
 import commonWgsl from './wgsl/common.wgsl?raw';
 
 export const WGSL_SHADERS = {
   common: commonWgsl,
   touchingColor: touchingColorWgsl,
   touchingDrawables: touchingDrawablesWgsl,
+  spriteInstanced: spriteInstancedWgsl,
 } as const;
 
 export type WgslShaderName = keyof typeof WGSL_SHADERS;
