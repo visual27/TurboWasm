@@ -8,10 +8,6 @@ const RENDER_WEB_GL = resolve(
   process.cwd(),
   'vendored/scaffolding/node_modules/scratch-render/src/RenderWebGL.js',
 );
-const SVG_SKIN = resolve(
-  process.cwd(),
-  'vendored/scaffolding/node_modules/scratch-render/src/SVGSkin.js',
-);
 
 describe('wasm-collision-runtime patch', () => {
   it('the patch file exists', () => {
@@ -55,43 +51,5 @@ describe('wasm-collision-runtime patch', () => {
       // eslint-disable-next-line no-console
       console.warn('[wasm-collision-runtime] git unavailable; skipping dry-run check', err);
     }
-  });
-
-  describe('Phase 4 (resvg-wasm SVG rasterizer)', () => {
-    it('SVGSkin.createMIP drawImage is staged via a transient source canvas (NOT putImageData on the MIP context)', () => {
-      // Regression guard for the `putImageData` coordinate-shift bug:
-      // `putImageData` ignores the current 2D transform, so the resvg
-      // rasterized ImageData drifted to the top-left base-sized corner
-      // whenever the renderer needed a non-1x MIP. The fix stages the
-      // buffer onto a transient source canvas and `drawImage`s from
-      // there, which respects the `setTransform(scale, ...)` applied
-      // above and so scales the SVG into the MIP canvas correctly.
-      if (!existsSync(SVG_SKIN)) return;
-      const src = readFileSync(SVG_SKIN, 'utf8');
-      expect(
-        src,
-        'SVGSkin.createMIP is missing the `drawImage(twSrcCanvas, ...)` ' +
-          'fix; re-apply the patch and re-run setup.',
-      ).toMatch(/drawImage\(\s*twSrcCanvas\s*,\s*0\s*,\s*0\s*\)/);
-      // The fix must not regress to calling `putImageData` on the MIP
-      // context directly.
-      expect(
-        src,
-        'SVGSkin.createMIP still uses `this._context.putImageData(...)`; ' +
-          'this was the original bug. Re-apply the fix branch of the ' +
-          'patch.',
-      ).not.toMatch(/this\._context\.putImageData\(/);
-    });
-
-    it('SVGSkin.setSVG.onload snapshots the host-rasterized ImageData via the host hook', () => {
-      if (!existsSync(SVG_SKIN)) return;
-      const src = readFileSync(SVG_SKIN, 'utf8');
-      // The `onload` callback must consult the host hook and stash the
-      // result on `this._twRasterizedData` for the next `createMIP`
-      // call. Missing the snapshot means every MIP falls back to the
-      // native Image decoder, which defeats the Phase 4 goal.
-      expect(src).toMatch(/twHostRaster\.rasterize/);
-      expect(src).toMatch(/this\._twRasterizedData\s*=\s*out/);
-    });
   });
 });

@@ -12,7 +12,6 @@ This project is **not** a Scratch editor — it is a read-only player for `.sb3`
   - Phase 1: WASM SIMD batched `isTouchingColor` / `isTouchingDrawables` with per-lane perspective divide.
   - Phase 2: WebGPU compute pipeline for `isTouchingColor` / `isTouchingDrawables` with a 1-frame delayed result snapshot (spec §4.3).
   - Phase 3: WebGPU instanced sprite renderer that reduces draw-call count to one per unique skin.
-  - Phase 4: `resvg-wasm` SVG rasterizer for cross-environment costume consistency.
   - Three-tier fallback chain (`WebGPU → WASM SIMD → JS`) plus a `Performance Mode` selector (`auto` / `force-wasm` / `force-webgpu` / `legacy-only`).
 - Advanced settings (FPS, Interpolation, Warp Timer, High Quality Pen, Turbo Mode, Compiler toggle, Infinity Clones, Remove Fencing, Remove Misc Limits, Stage size, **Performance Mode**) with **immediate apply**.
 - `twconfig` parsing from project comments (read-only).
@@ -98,8 +97,6 @@ src/
       wasm-collision-client.ts        # Phase 1: WASM SIMD host
       gpu-collision.ts                # Phase 2: WebGPU compute host
       gpu-batch-renderer.ts           # Phase 3: WebGPU instanced renderer
-      svg-raster.ts                   # Phase 4: resvg-wasm host
-      svg-raster-host.ts              # Phase 4: renderer hook attachment
       wgsl-loader.ts                  # WGSL ?raw import shim
       wgsl/                           # WGSL shader sources
   services/     # external API integrations (scratch-project metadata + data)
@@ -173,11 +170,13 @@ Vite injects build-time values; changing them requires a rebuild.
 
 ## Performance pipeline
 
-The Viewer ships four phases of acceleration (Phases 0–3) plus a
-cross-environment SVG rasterizer (Phase 4). Each tier degrades
-gracefully when its backing is not available — see
+The Viewer ships three phases of acceleration (Phases 0–3). Each tier
+degrades gracefully when its backing is not available — see
 [AGENTS.md](AGENTS.md) for the operator-facing diagnostic table and
 the [Verification](#verification) section for the test surface.
+Phase 4 (`resvg-wasm` SVG rasterizer) was removed; see
+[Phase 4 撤廃 (resvg-wasm) と TurboWarp 同等性検証](AGENTS.md#phase-4-撤廃-resvg-wasm-と-turbowarp-同等性検証)
+in AGENTS.md for the rationale.
 
 | Phase | Path                                              | Implementation                              |
 | ----- | ------------------------------------------------- | ------------------------------------------- |
@@ -185,15 +184,14 @@ the [Verification](#verification) section for the test surface.
 | 1     | WASM SIMD batched `isTouchingColor` / `isTouchingDrawables` | `wasm-collision/` (Rust), `wasm-collision-client.ts` |
 | 2     | WebGPU compute pipeline (1-frame delayed result)  | `src/runtime/tw-wasm/gpu-collision.ts`      |
 | 3     | WebGPU instanced sprite renderer                  | `src/runtime/tw-wasm/gpu-batch-renderer.ts` |
-| 4     | `resvg-wasm` SVG rasterizer (cosume consistency) | `src/runtime/tw-wasm/svg-raster.ts`         |
 
 WGSL shader sources live under `src/runtime/tw-wasm/wgsl/` and are
 bundled by Vite via `?raw` imports. The vendored `scratch-render` is
 patched (`patches/wasm-collision-runtime+0.1.0.patch`) to install
 the host-side hooks that the runtime reads at frame time:
 `_twWasmIsTouchingColor`, `_twWasmIsTouchingDrawables`,
-`_twWasmGpuTouchingStart`, `_twWasmGpuTouchingFin`, `_twWasmDrawSprites`,
-and `_twWasmRasterSvgCostume`.
+`_twWasmGpuTouchingStart`, `_twWasmGpuTouchingFin`, and
+`_twWasmDrawSprites`.
 
 `*.wasm` files are served with `Content-Type: application/wasm` and
 `Cache-Control: public, max-age=31536000, immutable` via

@@ -34,7 +34,6 @@ interface RendererStub {
   _twWasmDrawSprites?: ((...args: unknown[]) => unknown) | null;
   _twWasmGpuTouchingStart?: ((...args: unknown[]) => unknown) | null;
   _twWasmGpuTouchingFin?: ((...args: unknown[]) => unknown) | null;
-  _twWasmRasterSvgCostume?: unknown;
 }
 
 function makeScaffolding(): { renderer: RendererStub } {
