@@ -18,7 +18,9 @@ function resetStore(): void {
     volume: 100,
     lastNonMuteVolume: 100,
     advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+    defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [],
+    performanceMode: 'auto',
   });
 }
 
@@ -113,13 +115,29 @@ describe('executeDebugCommand — resets', () => {
     useSettingsStore.getState().setVolume(0);
     useSettingsStore.getState().patchAdvanced({ fps: 60 });
     useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js');
+    useSettingsStore.getState().setPerformanceMode('legacy-only');
     addSessionDeniedExtensionUrl('https://example.com/session-deny.js');
     const result = executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset`);
     expect(useSettingsStore.getState().theme).toBe('system');
     expect(useSettingsStore.getState().volume).toBe(100);
     expect(useSettingsStore.getState().advanced.fps).toBe(DEFAULT_ADVANCED_SETTINGS.fps);
     expect(useSettingsStore.getState().allowedExtensionUrls).toEqual([]);
+    expect(useSettingsStore.getState().performanceMode).toBe('auto');
     expect(result.message).toMatch(/Reset all settings/);
+  });
+
+  it('!reset-performance sets performance mode back to auto', () => {
+    useSettingsStore.getState().setPerformanceMode('force-wasm');
+    expect(useSettingsStore.getState().performanceMode).toBe('force-wasm');
+    const result = executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-performance`);
+    expect(useSettingsStore.getState().performanceMode).toBe('auto');
+    expect(result.message).toMatch(/Performance mode reset to auto/);
+  });
+
+  it('!reset-advanced also resets performance mode', () => {
+    useSettingsStore.getState().setPerformanceMode('legacy-only');
+    executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-advanced`);
+    expect(useSettingsStore.getState().performanceMode).toBe('auto');
   });
 
   it('!clear-extensions clears the allow-list but leaves advanced alone', () => {
@@ -208,6 +226,7 @@ describe('executeDebugCommand — dump', () => {
       expect(payload).toMatchObject({
         theme: 'system',
         volume: 100,
+        performanceMode: 'auto',
       });
       expect(payload.advanced).toBeDefined();
       expect(payload.allowedExtensionUrls).toEqual([]);
