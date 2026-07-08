@@ -32,6 +32,10 @@ const VENDORED_RENDER_WEB_GL = resolve(
 // Local alias used by the assertions below; keeps the rest of the suite
 // free of the awkward underscore.
 const RENDER_WEB_GL = VENDORED_RENDER_WEB_GL;
+const VENDORED_SCAFFOLDING_UMD = resolve(
+  process.cwd(),
+  'vendored/scaffolding/dist/scaffolding-min.js',
+);
 
 describe('vendored scratch-render ImageData guards', () => {
   it('the vendored scratch-render source exists (postinstall ran)', () => {
@@ -99,5 +103,29 @@ describe('vendored scratch-render ImageData guards', () => {
       // eslint-disable-next-line no-console
       console.warn('[scratch-render-patches] git unavailable; skipping dry-run check', err);
     }
+  });
+});
+
+describe('vendored scratch-render Phase 4 (resvg-wasm) drawImage fix', () => {
+  it('SVGSkin.createMIP uses drawImage(twSrcCanvas, ...) not putImageData on the MIP context', () => {
+    // Regression guard for the putImageData coordinate-shift bug.
+    // `putImageData` ignores the 2D transform applied above
+    // (`setTransform(scale, 0, 0, scale, 0, 0)`) so the resvg buffer
+    // drifted to the top-left base-sized corner whenever the renderer
+    // needed a non-1x MIP. The fix stages onto a transient source
+    // canvas and `drawImage`s from there, which respects the
+    // transform.
+    if (!existsSync(VENDORED_RENDER_WEB_GL)) return;
+    if (!existsSync(VENDORED_SCAFFOLDING_UMD)) return;
+    const umd = readFileSync(VENDORED_SCAFFOLDING_UMD, 'utf8');
+    expect(
+      umd,
+      'UMD is missing the `drawImage(twSrcCanvas, ...)` fix in SVGSkin.createMIP',
+    ).toMatch(/drawImage\(\s*twSrcCanvas\s*,\s*0\s*,\s*0\s*\)/);
+    // Must NOT regress to putImageData on the MIP context.
+    expect(
+      umd,
+      'UMD still uses `putImageData` on the MIP context (the original bug)',
+    ).not.toMatch(/this\._context\.putImageData\(/);
   });
 });
