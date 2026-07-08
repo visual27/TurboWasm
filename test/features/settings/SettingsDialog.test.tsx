@@ -14,6 +14,7 @@ describe('SettingsDialog — layout', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+      performanceMode: 'auto',
     });
   });
 
@@ -134,6 +135,7 @@ describe('SettingsDialog — TurboWasm Acceleration toggle', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+      performanceMode: 'auto',
     });
   });
 
@@ -172,6 +174,7 @@ describe('SettingsDialog — NumberField commit semantics', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+      performanceMode: 'auto',
     });
   });
 

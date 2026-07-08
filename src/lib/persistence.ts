@@ -2,12 +2,20 @@ import { STORAGE_KEYS, STORAGE_VERSION } from '@/utils/constants';
 import type {
   AdvancedSettings,
   ExtensionSandboxMode,
+  PerformanceMode,
   SettingsStoreSerialized,
   SettingsStoreShape,
   Theme,
 } from '@/types/settings';
-import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
-import { DEFAULT_ADVANCED_SETTINGS, DEFAULT_ALLOWED_EXTENSION_URLS } from '@/utils/constants';
+import {
+  PERFORMANCE_MODES,
+  ALLOWED_EXTENSION_URLS_MAX,
+} from '@/types/settings';
+import {
+  DEFAULT_ADVANCED_SETTINGS,
+  DEFAULT_ALLOWED_EXTENSION_URLS,
+  DEFAULT_PERFORMANCE_MODE,
+} from '@/utils/constants';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume } from '@/utils/format';
 
 type Listener = () => void;
@@ -59,6 +67,10 @@ function isTheme(v: unknown): v is Theme {
 
 function isExtensionSandboxMode(v: unknown): v is ExtensionSandboxMode {
   return v === 'worker' || v === 'iframe' || v === 'unsandboxed';
+}
+
+function isPerformanceMode(v: unknown): v is PerformanceMode {
+  return typeof v === 'string' && (PERFORMANCE_MODES as readonly string[]).includes(v);
 }
 
 /**
@@ -128,6 +140,7 @@ function emptyShape(): SettingsStoreShape {
     advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
+    performanceMode: DEFAULT_PERFORMANCE_MODE,
   };
 }
 
@@ -140,9 +153,14 @@ export function readSettings(): SettingsStoreShape {
 
     // v1 payloads (single `advanced` field) are accepted as long as the
     // payload was at least tagged version 1. v2 payloads use two distinct
-    // fields (`advanced` + `defaultAdvanced`). Anything else (including
-    // untagged / wrong-version / corrupt blobs) resets to defaults.
-    if (parsed.version !== 1 && parsed.version !== STORAGE_VERSION) {
+    // fields (`advanced` + `defaultAdvanced`). v3 adds a top-level
+    // `performanceMode`. Anything else (including untagged / wrong-version
+    // / corrupt blobs) resets to defaults.
+    if (
+      parsed.version !== 1 &&
+      parsed.version !== 2 &&
+      parsed.version !== STORAGE_VERSION
+    ) {
       return emptyShape();
     }
 
@@ -154,6 +172,9 @@ export function readSettings(): SettingsStoreShape {
         ? clampVolume(parsed.state.lastNonMuteVolume)
         : volume;
     const allowedExtensionUrls = sanitizeAllowedExtensionUrls(parsed.state?.allowedExtensionUrls);
+    const performanceMode = isPerformanceMode(parsed.state?.performanceMode)
+      ? parsed.state.performanceMode
+      : DEFAULT_PERFORMANCE_MODE;
 
     if (parsed.version === 1) {
       // v1 → v2 migration: a single `advanced` field acted as both the
@@ -167,10 +188,13 @@ export function readSettings(): SettingsStoreShape {
         advanced,
         defaultAdvanced: { ...advanced, disableCompiler: false },
         allowedExtensionUrls,
+        performanceMode,
       };
     }
 
-    // v2
+    // v2 (or v3). Both share the `advanced` + `defaultAdvanced` shape; the
+    // only v3 addition is the top-level `performanceMode` field that we
+    // already sanitised above.
     const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
     const defaultAdvanced = sanitizeAdvanced(
       parsed.state?.defaultAdvanced ?? parsed.state?.advanced,
@@ -183,6 +207,7 @@ export function readSettings(): SettingsStoreShape {
       advanced,
       defaultAdvanced,
       allowedExtensionUrls,
+      performanceMode,
     };
   } catch {
     return emptyShape();

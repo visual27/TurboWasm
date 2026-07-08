@@ -1,8 +1,14 @@
 import { create } from 'zustand';
-import type { AdvancedSettings, ExtensionSandboxMode, Theme } from '@/types/settings';
+import type {
+  AdvancedSettings,
+  ExtensionSandboxMode,
+  PerformanceMode,
+  Theme,
+} from '@/types/settings';
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
   DEFAULT_ALLOWED_EXTENSION_URLS,
+  DEFAULT_PERFORMANCE_MODE,
   VOLUME_MAX,
   VOLUME_MIN,
 } from '@/utils/constants';
@@ -45,6 +51,13 @@ export interface SettingsState {
    * {@link ALLOWED_EXTENSION_URLS_MAX}.
    */
   allowedExtensionUrls: string[];
+  /**
+   * Backend selection for the TurboWasm acceleration pipeline. Persisted
+   * (unlike `disableCompiler`) so a power user can pick `legacy-only` for a
+   * parity comparison and have that choice survive a reload. See
+   * {@link PerformanceMode} for the full set of values.
+   */
+  performanceMode: PerformanceMode;
   setTheme: (theme: Theme) => void;
   setVolume: (volume: number) => void;
   /**
@@ -116,6 +129,12 @@ export interface SettingsState {
    * Clear the entire allow-list. Used by the Settings reset action.
    */
   clearAllowedExtensionUrls: () => void;
+  /**
+   * Update the backend selection (`auto` / `force-wasm` / `force-webgpu` /
+   * `legacy-only`). Persists immediately so the next reload picks up the
+   * same backend without re-prompting the user.
+   */
+  setPerformanceMode: (mode: PerformanceMode) => void;
 }
 
 const initial = readSettings();
@@ -174,6 +193,7 @@ function schedulePersist(snapshot: SettingsState): void {
           advanced: snap.advanced,
           defaultAdvanced: snap.defaultAdvanced,
           allowedExtensionUrls: snap.allowedExtensionUrls,
+          performanceMode: snap.performanceMode,
         });
       }
     };
@@ -202,6 +222,7 @@ function persistImmediate(state: SettingsState): void {
     advanced: state.advanced,
     defaultAdvanced: state.defaultAdvanced,
     allowedExtensionUrls: state.allowedExtensionUrls,
+    performanceMode: state.performanceMode,
   });
 }
 
@@ -215,6 +236,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   advanced: initial.advanced,
   defaultAdvanced: initial.defaultAdvanced,
   allowedExtensionUrls: [...initial.allowedExtensionUrls],
+  performanceMode: initial.performanceMode ?? DEFAULT_PERFORMANCE_MODE,
   setTheme: (theme) => {
     set({ theme });
     persistImmediate(get());
@@ -331,6 +353,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS] });
     persistImmediate(get());
   },
+  setPerformanceMode: (mode) => {
+    // The mode is a user preference that must persist across reloads (a
+    // power user who picks `legacy-only` for a parity test expects that
+    // choice to survive the next page load). Persist immediately so a
+    // reload right after the toggle picks up the same backend.
+    set({ performanceMode: mode });
+    persistImmediate(get());
+  },
 }));
 
 /**
@@ -349,6 +379,7 @@ export function flushSettingsPersistForTesting(): void {
       advanced: snap.advanced,
       defaultAdvanced: snap.defaultAdvanced,
       allowedExtensionUrls: snap.allowedExtensionUrls,
+      performanceMode: snap.performanceMode,
     });
   }
 }

@@ -3,6 +3,34 @@ export type Theme = 'system' | 'dark' | 'light';
 export type ScaffoldingResizeMode = 'preserve-ratio' | 'dynamic-resize' | 'stretch';
 
 /**
+ * Selects which collision-detection / rendering backend the runtime prefers.
+ *
+ *  - `'auto'`:         WebGPU when supported, then WASM SIMD, then the
+ *                      original JavaScript path. The default for new users.
+ *  - `'force-wasm'`:   WASM SIMD is always used when it initialised
+ *                      successfully; never falls through to WebGPU. Falls
+ *                      back to the JavaScript path when WASM SIMD is
+ *                      unavailable.
+ *  - `'force-webgpu'`: WebGPU when supported. Falls through to WASM SIMD,
+ *                      then JavaScript, when WebGPU is unavailable. Useful
+ *                      for benchmarking the GPU pipeline on a known-good
+ *                      machine.
+ *  - `'legacy-only'`:  All TurboWasm hooks are cleared; the runtime behaves
+ *                      identically to the unmodified scratch-render. This
+ *                      satisfies the Definition of Done parity requirement
+ *                      (legacy output must be byte-identical to the
+ *                      upstream renderer).
+ */
+export type PerformanceMode = 'auto' | 'force-wasm' | 'force-webgpu' | 'legacy-only';
+
+export const PERFORMANCE_MODES: readonly PerformanceMode[] = [
+  'auto',
+  'force-wasm',
+  'force-webgpu',
+  'legacy-only',
+] as const;
+
+/**
  * Sandbox mode for custom extensions loaded from a project.
  *
  *  - 'worker':      run inside a Web Worker. Most isolated; same as
@@ -93,6 +121,16 @@ export interface UISettings {
    * loads without re-prompting.
    */
   allowedExtensionUrls: string[];
+  /**
+   * Backend selection for the TurboWasm acceleration pipeline (Phase 0..3
+   * of the performance spec). Persisted across sessions so the user does
+   * not have to re-pick their preferred backend on every reload.
+   *
+   * `legacy-only` is intentionally persisted: power users may want to
+   * compare against the unmodified scratch-render without losing that
+   * choice to a "Set as default" reset.
+   */
+  performanceMode: PerformanceMode;
 }
 
 export interface SettingsStoreShape {
@@ -102,6 +140,7 @@ export interface SettingsStoreShape {
   advanced: AdvancedSettings;
   defaultAdvanced: AdvancedSettings;
   allowedExtensionUrls: string[];
+  performanceMode: PerformanceMode;
 }
 
 export interface SettingsStoreSerialized {

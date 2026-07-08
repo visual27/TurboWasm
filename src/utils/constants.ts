@@ -1,4 +1,4 @@
-import type { AdvancedSettings } from '@/types/settings';
+import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
 
 export const APP_NAME = 'TurboWasm Viewer';
 
@@ -35,9 +35,17 @@ export const STORAGE_KEYS = {
 
 // Bumped to 2 when the schema split `advanced` (runtime state) and
 // `defaultAdvanced` (saved defaults) into separate fields, and forced
-// `disableCompiler` to always start as `false`. v1 payloads are read and
-// migrated on the fly — see `src/lib/persistence.ts`.
-export const STORAGE_VERSION = 2;
+// `disableCompiler` to always start as `false`. Bumped to 3 when the
+// schema added the top-level `performanceMode` field; older payloads are
+// read and migrated on the fly — see `src/lib/persistence.ts`.
+export const STORAGE_VERSION = 3;
+
+/**
+ * Default value for `performanceMode` when no user preference has been
+ * persisted yet (or when the legacy migration runs). `auto` lets the
+ * runtime pick the best backend per environment.
+ */
+export const DEFAULT_PERFORMANCE_MODE: PerformanceMode = 'auto';
 
 export const ENV = {
   githubRepoUrl:

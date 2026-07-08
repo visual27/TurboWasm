@@ -11,6 +11,7 @@ function resetStore(): void {
     advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [],
+    performanceMode: 'auto',
   });
 }
 
@@ -151,6 +152,39 @@ describe('useSettingsStore — basic', () => {
   });
 });
 
+describe('useSettingsStore — performanceMode', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetStore();
+  });
+
+  it('defaults to "auto" on a fresh store', () => {
+    expect(useSettingsStore.getState().performanceMode).toBe('auto');
+  });
+
+  it('setPerformanceMode updates the field and persists immediately', () => {
+    useSettingsStore.getState().setPerformanceMode('force-wasm');
+    expect(useSettingsStore.getState().performanceMode).toBe('force-wasm');
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    expect(raw).toBeTruthy();
+    const parsed = JSON.parse(raw as string) as {
+      state: { performanceMode: string };
+      version: number;
+    };
+    expect(parsed.state.performanceMode).toBe('force-wasm');
+    // The persisted payload is tagged with the v3 schema so future
+    // schema bumps can read it back correctly.
+    expect(parsed.version).toBe(3);
+  });
+
+  it('setPerformanceMode accepts all four valid modes', () => {
+    for (const mode of ['auto', 'force-wasm', 'force-webgpu', 'legacy-only'] as const) {
+      useSettingsStore.getState().setPerformanceMode(mode);
+      expect(useSettingsStore.getState().performanceMode).toBe(mode);
+    }
+  });
+});
+
 describe('useSettingsStore — allowedExtensionUrls', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -279,6 +313,7 @@ describe('useSettingsStore.toggleMute (smart restore)', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+      performanceMode: 'auto',
     });
   });
 

@@ -26,6 +26,7 @@ describe('persistence', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 60, stageWidth: 800 },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
       allowedExtensionUrls: ['https://example.com/a.js'],
+      performanceMode: 'auto',
     });
     const settings = readSettings();
     expect(settings.theme).toBe('dark');
@@ -85,6 +86,7 @@ describe('persistence', () => {
       },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+      performanceMode: 'auto',
     });
     const settings = readSettings();
     expect(settings.advanced.extensionSandboxMode).toBe('iframe');
@@ -185,6 +187,7 @@ describe('persistence', () => {
         'https://example.com/a.js', // duplicate
         '  https://example.com/b.js  ', // trimmed
       ],
+      performanceMode: 'auto',
     });
     const settings = readSettings();
     expect(settings.allowedExtensionUrls).toEqual([
@@ -270,6 +273,65 @@ describe('persistence', () => {
       const settings = readSettings();
       expect(settings.advanced.disableCompiler).toBe(false);
       expect(settings.defaultAdvanced.disableCompiler).toBe(false);
+    });
+  });
+
+  describe('v2 → v3 migration (performanceMode field)', () => {
+    it('seeds performanceMode to "auto" when reading a v2 payload without the field', () => {
+      // A v2 payload predates the performanceMode field. The migration
+      // must default it to 'auto' so a user upgrading their saved
+      // settings picks up the recommended default.
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'dark',
+            volume: 50,
+            lastNonMuteVolume: 50,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+          },
+          version: 2,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.performanceMode).toBe('auto');
+    });
+
+    it('round-trips a persisted performanceMode through storage', () => {
+      writeSettings({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        allowedExtensionUrls: [],
+        performanceMode: 'force-wasm',
+      });
+      const settings = readSettings();
+      expect(settings.performanceMode).toBe('force-wasm');
+    });
+
+    it('falls back to "auto" when reading a v3 payload with an unknown performanceMode', () => {
+      // A future v4 might add a new performanceMode value. We must
+      // gracefully fall back to the safe default so the viewer keeps
+      // working until the user upgrades.
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            performanceMode: 'totally-fake-mode',
+          },
+          version: STORAGE_VERSION,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.performanceMode).toBe('auto');
     });
   });
 });
