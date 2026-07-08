@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -14,7 +14,6 @@ describe('SettingsDialog — layout', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-      performanceMode: 'auto',
     });
   });
 
@@ -135,7 +134,6 @@ describe('SettingsDialog — TurboWasm Acceleration toggle', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-      performanceMode: 'auto',
     });
   });
 
@@ -174,7 +172,6 @@ describe('SettingsDialog — NumberField commit semantics', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-      performanceMode: 'auto',
     });
   });
 
@@ -302,44 +299,75 @@ describe('SettingsDialog — NumberField commit semantics', () => {
     await user.keyboard('{Enter}');
     expect(useSettingsStore.getState().volume).toBe(100);
   });
+});
 
-  it('reflects external `value` changes in the input even when it is focused (dirtyRef gate)', async () => {
-    // Regression test for the `focused`-gated draft sync. The Settings
-    // dialog is rendered inside a Radix Dialog that auto-focuses the
-    // first interactive element on open; if the draft sync were gated
-    // on `focused`, the FPS input would freeze at its last in-memory
-    // value whenever a project load pushed a new `advanced.fps` from
-    // the `// _twconfig_` comment. The fix uses a `dirtyRef` that is
-    // only set by an actual `onChange` event, so an unedited-but-
-    // focused input still re-syncs.
-    const user = userEvent.setup();
+/**
+ * The dialog is a passive mirror of `useSettingsStore.advanced`. The
+ * project loader calls `applyRuntimeOverrides` after parsing the
+ * `// _twconfig_` comment so the dialog reflects the runtime values
+ * the VM is using for the currently-loaded project (and not the
+ * user's saved defaults). Regression coverage for the original bug
+ * where the dialog stayed pinned at the saved defaults even after
+ * a project with overrides had been loaded.
+ */
+describe('SettingsDialog — twconfig overrides propagation', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+    });
+  });
+
+  it('reflects runtime overrides applied after the dialog is mounted', async () => {
+    // User opens the dialog first (with no project loaded), then drops
+    // a project that ships a // _twconfig_ comment. The dialog must
+    // update to mirror the merged value, not stay pinned at the saved
+    // defaults.
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
-    // Use a real user interaction (click) to put the input into a
-    // focused state via the synthetic event system, not just the DOM
-    // .focus() setter. The bug only manifested with the React synthetic
-    // onFocus/onBlur path.
-    await user.click(fpsInput);
-    expect(document.activeElement).toBe(fpsInput);
-    // The input started at 30 (DEFAULT_ADVANCED_SETTINGS). No typing has
-    // happened yet, so the dirty ref is false and the input is in sync
-    // with the store.
-    expect(fpsInput.value).toBe('30');
-    // Push a new FPS through the store (e.g. via a twconfig merge).
-    act(() => {
-      useSettingsStore.getState().patchAdvanced({ fps: 60 });
+    const widthInput = screen.getByLabelText('Stage width') as HTMLInputElement;
+    expect(fpsInput.value).toBe(String(DEFAULT_ADVANCED_SETTINGS.fps));
+    expect(widthInput.value).toBe(String(DEFAULT_ADVANCED_SETTINGS.stageWidth));
+
+    await act(async () => {
+      useSettingsStore
+        .getState()
+        .applyRuntimeOverrides({ fps: 90, stageWidth: 999, highQualityPen: true });
     });
-    // The input must re-render to "60" even though it is still focused.
-    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('60');
-    // Sanity check: typing DOES still set the dirty ref, so a follow-up
-    // external change does NOT clobber a mid-edit draft.
-    await user.click(fpsInput);
-    await user.clear(fpsInput);
-    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('');
-    act(() => {
-      useSettingsStore.getState().patchAdvanced({ fps: 90 });
+
+    expect(useSettingsStore.getState().advanced.fps).toBe(90);
+    expect(fpsInput.value).toBe('90');
+    expect(widthInput.value).toBe('999');
+  });
+
+  it('snaps back to saved defaults when a project without twconfig is loaded', async () => {
+    // User has saved non-default defaults (fps: 60, stageWidth: 800).
+    // After loading a project with overrides { fps: 90 }, the dialog
+    // shows fps=90. Loading a second project that ships NO twconfig
+    // must snap the dialog back to the saved defaults (fps=60), not
+    // stay pinned at the previous project's fps=90.
+    useSettingsStore.getState().patchAdvanced({ fps: 60, stageWidth: 800 });
+    useSettingsStore.getState().saveAdvancedAsDefault();
+
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
+
+    await act(async () => {
+      useSettingsStore.getState().applyRuntimeOverrides({ fps: 90 });
     });
-    // The user's empty mid-edit draft survives the external change.
-    expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('');
+    expect(fpsInput.value).toBe('90');
+
+    await act(async () => {
+      // No twconfig → empty overrides → snap back to saved defaults.
+      useSettingsStore.getState().applyRuntimeOverrides({});
+    });
+    expect(useSettingsStore.getState().advanced.fps).toBe(60);
+    expect(useSettingsStore.getState().advanced.stageWidth).toBe(800);
+    expect(fpsInput.value).toBe('60');
+    expect((screen.getByLabelText('Stage width') as HTMLInputElement).value).toBe('800');
   });
 });

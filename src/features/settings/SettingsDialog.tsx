@@ -12,10 +12,44 @@ import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { SelectField } from '@/components/ui/select';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger } from '@/utils/format';
-import type { AdvancedSettings } from '@/types/settings';
+import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
 import { Button } from '@/components/ui/button';
+
+/**
+ * Human-readable labels + descriptions for the Performance Mode dropdown.
+ * Kept here (next to the Settings dialog) rather than next to the type
+ * because they are presentation strings and the type file is loaded by
+ * tests / persistence code that has no opinion on UI copy.
+ */
+const PERFORMANCE_MODE_OPTIONS: ReadonlyArray<{
+  value: PerformanceMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'auto',
+    label: 'Auto',
+    description: 'WebGPU → WASM SIMD → JavaScript',
+  },
+  {
+    value: 'force-webgpu',
+    label: 'Force WebGPU',
+    description: 'WebGPU only; falls back to WASM SIMD, then JavaScript',
+  },
+  {
+    value: 'force-wasm',
+    label: 'Force WASM SIMD',
+    description: 'WASM SIMD only; falls back to JavaScript',
+  },
+  {
+    value: 'legacy-only',
+    label: 'Legacy only',
+    description: 'Identical to unmodified scratch-render (parity mode)',
+  },
+];
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -358,6 +392,8 @@ const OthersSection = React.memo(function OthersSection({
 }: RuntimeSectionProps): React.JSX.Element {
   const volume = useSettingsStore((s) => s.volume);
   const setVolume = useSettingsStore((s) => s.setVolume);
+  const performanceMode = useSettingsStore((s) => s.performanceMode);
+  const setPerformanceMode = useSettingsStore((s) => s.setPerformanceMode);
   const onSliderChange = React.useCallback(
     (values: number[]) => {
       const v = values[0];
@@ -372,6 +408,10 @@ const OthersSection = React.memo(function OthersSection({
   // Stable reference so Radix Slider doesn't see a fresh `[volume]` array
   // each render.
   const volumeArr = React.useMemo(() => [volume], [volume]);
+  const onPerformanceModeChange = React.useCallback(
+    (mode: PerformanceMode) => setPerformanceMode(mode),
+    [setPerformanceMode],
+  );
   return (
     <SettingsSection id="others" title="Others">
       <FieldRow id="volume" label="Volume" description="Master audio volume.">
@@ -411,13 +451,26 @@ const OthersSection = React.memo(function OthersSection({
       <FieldRow
         id="turbo-wasm-acceleration"
         label="TurboWasm Acceleration"
-        description="Offload collision detection to a WebAssembly SIMD module. Falls back to the JS path automatically when SIMD is unavailable, when a sprite has a shape-changing visual effect (mosaic, pixelate, whirl, fisheye) active, or when the color-matching path is exercised under a color/brightness effect."
+        description="Offload collision detection to a WebAssembly SIMD module. Falls back to the JS path automatically when SIMD is unavailable, when a sprite has a shape-changing visual effect (mosaic, pixelate, whirl, fisheye) active, or when the color-matching path is exercised under a color/brightness effect. Ignored when Performance Mode is 'legacy-only'."
       >
         <SwitchField
           id="turbo-wasm-acceleration"
           checked={advanced.turboWasmAccelerationEnabled}
           onChange={(v) => patch({ turboWasmAccelerationEnabled: v })}
           ariaLabel="TurboWasm Acceleration toggle"
+        />
+      </FieldRow>
+      <FieldRow
+        id="performance-mode"
+        label="Performance Mode"
+        description="Selects the rendering / collision-detection backend. 'auto' picks the best available (WebGPU → WASM SIMD → JS). 'force-webgpu' / 'force-wasm' skip the higher tier when it fails to initialise. 'legacy-only' disables all TurboWasm hooks so the runtime behaves identically to unmodified scratch-render."
+      >
+        <SelectField<PerformanceMode>
+          id="performance-mode"
+          value={performanceMode}
+          onChange={onPerformanceModeChange}
+          options={PERFORMANCE_MODE_OPTIONS}
+          ariaLabel="Performance mode"
         />
       </FieldRow>
     </SettingsSection>
