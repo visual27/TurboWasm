@@ -1,0 +1,7 @@
+# Mark all binary files as such to prevent line-ending conversions that
+# turn a 9135-byte fixture into a 0-byte / different-sized blob in
+# cross-platform clones. The test-fixtures/*.sb3 entries are in
+# particular susceptible because they look like text to core.autocrlf
+# (they start with the PK ZIP header bytes, but whitespace inside the
+# zip can still be touched).
+*.sb3 binary
