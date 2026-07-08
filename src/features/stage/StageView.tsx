@@ -2,10 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlayerStore } from '@/stores/usePlayerStore';
 import { useTheme } from '@/hooks/useTheme';
-import { applySettings, initPlayer, setVolume, subscribePlayerState } from '@/runtime/player';
+import {
+  applySettings,
+  initPlayer,
+  setVolume,
+  subscribePlayerState,
+  __exposeForBrowserVerify,
+} from '@/runtime/player';
 import { relayoutScaffolding, setScaffoldingResizeMode } from '@/lib/scaffolding';
 import { useProjectStore } from '@/stores/useProjectStore';
-import type { AdvancedSettings } from '@/types/settings';
+import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
 import { cn } from '@/lib/utils';
 
 export interface StageViewProps {
@@ -61,6 +67,11 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
           useSettingsStore.getState().advanced,
         );
         if (cancelled) return;
+        // Surface the Scaffolding renderer on `window.__turbowasm` so
+        // browser smoke tests can introspect the installed TurboWasm
+        // hooks (Phase 2 / 3 / 4 wiring). Production code never reads
+        // this; it exists for `scripts/verify-browser.mjs`.
+        __exposeForBrowserVerify();
       } catch (err) {
         initializedRef.current = false;
         // eslint-disable-next-line no-console
@@ -83,19 +94,33 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
   // Subscribing with the live `state.advanced` lets us deliver the exact
   // patch the caller just wrote.
   useEffect(() => {
-    const apply = (next: AdvancedSettings): void => {
+    const apply = (
+      next: AdvancedSettings,
+      performanceMode: PerformanceMode,
+      prevPerformanceMode: PerformanceMode,
+    ): void => {
       if (!initializedRef.current) return;
       try {
-        applySettings(next);
+        applySettings(next, performanceMode, prevPerformanceMode);
+        // Re-publish the diagnostic accessor after every settings change
+        // so a browser-verifier observing `window.__turbowasm` sees the
+        // post-apply hooks (Phase 2/3/4 hook reattachment path).
+        __exposeForBrowserVerify();
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[stage] apply settings failed:', err);
       }
     };
     const unsub = useSettingsStore.subscribe((state, prev) => {
-      if (state.advanced !== prev.advanced) apply(state.advanced);
+      if (
+        state.advanced !== prev.advanced ||
+        state.performanceMode !== prev.performanceMode
+      ) {
+        apply(state.advanced, state.performanceMode, prev.performanceMode);
+      }
     });
-    apply(useSettingsStore.getState().advanced);
+    const initial = useSettingsStore.getState();
+    apply(initial.advanced, initial.performanceMode, initial.performanceMode);
     return unsub;
   }, []);
 

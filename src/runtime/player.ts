@@ -32,6 +32,20 @@ import {
   type RuntimeCapabilities,
 } from '@/runtime/tw-wasm/capabilities';
 import { initWasmCollision } from '@/runtime/tw-wasm/wasm-collision-client';
+import {
+  initGpuCollision,
+  disposeGpuCollision,
+} from '@/runtime/tw-wasm/gpu-collision';
+import { initSvgRaster } from '@/runtime/tw-wasm/svg-raster';
+import {
+  attachSvgRasterHook,
+  detachSvgRasterHook,
+  createSvgRasterHook,
+} from '@/runtime/tw-wasm/svg-raster-host';
+import {
+  initGpuBatchRenderer,
+  disposeGpuBatchRenderer,
+} from '@/runtime/tw-wasm/gpu-batch-renderer';
 
 let attachedContainer: HTMLElement | null = null;
 let attachedScaffolding: ScaffoldingInstance | null = null;
@@ -180,7 +194,10 @@ export function __resetTurboWasmForTesting(): void {
   runtimeCapabilities = null;
   if (attachedScaffolding) {
     removeTurboWasmAcceleration(attachedScaffolding);
+    detachSvgRasterHook(attachedScaffolding.renderer);
   }
+  disposeGpuCollision();
+  disposeGpuBatchRenderer();
 }
 
 /**
@@ -486,9 +503,28 @@ function attachedScaffoldingHasVm(scaffolding: ScaffoldingInstance): boolean {
  *
  * Mirrors the `resetScaffoldingMonitors` test-export pattern.
  */
-export function __bindEventsForTesting(scaffolding: ScaffoldingInstance): void {
-  bindEvents(scaffolding);
-}
+  export function __bindEventsForTesting(scaffolding: ScaffoldingInstance): void {
+    bindEvents(scaffolding);
+  }
+
+  /**
+   * Test-only helper: expose the live Scaffolding renderer to the global
+   * scope under `window.__turbowasm` so browser-based smoke tests can
+   * inspect the installed TurboWasm hooks (`_twWasm*`). Production code
+   * never calls this; it exists for `scripts/verify-browser.mjs`.
+   */
+  export function __exposeForBrowserVerify(): void {
+    if (typeof window === 'undefined') return;
+    const renderer = (attachedScaffolding?.renderer ?? null) as
+      | (Record<string, unknown> & { _twWasmIsTouchingDrawables?: unknown })
+      | null;
+    (window as unknown as { __turbowasm: unknown }).__turbowasm = {
+      scaffolding: attachedScaffolding,
+      renderer,
+      capabilities: runtimeCapabilities,
+      performanceMode: useSettingsStore.getState().performanceMode,
+    };
+  }
 
 async function initScaffolding(
   container: HTMLElement,
@@ -525,13 +561,36 @@ async function initScaffolding(
       webgpu: false,
     }));
   }
-  if (advanced.turboWasmAccelerationEnabled && runtimeCapabilities.wasmSimd) {
+  // TurboWasm acceleration: detect capabilities + initialise each backend
+  // (WASM SIMD, WebGPU, resvg-wasm, instanced batch renderer) in parallel
+  // with the renderer setup so the renderer hooks can be installed the
+  // moment we have a renderer reference. Failures silently fall back to
+  // the next lower tier — no toasts, no modals.
+  const performanceMode = useSettingsStore.getState().performanceMode;
+  const wantsAcceleration =
+    advanced.turboWasmAccelerationEnabled && performanceMode !== 'legacy-only';
+  if (wantsAcceleration && runtimeCapabilities.wasmSimd) {
     await initWasmCollision();
+  }
+  if (wantsAcceleration && runtimeCapabilities.webgpu) {
+    await initGpuCollision().catch(() => false);
+    await initGpuBatchRenderer({
+      container,
+      caps: runtimeCapabilities,
+      performanceMode,
+    }).catch(() => false);
+  }
+  // Phase 4: SVG rasteriser is independent of the chosen backend and
+  // is safe to attempt even when legacy-only is selected (the hook is
+  // installed but never consulted while legacy-only is on).
+  if (advanced.turboWasmAccelerationEnabled && performanceMode !== 'legacy-only') {
+    await initSvgRaster().catch(() => false);
+    attachSvgRasterHook(attachedScaffolding.renderer, createSvgRasterHook());
   }
   applyTurboWasmAcceleration(attachedScaffolding, {
     enabled: advanced.turboWasmAccelerationEnabled,
     caps: runtimeCapabilities,
-    performanceMode: useSettingsStore.getState().performanceMode,
+    performanceMode,
   });
   attachedScaffolding.appendTo(container);
   return attachedScaffolding;
@@ -639,7 +698,11 @@ export async function ensurePlayerReady(): Promise<ScaffoldingInstance> {
   return readyPromise;
 }
 
-export function applySettings(advanced: AdvancedSettings): void {
+export function applySettings(
+  advanced: AdvancedSettings,
+  performanceMode: import('@/types/settings').PerformanceMode = useSettingsStore.getState().performanceMode,
+  prevPerformanceMode: import('@/types/settings').PerformanceMode = performanceMode,
+): void {
   if (!attachedScaffolding || !currentAdvanced) return;
   const previous = currentAdvanced;
   currentAdvanced = { ...advanced };
@@ -648,14 +711,31 @@ export function applySettings(advanced: AdvancedSettings): void {
   if (vm.setStageSize) {
     vm.setStageSize(currentAdvanced.stageWidth, currentAdvanced.stageHeight);
   }
-  if (runtimeCapabilities && previous.turboWasmAccelerationEnabled !== advanced.turboWasmAccelerationEnabled) {
-    if (advanced.turboWasmAccelerationEnabled && runtimeCapabilities.wasmSimd) {
+  if (
+    runtimeCapabilities &&
+    (previous.turboWasmAccelerationEnabled !== advanced.turboWasmAccelerationEnabled ||
+      prevPerformanceMode !== performanceMode)
+  ) {
+    const wantsAcceleration =
+      advanced.turboWasmAccelerationEnabled && performanceMode !== 'legacy-only';
+    if (wantsAcceleration && runtimeCapabilities.wasmSimd) {
       void initWasmCollision();
+    }
+    if (wantsAcceleration && runtimeCapabilities.webgpu) {
+      void initGpuCollision().catch(() => false);
+    }
+    if (performanceMode === 'legacy-only') {
+      detachSvgRasterHook(attachedScaffolding.renderer);
+    } else if (advanced.turboWasmAccelerationEnabled) {
+      // The hook is idempotent — re-attaching the same hook overwrites the
+      // previous one, so a mode change from legacy-only to auto does not
+      // need to wait for the next project load.
+      attachSvgRasterHook(attachedScaffolding.renderer, createSvgRasterHook());
     }
     applyTurboWasmAcceleration(attachedScaffolding, {
       enabled: advanced.turboWasmAccelerationEnabled,
       caps: runtimeCapabilities,
-      performanceMode: useSettingsStore.getState().performanceMode,
+      performanceMode,
     });
   }
 }
