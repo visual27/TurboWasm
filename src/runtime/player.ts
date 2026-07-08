@@ -40,6 +40,10 @@ import {
   initGpuBatchRenderer,
   disposeGpuBatchRenderer,
 } from '@/runtime/tw-wasm/gpu-batch-renderer';
+import {
+  applySvgAcceleration,
+} from '@/runtime/tw-wasm/svg-acceleration/applySvgAcceleration';
+import type { SvgAccelerationMode } from '@/types/settings';
 
 let attachedContainer: HTMLElement | null = null;
 let attachedScaffolding: ScaffoldingInstance | null = null;
@@ -578,6 +582,13 @@ async function initScaffolding(
     caps: runtimeCapabilities,
     performanceMode,
   });
+  // Stage 2 SVG acceleration: install the host on initial startup so
+  // the SVGSkin patch hook is in place from the first frame. When
+  // `mode === 'off'` (the default), the host is null and the patch
+  // falls through to the Stage 1 TurboWarp-native `drawImage` path.
+  applySvgAcceleration(attachedScaffolding, {
+    mode: advanced.svgAccelerationMode,
+  });
   attachedScaffolding.appendTo(container);
   return attachedScaffolding;
 }
@@ -690,6 +701,7 @@ export function applySettings(
   advanced: AdvancedSettings,
   performanceMode: import('@/types/settings').PerformanceMode = useSettingsStore.getState().performanceMode,
   prevPerformanceMode: import('@/types/settings').PerformanceMode = performanceMode,
+  prevSvgAccelerationMode: SvgAccelerationMode = useSettingsStore.getState().svgAccelerationMode,
 ): void {
   if (!attachedScaffolding || !currentAdvanced) return;
   const previous = currentAdvanced;
@@ -716,6 +728,15 @@ export function applySettings(
       enabled: advanced.turboWasmAccelerationEnabled,
       caps: runtimeCapabilities,
       performanceMode,
+    });
+  }
+  // Stage 2 SVG acceleration: re-apply the host only when the mode
+  // actually changes. Mirroring the performanceMode guard above,
+  // toggling unrelated settings (fps, stage size, etc.) must not
+  // disturb the host.
+  if (prevSvgAccelerationMode !== advanced.svgAccelerationMode) {
+    applySvgAcceleration(attachedScaffolding, {
+      mode: advanced.svgAccelerationMode,
     });
   }
 }
