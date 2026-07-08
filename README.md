@@ -13,7 +13,8 @@ This project is **not** a Scratch editor — it is a read-only player for `.sb3`
   - Phase 2: WebGPU compute pipeline for `isTouchingColor` / `isTouchingDrawables` with a 1-frame delayed result snapshot (spec §4.3).
   - Phase 3: WebGPU instanced sprite renderer that reduces draw-call count to one per unique skin.
   - Three-tier fallback chain (`WebGPU → WASM SIMD → JS`) plus a `Performance Mode` selector (`auto` / `force-wasm` / `force-webgpu` / `legacy-only`).
-- Advanced settings (FPS, Interpolation, Warp Timer, High Quality Pen, Turbo Mode, Compiler toggle, Infinity Clones, Remove Fencing, Remove Misc Limits, Stage size, **Performance Mode**) with **immediate apply**.
+- **Stage 2 SVG acceleration** (see [SVG acceleration](#svg-acceleration-stage-2)): opt-in LRU `ImageBitmap` cache + pre-decoded MIP chain + `OffscreenCanvas` Web Worker, with `off` / `cache-only` / `mip-chain` modes that are pixel-equivalent to the Stage 1 TurboWarp baseline.
+- Advanced settings (FPS, Interpolation, Warp Timer, High Quality Pen, Turbo Mode, Compiler toggle, Infinity Clones, Remove Fencing, Remove Misc Limits, Stage size, **Performance Mode**, **SVG Acceleration**) with **immediate apply**.
 - `twconfig` parsing from project comments (read-only).
 - System / Light / Dark theme with `prefers-color-scheme` support.
 - Stage-only Fullscreen mode with overlay controls.
@@ -130,6 +131,7 @@ The Settings dialog maps directly to the TurboWarp VM/Runtime APIs:
 | Stage Width / Height | `vm.setStageSize(w, h)`                             |
 | TurboWasm Acceleration | `applyTurboWasmAcceleration(enabled, caps, mode)` |
 | Performance Mode     | `applyTurboWasmAcceleration(enabled, caps, mode)` (controls tier selection; see below) |
+| SVG Acceleration     | `applySvgAcceleration(scaffolding, { mode })` (Stage 2; see below) |
 
 ### Performance Mode
 
@@ -152,6 +154,34 @@ The setting persists in `localStorage` (key `tw-viewer:settings:v1`,
 schema version 3) so a reload picks up the same backend. The
 `!reset-advanced` and `!reset-performance` debug commands revert the
 mode to `auto`; see [Debug commands](#debug-commands) below.
+
+### SVG Acceleration (Stage 2)
+
+The **SVG Acceleration** dropdown is the user-facing selector for the
+Stage 2 SVG rendering pipeline. Stage 1 (the default Stage 1 baseline
+at the time of this commit) uses the unmodified TurboWarp Scaffolding
+`drawImage(this._svgImage, 0, 0)` path — every pixel in the rendered
+sprite is the same bytes TurboWarp would produce, and the
+`verify-turbowarp-equivalent.mjs` harness keeps the diff count at
+zero across modes. Stage 2 layers opt-in speedups on top of that
+baseline; every mode stays pixel-equivalent to `'off'`.
+
+- **`off`** — Stage 1 baseline. No TurboWasm SVG hooks are installed;
+  SVGSkin falls through to the upstream `drawImage` path. Default.
+- **`cache-only`** — Reuse the browser's decoded `ImageBitmap` for
+  the same SVG across `setSVG` calls. Cuts the per-costume-load
+  browser SVG-parse cost. Still uses `drawImage` for the final
+  rasterisation, so the output is bit-identical to `'off'`.
+- **`mip-chain`** — Pre-decode multiple MIP scales (0.25x / 0.5x /
+  1x / 2x / 4x) and offload large SVG decode to a Web Worker via
+  `OffscreenCanvas` when available. Falls back to the main thread
+  on Safari FP (no `OffscreenCanvas`); `!dump` shows
+  `workerActive: false` in that environment.
+
+The setting persists in `localStorage` (key `tw-viewer:settings:v1`,
+schema version 4) so a reload picks up the same mode. The
+`!reset-advanced` and `!reset-svg` debug commands revert the mode to
+`off`; see [Debug commands](#debug-commands) below.
 
 ## Extension points
 
