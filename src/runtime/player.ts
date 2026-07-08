@@ -531,6 +531,7 @@ async function initScaffolding(
   applyTurboWasmAcceleration(attachedScaffolding, {
     enabled: advanced.turboWasmAccelerationEnabled,
     caps: runtimeCapabilities,
+    performanceMode: useSettingsStore.getState().performanceMode,
   });
   attachedScaffolding.appendTo(container);
   return attachedScaffolding;
@@ -654,6 +655,7 @@ export function applySettings(advanced: AdvancedSettings): void {
     applyTurboWasmAcceleration(attachedScaffolding, {
       enabled: advanced.turboWasmAccelerationEnabled,
       caps: runtimeCapabilities,
+      performanceMode: useSettingsStore.getState().performanceMode,
     });
   }
 }
