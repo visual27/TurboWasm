@@ -197,11 +197,29 @@ export function App(): React.JSX.Element {
                 the corners square (`rounded-none`) so the frame matches a
                 Scratch-style stage. overflow-hidden is only applied in normal
                 mode so the fullscreen transform-scaled canvas is not clipped
-                to its own layout box. */}
+                to its own layout box.
+
+                Normal mode uses `inline-flex` (not `flex`) so the wrapper
+                shrinks to fit its single flex item (StageView's outer
+                container) instead of stretching to fill the parent. The
+                previous `flex items-center justify-center` combined with the
+                child StageView's `w-full` produced a circular sizing
+                dependency: the child wanted to be 100% of the wrapper while
+                the wrapper sized to fit the child. On `twconfig` stage-size
+                changes the layout thrashed for one frame and the border
+                stayed pinned at the previous width, visibly mismatching the
+                freshly-resized stage. `inline-flex` resolves the dependency
+                immediately because inline-level flex containers size to their
+                content's intrinsic dimensions.
+
+                Fullscreen mode overrides back to `!flex h-full w-full` so
+                the border-less wrapper still spans the entire viewport. */}
             <div
               className={cn(
-                'flex items-center justify-center border border-border/40',
-                isFullscreen ? 'h-full w-full border-0 overflow-visible' : 'overflow-hidden',
+                'inline-flex items-center justify-center border border-border/40',
+                isFullscreen
+                  ? '!flex h-full w-full border-0 overflow-visible'
+                  : 'overflow-hidden',
               )}
             >
               <StageView isFullscreen={isFullscreen} />
