@@ -20,7 +20,8 @@
     "postinstall": "node scripts/apply-vendored-patches.mjs",
     "apply:scratch-render-patch": "node scripts/apply-vendored-patches.mjs",
     "make:svg-sprite-fixture": "node scripts/make-svg-sprite-fixture.mjs",
-    "verify:turbowarp-equivalent": "node scripts/verify-turbowarp-equivalent.mjs"
+    "verify:turbowarp-equivalent": "node scripts/verify-turbowarp-equivalent.mjs",
+    "verify:stage2-metrics": "node scripts/verify-stage2-metrics.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "1.1.2",
