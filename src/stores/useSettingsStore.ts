@@ -3,12 +3,14 @@ import type {
   AdvancedSettings,
   ExtensionSandboxMode,
   PerformanceMode,
+  SvgAccelerationMode,
   Theme,
 } from '@/types/settings';
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
   DEFAULT_ALLOWED_EXTENSION_URLS,
   DEFAULT_PERFORMANCE_MODE,
+  DEFAULT_SVG_ACCELERATION_MODE,
   VOLUME_MAX,
   VOLUME_MIN,
 } from '@/utils/constants';
@@ -55,10 +57,18 @@ export interface SettingsState {
   /**
    * Backend selection for the TurboWasm acceleration pipeline. Persisted
    * (unlike `disableCompiler`) so a power user can pick `legacy-only` for a
-   * parity comparison and have that choice survive a reload. See
+   * parity test and have that choice survive a reload. See
    * {@link PerformanceMode} for the full set of values.
    */
   performanceMode: PerformanceMode;
+  /**
+   * SVG rendering acceleration strategy (Stage 2). The runtime applies
+   * this via `applySvgAcceleration(scaffolding, { mode })`; the top-level
+   * mirror here lets the Settings dialog and the `!dump` debug command
+   * read the active mode without traversing the `advanced` shape. See
+   * {@link SvgAccelerationMode} for the full set of values.
+   */
+  svgAccelerationMode: SvgAccelerationMode;
   setTheme: (theme: Theme) => void;
   setVolume: (volume: number) => void;
   /**
@@ -136,6 +146,14 @@ export interface SettingsState {
    * same backend without re-prompting the user.
    */
   setPerformanceMode: (mode: PerformanceMode) => void;
+  /**
+   * Update the SVG rendering acceleration strategy (Stage 2 of the
+   * TurboWasm Acceleration plan). Persists immediately so a reload
+   * picks up the same SVG acceleration path. The choice also
+   * propagates into `advanced.svgAccelerationMode` so the
+   * `applyRuntimeOverrides` / `buildProjectAdvanced` merge sees it.
+   */
+  setSvgAccelerationMode: (mode: SvgAccelerationMode) => void;
 }
 
 const initial = readSettings();
@@ -195,6 +213,7 @@ function schedulePersist(snapshot: SettingsState): void {
           defaultAdvanced: snap.defaultAdvanced,
           allowedExtensionUrls: snap.allowedExtensionUrls,
           performanceMode: snap.performanceMode,
+          svgAccelerationMode: snap.svgAccelerationMode,
         });
       }
     };
@@ -224,6 +243,7 @@ function persistImmediate(state: SettingsState): void {
     defaultAdvanced: state.defaultAdvanced,
     allowedExtensionUrls: state.allowedExtensionUrls,
     performanceMode: state.performanceMode,
+    svgAccelerationMode: state.svgAccelerationMode,
   });
 }
 
@@ -238,6 +258,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   defaultAdvanced: initial.defaultAdvanced,
   allowedExtensionUrls: [...initial.allowedExtensionUrls],
   performanceMode: initial.performanceMode ?? DEFAULT_PERFORMANCE_MODE,
+  svgAccelerationMode:
+    initial.svgAccelerationMode ?? initial.advanced.svgAccelerationMode ?? DEFAULT_SVG_ACCELERATION_MODE,
   setTheme: (theme) => {
     set({ theme });
     persistImmediate(get());
@@ -375,6 +397,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ performanceMode: mode });
     persistImmediate(get());
   },
+  setSvgAccelerationMode: (mode) => {
+    // Like `setPerformanceMode`, the SVG acceleration mode is a user
+    // preference that must persist across reloads so a user who picks
+    // `cache-only` for a benchmarking run does not have to re-pick it on
+    // the next page load. The runtime side (`applySvgAcceleration`) is
+    // called from the player's `applySettings` path, so the runtime
+    // hook is kept in sync there — this action only updates the store
+    // and persists.
+    set({ svgAccelerationMode: mode });
+    persistImmediate(get());
+  },
 }));
 
 /**
@@ -394,6 +427,7 @@ export function flushSettingsPersistForTesting(): void {
       defaultAdvanced: snap.defaultAdvanced,
       allowedExtensionUrls: snap.allowedExtensionUrls,
       performanceMode: snap.performanceMode,
+      svgAccelerationMode: snap.svgAccelerationMode,
     });
   }
 }

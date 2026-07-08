@@ -27,6 +27,7 @@ describe('persistence', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
       allowedExtensionUrls: ['https://example.com/a.js'],
       performanceMode: 'auto',
+      svgAccelerationMode: 'off',
     });
     const settings = readSettings();
     expect(settings.theme).toBe('dark');
@@ -87,6 +88,7 @@ describe('persistence', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
       performanceMode: 'auto',
+      svgAccelerationMode: 'off',
     });
     const settings = readSettings();
     expect(settings.advanced.extensionSandboxMode).toBe('iframe');
@@ -168,6 +170,7 @@ describe('persistence', () => {
         'removeMiscLimits',
         'stageHeight',
         'stageWidth',
+        'svgAccelerationMode',
         'turboMode',
         'turboWasmAccelerationEnabled',
         'warpTimer',
@@ -188,6 +191,7 @@ describe('persistence', () => {
         '  https://example.com/b.js  ', // trimmed
       ],
       performanceMode: 'auto',
+      svgAccelerationMode: 'off',
     });
     const settings = readSettings();
     expect(settings.allowedExtensionUrls).toEqual([
@@ -307,6 +311,7 @@ describe('persistence', () => {
         defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
         allowedExtensionUrls: [],
         performanceMode: 'force-wasm',
+        svgAccelerationMode: 'off',
       });
       const settings = readSettings();
       expect(settings.performanceMode).toBe('force-wasm');
@@ -332,6 +337,108 @@ describe('persistence', () => {
       );
       const settings = readSettings();
       expect(settings.performanceMode).toBe('auto');
+    });
+  });
+
+  describe('v3 → v4 migration (svgAccelerationMode field)', () => {
+    it('seeds svgAccelerationMode to "off" when reading a v3 payload without the field', () => {
+      // A v3 payload predates the svgAccelerationMode field. The migration
+      // must default it to 'off' so a user upgrading their saved settings
+      // picks up the Stage 1 baseline (bit-identical TurboWarp rendering).
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'dark',
+            volume: 50,
+            lastNonMuteVolume: 50,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            performanceMode: 'auto',
+          },
+          version: 3,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.svgAccelerationMode).toBe('off');
+      // The field must also be seeded inside `advanced` so the runtime
+      // `applySvgAcceleration` reads the default there too.
+      expect(settings.advanced.svgAccelerationMode).toBe('off');
+      expect(settings.defaultAdvanced.svgAccelerationMode).toBe('off');
+    });
+
+    it('round-trips a persisted svgAccelerationMode through storage', () => {
+      writeSettings({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'cache-only' },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'cache-only' },
+        allowedExtensionUrls: [],
+        performanceMode: 'auto',
+        svgAccelerationMode: 'cache-only',
+      });
+      const settings = readSettings();
+      expect(settings.svgAccelerationMode).toBe('cache-only');
+      expect(settings.advanced.svgAccelerationMode).toBe('cache-only');
+      expect(settings.defaultAdvanced.svgAccelerationMode).toBe('cache-only');
+    });
+
+    it('round-trips mip-chain through storage', () => {
+      writeSettings({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'mip-chain' },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'mip-chain' },
+        allowedExtensionUrls: [],
+        performanceMode: 'auto',
+        svgAccelerationMode: 'mip-chain',
+      });
+      const settings = readSettings();
+      expect(settings.svgAccelerationMode).toBe('mip-chain');
+    });
+
+    it('falls back to "off" when reading a v4 payload with an unknown svgAccelerationMode', () => {
+      // A future Stage 3 / Stage 4 might add new modes. We must gracefully
+      // fall back to the safe default so the viewer keeps working until
+      // the user upgrades.
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'totally-fake' },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'totally-fake' },
+            performanceMode: 'auto',
+            svgAccelerationMode: 'totally-fake',
+          },
+          version: STORAGE_VERSION,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.svgAccelerationMode).toBe('off');
+      expect(settings.advanced.svgAccelerationMode).toBe('off');
+    });
+
+    it('v4 payload preserves both advanced and defaultAdvanced svgAccelerationMode', () => {
+      // The user may have set the runtime to 'cache-only' but saved the
+      // default as 'off'. Both must round-trip independently.
+      writeSettings({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'cache-only' },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'off' },
+        allowedExtensionUrls: [],
+        performanceMode: 'auto',
+        svgAccelerationMode: 'cache-only',
+      });
+      const settings = readSettings();
+      expect(settings.advanced.svgAccelerationMode).toBe('cache-only');
+      expect(settings.defaultAdvanced.svgAccelerationMode).toBe('off');
     });
   });
 });

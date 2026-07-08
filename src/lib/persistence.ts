@@ -5,16 +5,19 @@ import type {
   PerformanceMode,
   SettingsStoreSerialized,
   SettingsStoreShape,
+  SvgAccelerationMode,
   Theme,
 } from '@/types/settings';
 import {
   PERFORMANCE_MODES,
+  SVG_ACCELERATION_MODES,
   ALLOWED_EXTENSION_URLS_MAX,
 } from '@/types/settings';
 import {
   DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_ALLOWED_EXTENSION_URLS,
   DEFAULT_PERFORMANCE_MODE,
+  DEFAULT_SVG_ACCELERATION_MODE,
 } from '@/utils/constants';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume } from '@/utils/format';
 
@@ -73,6 +76,10 @@ function isPerformanceMode(v: unknown): v is PerformanceMode {
   return typeof v === 'string' && (PERFORMANCE_MODES as readonly string[]).includes(v);
 }
 
+function isSvgAccelerationMode(v: unknown): v is SvgAccelerationMode {
+  return typeof v === 'string' && (SVG_ACCELERATION_MODES as readonly string[]).includes(v);
+}
+
 /**
  * Parse an arbitrary object into a sanitized AdvancedSettings. Used for both
  * the runtime `advanced` and the saved `defaultAdvanced`.
@@ -113,6 +120,9 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
       typeof r.turboWasmAccelerationEnabled === 'boolean'
         ? r.turboWasmAccelerationEnabled
         : base.turboWasmAccelerationEnabled,
+    svgAccelerationMode: isSvgAccelerationMode(r.svgAccelerationMode)
+      ? r.svgAccelerationMode
+      : base.svgAccelerationMode,
   };
 }
 
@@ -141,6 +151,7 @@ function emptyShape(): SettingsStoreShape {
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
     performanceMode: DEFAULT_PERFORMANCE_MODE,
+    svgAccelerationMode: DEFAULT_SVG_ACCELERATION_MODE,
   };
 }
 
@@ -154,11 +165,13 @@ export function readSettings(): SettingsStoreShape {
     // v1 payloads (single `advanced` field) are accepted as long as the
     // payload was at least tagged version 1. v2 payloads use two distinct
     // fields (`advanced` + `defaultAdvanced`). v3 adds a top-level
-    // `performanceMode`. Anything else (including untagged / wrong-version
-    // / corrupt blobs) resets to defaults.
+    // `performanceMode`. v4 adds `advanced.svgAccelerationMode` (Stage 2
+    // of the TurboWasm Acceleration plan). Anything else (including
+    // untagged / wrong-version / corrupt blobs) resets to defaults.
     if (
       parsed.version !== 1 &&
       parsed.version !== 2 &&
+      parsed.version !== 3 &&
       parsed.version !== STORAGE_VERSION
     ) {
       return emptyShape();
@@ -175,11 +188,23 @@ export function readSettings(): SettingsStoreShape {
     const performanceMode = isPerformanceMode(parsed.state?.performanceMode)
       ? parsed.state.performanceMode
       : DEFAULT_PERFORMANCE_MODE;
+    // v3 → v4 migration: `svgAccelerationMode` is a new per-skin field
+    // inside `advanced` and `defaultAdvanced`. Older payloads do not
+    // include it; we seed both with the safe default (`off`) so a user
+    // upgrading from v3 keeps the Stage 1 baseline. Persisted as soon
+    // as the user changes any other setting, but never re-persisted
+    // automatically by this read.
+    const svgAccelerationMode = isSvgAccelerationMode(
+      parsed.state?.svgAccelerationMode ?? parsed.state?.advanced?.svgAccelerationMode,
+    )
+      ? (parsed.state?.svgAccelerationMode ?? parsed.state?.advanced?.svgAccelerationMode)
+      : DEFAULT_SVG_ACCELERATION_MODE;
 
     if (parsed.version === 1) {
       // v1 → v2 migration: a single `advanced` field acted as both the
       // runtime and the default. Force `disableCompiler` off so a previously
-      // saved `true` does not silently re-enable the toggle.
+      // saved `true` does not silently re-enable the toggle. v3 → v4
+      // fields are seeded via the `defaultAdvanced` spread below.
       const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
       return {
         theme,
@@ -189,12 +214,15 @@ export function readSettings(): SettingsStoreShape {
         defaultAdvanced: { ...advanced, disableCompiler: false },
         allowedExtensionUrls,
         performanceMode,
+        svgAccelerationMode,
       };
     }
 
-    // v2 (or v3). Both share the `advanced` + `defaultAdvanced` shape; the
-    // only v3 addition is the top-level `performanceMode` field that we
-    // already sanitised above.
+    // v2 (or v3 or v4). v2/v3/v4 share the `advanced` + `defaultAdvanced`
+    // shape; v3 added the top-level `performanceMode`, v4 added
+    // `svgAccelerationMode` (we sanitised it above). Older payloads
+    // without `svgAccelerationMode` inside `advanced` get the default
+    // applied via `sanitizeAdvanced`'s `base.svgAccelerationMode` branch.
     const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
     const defaultAdvanced = sanitizeAdvanced(
       parsed.state?.defaultAdvanced ?? parsed.state?.advanced,
@@ -208,6 +236,7 @@ export function readSettings(): SettingsStoreShape {
       defaultAdvanced,
       allowedExtensionUrls,
       performanceMode,
+      svgAccelerationMode,
     };
   } catch {
     return emptyShape();

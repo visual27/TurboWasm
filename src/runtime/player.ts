@@ -605,6 +605,7 @@ function getCurrentAdvanced(): AdvancedSettings {
     stageHeight: 360,
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
+    svgAccelerationMode: 'off',
   };
 }
 
@@ -623,6 +624,7 @@ function defaultAdvanced(): AdvancedSettings {
     stageHeight: 360,
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
+    svgAccelerationMode: 'off',
   };
 }
 

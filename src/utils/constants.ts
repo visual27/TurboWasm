@@ -1,4 +1,4 @@
-import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
+import type { AdvancedSettings, PerformanceMode, SvgAccelerationMode } from '@/types/settings';
 
 export const APP_NAME = 'TurboWasm Viewer';
 
@@ -16,6 +16,7 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   stageHeight: 360,
   extensionSandboxMode: 'worker',
   turboWasmAccelerationEnabled: true,
+  svgAccelerationMode: 'off',
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
@@ -36,9 +37,11 @@ export const STORAGE_KEYS = {
 // Bumped to 2 when the schema split `advanced` (runtime state) and
 // `defaultAdvanced` (saved defaults) into separate fields, and forced
 // `disableCompiler` to always start as `false`. Bumped to 3 when the
-// schema added the top-level `performanceMode` field; older payloads are
-// read and migrated on the fly — see `src/lib/persistence.ts`.
-export const STORAGE_VERSION = 3;
+// schema added the top-level `performanceMode` field. Bumped to 4 when
+// `advanced` gained the `svgAccelerationMode` field (Stage 2 of the
+// TurboWasm Acceleration plan). Older payloads are read and migrated on
+// the fly — see `src/lib/persistence.ts`.
+export const STORAGE_VERSION = 4;
 
 /**
  * Default value for `performanceMode` when no user preference has been
@@ -46,6 +49,15 @@ export const STORAGE_VERSION = 3;
  * runtime pick the best backend per environment.
  */
 export const DEFAULT_PERFORMANCE_MODE: PerformanceMode = 'auto';
+
+/**
+ * Default value for `svgAccelerationMode` when no user preference has
+ * been persisted yet (or when the legacy v3 → v4 migration runs). `off`
+ * keeps the runtime on the Stage 1 TurboWarp-native SVG path so a user
+ * upgrading their saved settings picks up the recommended default with
+ * zero visual change.
+ */
+export const DEFAULT_SVG_ACCELERATION_MODE: SvgAccelerationMode = 'off';
 
 export const ENV = {
   githubRepoUrl:
