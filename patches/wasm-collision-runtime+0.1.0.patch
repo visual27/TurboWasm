@@ -5,7 +5,7 @@ index 0000000..0000001 100644
 @@ -1061,6 +1061,14 @@ class RenderWebGL extends EventEmitter {
      isTouchingColor (drawableID, color3b, mask3b) {
          const candidates = this._candidatesTouching(drawableID, this._visibleDrawList);
-
+ 
 +        // TurboWasm: optional WASM SIMD acceleration. The host application
 +        // (TurboWasm Viewer) installs a hook on `this._twWasmIsTouchingColor`
 +        // at runtime; when present we delegate and return its boolean result.
@@ -28,7 +28,7 @@ index 0000000..0000001 100644
 +        if (typeof this._twWasmIsTouchingDrawables === 'function') {
 +            try { return !!this._twWasmIsTouchingDrawables(this, drawableID, candidateIDs); } catch (e) {}
 +        }
-
+ 
          const candidates = this._candidatesTouching(drawableID,
              // even if passed an invisible drawable, we will NEVER touch it!
 diff --git a/node_modules/scratch-render/src/RenderWebGL.js b/node_modules/scratch-render/src/RenderWebGL.js
@@ -36,7 +36,7 @@ index 0000001..0000003 100644
 --- a/node_modules/scratch-render/src/RenderWebGL.js
 +++ b/node_modules/scratch-render/src/RenderWebGL.js
 @@ -1091,6 +1123,24 @@ class RenderWebGL extends EventEmitter {
-
+ 
          // if there are just too many pixels to CPU render efficiently, we need to let readPixels happen
          if (bounds.width * bounds.height * (candidates.length + 1) >= maxPixelsForCPU) {
              this._isTouchingColorGpuStart(drawableID, candidates.map(({id}) => id).reverse(), bounds, color3b, mask3b);
@@ -60,10 +60,10 @@ index 0000001..0000003 100644
 +                } catch (e) { /* fall through */ }
 +            }
          }
-
+ 
          const drawable = this._allDrawables[drawableID];
 @@ -1225,6 +1275,12 @@ class RenderWebGL extends EventEmitter {
-
+ 
      _isTouchingColorGpuFin (bounds, color3b, stop) {
          const gl = this._gl;
 +        // TurboWasm: allow the WebGPU compute host hook to short-circuit
@@ -82,7 +82,7 @@ index 0000001..0000003 100644
          gl.readPixels(0, 0, bounds.width, (bounds.height - stop), gl.RGBA, gl.UNSIGNED_BYTE, pixels);
 @@ -2092,6 +2148,26 @@ class RenderWebGL extends EventEmitter {
      _drawThese (drawables, drawMode, projection, opts = {}) {
-
+ 
          const gl = this._gl;
 +        // TurboWasm: optional WebGPU instanced rendering. The host
 +        // application installs a `_twWasmDrawSprites` hook on the
@@ -104,6 +104,67 @@ index 0000001..0000003 100644
 +            } catch (e) { /* fall through to the WebGL path */ }
 +        }
          let currentShader = null;
-
+ 
          const framebufferSpaceScaleDiffers = (
-
+diff --git a/node_modules/scratch-render/src/SVGSkin.js b/node_modules/scratch-render/src/SVGSkin.js
+index 0000000..0000001 100644
+--- a/node_modules/scratch-render/src/SVGSkin.js
++++ b/node_modules/scratch-render/src/SVGSkin.js
+@@ -103,6 +103,29 @@ class SVGSkin extends Skin {
+     createMIP (scale) {
+         const isLargestMIP = this._largestMIPScale < scale;
++
++        // TurboWasm: optional SVG acceleration hook. The host
++        // application (TurboWasm Viewer) installs
++        // `this._renderer._twWasmSvgAcceleration` at runtime; when
++        // present and the host mode is not 'off', the hook returns a
++        // pre-decoded `ImageBitmap` for the requested scale. We upload
++        // it directly to a WebGL texture, skipping the
++        // canvas-to-canvas `drawImage(svgImage, 0, 0)` path that would
++        // bilinear-upscale the SVG into the texture. When the hook
++        // returns null (cache miss, mode='off', or no host) the
++        // original TurboWarp path runs unchanged.
++        let twSvgAccelBitmap = null;
++        const twSvgAccel = (this._renderer && this._renderer._twWasmSvgAcceleration) || null;
++        if (twSvgAccel && twSvgAccel.mode !== 'off') {
++            try { twSvgAccelBitmap = twSvgAccel.getOrCreateMip(this, scale) || null; } catch (e) { twSvgAccelBitmap = null; }
++        }
++
+         // TW: Silhouette will lazily read image data from our <canvas>. However, this canvas is shared
+         // between the Skin and Silhouette so changing it here can mess up Silhouette. To prevent that,
+         // we will force the silhouette to synchronously read the image data before we mutate the
+@@ -142,6 +165,22 @@ class SVGSkin extends Skin {
+             this._silhouette.update(textureData);
+             this._largestMIPScale = scale;
+         }
+ 
++        // TurboWasm: when the host returned a pre-decoded bitmap,
++        // upload it directly to a fresh WebGL texture and return
++        // without touching the canvas. This is the SVG-acceleration
++        // fast path — the canvas-side `drawImage` + `setTransform`
++        // is bypassed entirely.
++        if (twSvgAccelBitmap) {
++            return twgl.createTexture(this._renderer.gl, {
++                auto: false,
++                wrap: this._renderer.gl.CLAMP_TO_EDGE,
++                src: twSvgAccelBitmap,
++                premultiplyAlpha: true
++            });
++        }
++
+         return mip;
+     }
+@@ -186,6 +225,16 @@ class SVGSkin extends Skin {
+     resetMIPs () {
+         this._scaledMIPs.forEach(oldMIP => this._renderer.gl.deleteTexture(oldMIP));
+         this._scaledMIPs.length = 0;
+         this._largestMIPScale = 0;
++
++        // TurboWasm: notify the host that this skin's cached MIPs are
++        // stale, so the LRU ImageBitmap cache can drop its entries.
++        // When the host is absent (mode='off') this is a no-op.
++        const twSvgAccel = (this._renderer && this._renderer._twWasmSvgAcceleration) || null;
++        if (twSvgAccel && twSvgAccel.mode !== 'off') {
++            try { twSvgAccel.invalidate(this); } catch (e) { /* host bug — ignore */ }
++        }
+     }

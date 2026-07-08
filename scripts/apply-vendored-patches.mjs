@@ -130,13 +130,14 @@ export function applyPatches(options = {}) {
       continue;
     }
 
-    // 1. Probe with `git apply --check` (no --recount: some patches carry
-    //    hunks where the line-count in the hunk header drifts from the
-    //    actual context lines once CRLF is normalised to LF, which makes
-    //    `--recount` reject otherwise-valid patches).
+    // 1. Probe with `git apply --check --recount`. The `--recount` flag
+    //    re-derives the hunk header line counts from the actual context
+    //    in the target file, so a patch that was generated against a
+    //    fresh source still applies correctly to an already-patched
+    //    tree whose line numbers have shifted from the previous hunks.
     const checkResult = spawnSync(
       'git',
-      ['apply', '--check', '-p1', '-v', `../../patches/${patchFile}`],
+      ['apply', '--check', '--recount', '-p1', '-v', `../../patches/${patchFile}`],
       { cwd: scaffoldingDir, encoding: 'utf8', shell: false },
     );
 
@@ -144,7 +145,7 @@ export function applyPatches(options = {}) {
       // 2a. Patch applies cleanly → actually apply it.
       const applyResult = spawnSync(
         'git',
-        ['apply', '-p1', `../../patches/${patchFile}`],
+        ['apply', '--recount', '-p1', `../../patches/${patchFile}`],
         { cwd: scaffoldingDir, encoding: 'utf8', shell: false },
       );
       if (applyResult.status === 0) {
