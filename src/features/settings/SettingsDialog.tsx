@@ -15,7 +15,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { SelectField } from '@/components/ui/select';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger } from '@/utils/format';
-import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
+import type { AdvancedSettings, PerformanceMode, SvgAccelerationMode } from '@/types/settings';
 import { Button } from '@/components/ui/button';
 
 /**
@@ -48,6 +48,34 @@ const PERFORMANCE_MODE_OPTIONS: ReadonlyArray<{
     value: 'legacy-only',
     label: 'Legacy only',
     description: 'Identical to unmodified scratch-render (parity mode)',
+  },
+];
+
+/**
+ * UI-visible SVG acceleration modes. The 4th value
+ * (`'resvg-visual-equivalence'`) is reserved for a future Stage and is
+ * intentionally NOT surfaced — the Settings dialog only presents the
+ * three modes the runtime can actually use.
+ */
+const SVG_ACCELERATION_MODE_OPTIONS: ReadonlyArray<{
+  value: SvgAccelerationMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'off',
+    label: 'Off',
+    description: 'Bit-identical to TurboWarp native (Stage 1 baseline).',
+  },
+  {
+    value: 'cache-only',
+    label: 'Cache only',
+    description: 'Reuses the browser-decoded ImageBitmap across setSVG calls.',
+  },
+  {
+    value: 'mip-chain',
+    label: 'MIP chain',
+    description: 'Pre-decodes multiple scales; offloads to a Web Worker when available.',
   },
 ];
 
@@ -394,6 +422,8 @@ const OthersSection = React.memo(function OthersSection({
   const setVolume = useSettingsStore((s) => s.setVolume);
   const performanceMode = useSettingsStore((s) => s.performanceMode);
   const setPerformanceMode = useSettingsStore((s) => s.setPerformanceMode);
+  const svgAccelerationMode = useSettingsStore((s) => s.svgAccelerationMode);
+  const setSvgAccelerationMode = useSettingsStore((s) => s.setSvgAccelerationMode);
   const onSliderChange = React.useCallback(
     (values: number[]) => {
       const v = values[0];
@@ -411,6 +441,10 @@ const OthersSection = React.memo(function OthersSection({
   const onPerformanceModeChange = React.useCallback(
     (mode: PerformanceMode) => setPerformanceMode(mode),
     [setPerformanceMode],
+  );
+  const onSvgAccelerationModeChange = React.useCallback(
+    (mode: SvgAccelerationMode) => setSvgAccelerationMode(mode),
+    [setSvgAccelerationMode],
   );
   return (
     <SettingsSection id="others" title="Others">
@@ -471,6 +505,19 @@ const OthersSection = React.memo(function OthersSection({
           onChange={onPerformanceModeChange}
           options={PERFORMANCE_MODE_OPTIONS}
           ariaLabel="Performance mode"
+        />
+      </FieldRow>
+      <FieldRow
+        id="svg-acceleration-mode"
+        label="SVG Acceleration"
+        description="How the renderer prepares SVG textures. 'Off' uses TurboWarp native decoding bit-identically (Stage 1 baseline). 'Cache only' reuses the browser-decoded ImageBitmap across setSVG calls. 'MIP chain' pre-decodes multiple scales and offloads large SVGs to a Web Worker when available (falls back to main thread on Safari FP). All three modes are pixel-equivalent to 'Off'."
+      >
+        <SelectField<SvgAccelerationMode>
+          id="svg-acceleration-mode"
+          value={svgAccelerationMode}
+          onChange={onSvgAccelerationModeChange}
+          options={SVG_ACCELERATION_MODE_OPTIONS}
+          ariaLabel="SVG acceleration mode"
         />
       </FieldRow>
     </SettingsSection>

@@ -14,6 +14,7 @@ describe('SettingsDialog — layout', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+      svgAccelerationMode: 'off',
     });
   });
 
@@ -66,6 +67,23 @@ describe('SettingsDialog — layout', () => {
     expect(screen.getByText('Volume')).toBeInTheDocument();
     expect(screen.getByText('Disable Compiler')).toBeInTheDocument();
     expect(screen.getByText('TurboWasm Acceleration')).toBeInTheDocument();
+  });
+
+  it('renders the SVG Acceleration dropdown in the Others section', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(screen.getByText('SVG Acceleration')).toBeInTheDocument();
+    // The 3rd Value is the SVG acceleration select; verify the trigger
+    // button is rendered with the right aria-label.
+    const select = screen.getByLabelText('SVG acceleration mode');
+    expect(select).toBeInTheDocument();
+  });
+
+  it('SVG Acceleration select reflects the current store value', () => {
+    useSettingsStore.getState().setSvgAccelerationMode('cache-only');
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const trigger = screen.getByLabelText('SVG acceleration mode');
+    // The trigger shows the option label, not the raw value.
+    expect(trigger).toHaveTextContent(/Cache only/i);
   });
 
   it('does NOT render an Extensions tab', () => {
@@ -134,6 +152,7 @@ describe('SettingsDialog — TurboWasm Acceleration toggle', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+    svgAccelerationMode: 'off',
     });
   });
 
@@ -172,6 +191,7 @@ describe('SettingsDialog — NumberField commit semantics', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+    svgAccelerationMode: 'off',
     });
   });
 
@@ -319,6 +339,7 @@ describe('SettingsDialog — twconfig overrides propagation', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+    svgAccelerationMode: 'off',
     });
   });
 

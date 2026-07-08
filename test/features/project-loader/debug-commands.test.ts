@@ -21,6 +21,7 @@ function resetStore(): void {
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [],
     performanceMode: 'auto',
+    svgAccelerationMode: 'off',
   });
 }
 
@@ -134,10 +135,20 @@ describe('executeDebugCommand — resets', () => {
     expect(result.message).toMatch(/Performance mode reset to auto/);
   });
 
-  it('!reset-advanced also resets performance mode', () => {
+  it('!reset-svg sets svg acceleration back to off (Stage 1 baseline)', () => {
+    useSettingsStore.getState().setSvgAccelerationMode('mip-chain');
+    expect(useSettingsStore.getState().svgAccelerationMode).toBe('mip-chain');
+    const result = executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-svg`);
+    expect(useSettingsStore.getState().svgAccelerationMode).toBe('off');
+    expect(result.message).toMatch(/SVG acceleration mode reset to off/);
+  });
+
+  it('!reset-advanced also resets performance mode and svg acceleration', () => {
     useSettingsStore.getState().setPerformanceMode('legacy-only');
+    useSettingsStore.getState().setSvgAccelerationMode('cache-only');
     executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-advanced`);
     expect(useSettingsStore.getState().performanceMode).toBe('auto');
+    expect(useSettingsStore.getState().svgAccelerationMode).toBe('off');
   });
 
   it('!clear-extensions clears the allow-list but leaves advanced alone', () => {
@@ -227,6 +238,7 @@ describe('executeDebugCommand — dump', () => {
         theme: 'system',
         volume: 100,
         performanceMode: 'auto',
+        svgAccelerationMode: 'off',
       });
       expect(payload.advanced).toBeDefined();
       expect(payload.allowedExtensionUrls).toEqual([]);

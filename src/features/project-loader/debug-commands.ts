@@ -19,14 +19,18 @@ import {
  *
  *  - `!help`                          — list available commands.
  *  - `!reset` / `!reset-settings`     — reset theme + volume + advanced +
- *                                       performance mode + extension
+ *                                       performance mode + SVG
+ *                                       acceleration + extension
  *                                       allow-list + session deny list to
  *                                       defaults.
  *  - `!reset-advanced`                — reset just the advanced settings +
  *                                       extension allow-list +
- *                                       performance mode.
+ *                                       performance mode + SVG
+ *                                       acceleration.
  *  - `!reset-performance`             — reset the performance mode
  *                                       to `auto`.
+ *  - `!reset-svg`                     — reset the SVG acceleration mode
+ *                                       to `off` (Stage 1 baseline).
  *  - `!reset-theme`                   — reset the theme to `system`.
  *  - `!reset-volume`                  — reset the master volume to 100.
  *  - `!clear-extensions` /            — clear the persistent extension
@@ -74,13 +78,17 @@ export function executeDebugCommand(rawInput: string): DebugCommandResult {
     case 'reset-advanced':
       useSettingsStore.getState().resetAdvanced();
       useSettingsStore.getState().setPerformanceMode('auto');
+      useSettingsStore.getState().setSvgAccelerationMode('off');
       return {
         severity: 'info',
-        message: 'Advanced settings + extension allow-list + performance mode reset to defaults.',
+        message: 'Advanced settings + extension allow-list + performance mode + SVG acceleration reset to defaults.',
       };
     case 'reset-performance':
       useSettingsStore.getState().setPerformanceMode('auto');
       return { severity: 'info', message: 'Performance mode reset to auto.' };
+    case 'reset-svg':
+      useSettingsStore.getState().setSvgAccelerationMode('off');
+      return { severity: 'info', message: 'SVG acceleration mode reset to off (Stage 1 baseline).' };
     case 'reset-theme':
       useSettingsStore.getState().setTheme('system');
       return { severity: 'info', message: 'Theme reset to system.' };
@@ -116,11 +124,12 @@ function resetAll(): string {
   store.setVolume(100);
   store.resetAdvanced();
   store.setPerformanceMode('auto');
+  store.setSvgAccelerationMode('off');
   // The session-only deny list lives in a module-level Set outside
   // the store, so we clear it directly. This is the only place where
   // the debug command reaches outside the settings store.
   clearSessionDeniedExtensionUrls();
-  return 'Reset all settings to defaults (theme, volume, advanced, performance mode, extension allow-list, session deny list).';
+  return 'Reset all settings to defaults (theme, volume, advanced, performance mode, SVG acceleration, extension allow-list, session deny list).';
 }
 
 function clearLocalStorage(): string {
@@ -153,6 +162,7 @@ function dumpSettings(): void {
     advanced: state.advanced,
     allowedExtensionUrls: state.allowedExtensionUrls,
     performanceMode: state.performanceMode,
+    svgAccelerationMode: state.svgAccelerationMode,
   };
   // The DevTools console renders objects with collapsible fields,
   // which is what we want for a multi-line settings dump.
@@ -163,9 +173,10 @@ function dumpSettings(): void {
 function formatHelp(): string {
   return [
     'Debug commands:',
-    '  !reset                 — reset theme, volume, advanced, performance mode, extension allow-list, session deny list',
-    '  !reset-advanced        — reset advanced settings + extension allow-list + performance mode',
+    '  !reset                 — reset theme, volume, advanced, performance mode, SVG acceleration, extension allow-list, session deny list',
+    '  !reset-advanced        — reset advanced settings + extension allow-list + performance mode + SVG acceleration',
     '  !reset-performance     — reset performance mode to auto',
+    '  !reset-svg             — reset SVG acceleration mode to off (Stage 1 baseline)',
     '  !reset-theme           — reset theme to system',
     '  !reset-volume          — reset master volume to 100',
     '  !clear-extensions      — clear the persistent extension allow-list',
