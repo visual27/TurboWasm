@@ -1,9 +1,3 @@
-// One-off helper to build a test sb3 with a TurboWasp // _twconfig_
-// comment embedded in project.json so we can exercise the merge flow
-// in the dev server. Run with `node scripts/make-twconfig-fixture.mjs`.
-// The output goes to the gitignored `.test-fixtures/` workspace; see
-// `scripts/ensure-test-fixtures.mjs` for the canonical regeneration entry
-// point (`npm run fixtures:setup`).
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,13 +6,13 @@ import JSZip from 'jszip';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const outDir = resolve(root, '.test-fixtures');
-const outPath = resolve(outDir, 'twconfig-fixture.sb3');
+const outPath = resolve(outDir, 'twconfig-640x480.sb3');
 mkdirSync(outDir, { recursive: true });
 
 const commentText = [
-  'Configuration for https://turbowarp.org/',
-  'You can move, resize, and minimize this comment, but don\'t edit it by hand. This comment can be deleted to remove the stored settings.',
-  '{"framerate":60,"runtimeOptions":{"miscLimits":false},"hq":true,"width":480,"height":270} // _twconfig_',
+  "Configuration for https://turbowarp.org/",
+  "You can move, resize, and minimize this comment, but don't edit it by hand. This comment can be deleted to remove the stored settings.",
+  '{"framerate":60,"hq":true,"width":640,"height":480} // _twconfig_',
 ].join('\n');
 
 const project = {
@@ -75,13 +69,13 @@ const zip = new JSZip();
 zip.file('project.json', JSON.stringify(project));
 const buf = await zip.generateAsync({ type: 'arraybuffer' });
 writeFileSync(outPath, Buffer.from(buf));
-console.log('Wrote', outPath, buf.byteLength, 'bytes');
+console.log('wrote', outPath, buf.byteLength, 'bytes');
 
 /**
- * Library entry point: write `twconfig-fixture.sb3` into `.test-fixtures/`.
+ * Library entry point: write `twconfig-640x480.sb3` into `.test-fixtures/`.
  * Re-exported for `scripts/ensure-test-fixtures.mjs`.
  */
-export async function makeTwconfigFixture() {
+export async function makeTwconfig640x480() {
   const zip2 = new JSZip();
   zip2.file('project.json', JSON.stringify(project));
   const buf2 = await zip2.generateAsync({ type: 'arraybuffer' });

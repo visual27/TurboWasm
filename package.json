@@ -19,6 +19,8 @@
     "wasm:check": "cd wasm-collision && cargo check --target wasm32-unknown-unknown",
     "postinstall": "node scripts/apply-vendored-patches.mjs",
     "apply:scratch-render-patch": "node scripts/apply-vendored-patches.mjs",
+    "fixtures:setup": "node scripts/ensure-test-fixtures.mjs",
+    "pretest": "node scripts/ensure-test-fixtures.mjs",
     "make:svg-sprite-fixture": "node scripts/make-svg-sprite-fixture.mjs",
     "verify:turbowarp-equivalent": "node scripts/verify-turbowarp-equivalent.mjs",
     "verify:stage2-metrics": "node scripts/verify-stage2-metrics.mjs"
