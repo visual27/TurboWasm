@@ -12,7 +12,7 @@ import path from 'node:path';
 
 const url = process.argv[2] ?? 'http://localhost:5173/';
 const fixturePath =
-  process.argv[3] ?? path.resolve('.test-fixtures/twconfig-fixture.sb3');
+  process.argv[3] ?? path.resolve('test/.test-fixtures/twconfig-fixture.sb3');
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();

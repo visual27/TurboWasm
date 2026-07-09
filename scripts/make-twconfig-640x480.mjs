@@ -5,7 +5,7 @@ import JSZip from 'jszip';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const outDir = resolve(root, '.test-fixtures');
+const outDir = resolve(root, 'test/.test-fixtures');
 const outPath = resolve(outDir, 'twconfig-640x480.sb3');
 mkdirSync(outDir, { recursive: true });
 

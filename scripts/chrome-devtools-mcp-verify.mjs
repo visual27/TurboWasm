@@ -197,7 +197,7 @@ async function main() {
   let projectDrawables = 0;
   let projectLoadDurationMs = 0;
   try {
-    const fixturePath = resolve(root, '.test-fixtures/repro.sb3');
+    const fixturePath = resolve(root, 'test/.test-fixtures/repro.sb3');
     const fs = await import('node:fs');
     if (fs.existsSync(fixturePath)) {
       const buffer = readFileSync(fixturePath);
@@ -349,7 +349,7 @@ async function main() {
     try {
       const fileInput = await page.$('input[type="file"]');
       if (fileInput) {
-        const fixturePath = resolve(root, '.test-fixtures/repro.sb3');
+        const fixturePath = resolve(root, 'test/.test-fixtures/repro.sb3');
         const fs = await import('node:fs');
         if (fs.existsSync(fixturePath)) {
           const buffer = fs.readFileSync(fixturePath);

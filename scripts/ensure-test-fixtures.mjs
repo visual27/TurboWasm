@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 /**
- * Ensure the `.test-fixtures/` workspace exists and is populated.
+ * Ensure the `test/.test-fixtures/` workspace exists and is populated.
  *
- * `.test-fixtures/` is gitignored: every file inside it is regenerated on
- * demand by the scripts under `scripts/`. This module is the single entry
- * point — `npm run fixtures:setup` and a gitignored `pretest`/CI bootstrap
- * step both go through here.
+ * `test/.test-fixtures/` is gitignored: every file inside it is regenerated
+ * on demand by the scripts under `scripts/`. This module is the single
+ * entry point — `npm run fixtures:setup` and a gitignored `pretest`/CI
+ * bootstrap step both go through here.
+ *
+ * The directory lives under `test/` (not at the repo root) so tests
+ * and fixtures travel together for IDE grouping while staying out of
+ * `src/` (which is reserved for production code under
+ * `tsconfig.json`'s `include`).
  *
  * Idempotent: re-running overwrites each fixture with the canonical
  * generator output. Each generator is run in isolation so a single
@@ -13,7 +18,8 @@
  * loop that aborts on the first error).
  *
  * Exported as `ensureTestFixtures({ cwd })` so unit tests can drive it
- * against a sandboxed `.test-fixtures/` without touching the real one.
+ * against the real workspace without taking a sandbox dependency on
+ * the module-load-time `outDir` constants in each generator.
  */
 import { mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -51,12 +57,12 @@ export const FIXTURE_GENERATORS = {
 /**
  * Default "wired" list — fixtures that ship out-of-the-box. Each entry
  * maps to the generator function above; the keys double as the on-disk
- * filename in `.test-fixtures/`.
+ * filename in `test/.test-fixtures/`.
  */
 export const DEFAULT_FIXTURES = Object.keys(FIXTURE_GENERATORS);
 
 /**
- * Ensure `.test-fixtures/` exists and write every default fixture into it.
+ * Ensure `test/.test-fixtures/` exists and write every default fixture into it.
  *
  * @param {object} [options]
  * @param {string} [options.cwd] Repo root override (test-only).
@@ -67,7 +73,7 @@ export const DEFAULT_FIXTURES = Object.keys(FIXTURE_GENERATORS);
  */
 export async function ensureTestFixtures(options = {}) {
   const root = options.cwd ?? resolveRepoRoot();
-  const outDir = resolve(root, '.test-fixtures');
+  const outDir = resolve(root, 'test/.test-fixtures');
   mkdirSync(outDir, { recursive: true });
 
   const requested = options.only ?? DEFAULT_FIXTURES;
@@ -104,7 +110,7 @@ if (invokedDirectly) {
     .then(({ written }) => {
       // eslint-disable-next-line no-console
       console.log(
-        `[ensure-test-fixtures] wrote ${written.length} fixture(s) to .test-fixtures/: ${written.join(', ')}`,
+        `[ensure-test-fixtures] wrote ${written.length} fixture(s) to test/.test-fixtures/: ${written.join(', ')}`,
       );
     })
     .catch((err) => {

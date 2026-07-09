@@ -9,7 +9,7 @@
  *     unhandled rejections.
  *   - The `_twWasm*` host hooks are installed on the Scaffolding
  *     renderer (Phase 2 / 3 / 4 wiring is live in the UMD).
- *   - Loading a fixture SB3 (.test-fixtures/repro.sb3) triggers a
+ *   - Loading a fixture SB3 (test/.test-fixtures/repro.sb3) triggers a
  *     `[player] loadProject` log line and no `Failed to construct
  *     'ImageData'` DOMException.
  *   - Switching the PerformanceMode in the Settings dialog flips the

@@ -7,9 +7,9 @@
  * It is consumed by `scripts/verify-turbowarp-equivalent.mjs` and the
  * matching Playwright test (`test/e2e/turbowarp-equivalent.test.ts`).
  *
- * The output lives at `.test-fixtures/svg-sprite-fixture.sb3` (gitignored)
- * because loading arbitrary SB3s over HTTP at smoke-test time would couple
- * the harness to the Scratch API. Regenerate with
+ * The output lives at `test/.test-fixtures/svg-sprite-fixture.sb3`
+ * (gitignored) because loading arbitrary SB3s over HTTP at smoke-test
+ * time would couple the harness to the Scratch API. Regenerate with
  * `npm run fixtures:setup` (which delegates to
  * `scripts/ensure-test-fixtures.mjs`).
  *
@@ -24,9 +24,9 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-// Generated fixture workspace is `.test-fixtures/` (gitignored). The
-// directory is created on demand by `scripts/ensure-test-fixtures.mjs`.
-const outDir = resolve(root, '.test-fixtures');
+// Generated fixture workspace is `test/.test-fixtures/` (gitignored).
+// The directory is created on demand by `scripts/ensure-test-fixtures.mjs`.
+const outDir = resolve(root, 'test/.test-fixtures');
 const outPath = resolve(outDir, 'svg-sprite-fixture.sb3');
 
 function md5hex(buf) {

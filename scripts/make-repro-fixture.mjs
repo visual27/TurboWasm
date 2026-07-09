@@ -9,8 +9,8 @@
  * promptable set to drive the `ExtensionPermissionDialog` UI through the
  * real browser MCP loop.
  *
- * The output lives at `.test-fixtures/repro.sb3` (gitignored). Regenerate
- * with `npm run fixtures:setup`, which delegates to
+ * The output lives at `test/.test-fixtures/repro.sb3` (gitignored).
+ * Regenerate with `npm run fixtures:setup`, which delegates to
  * `scripts/ensure-test-fixtures.mjs`.
  *
  * Idempotent: re-running overwrites the existing file.
@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const outDir = resolve(root, '.test-fixtures');
+const outDir = resolve(root, 'test/.test-fixtures');
 const outPath = resolve(outDir, 'repro.sb3');
 
 // Extension sources are inlined as data: URLs so the smoke test does not

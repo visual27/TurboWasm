@@ -1,9 +1,9 @@
 // One-off helper to build a test sb3 with a TurboWasp // _twconfig_
 // comment embedded in project.json so we can exercise the merge flow
 // in the dev server. Run with `node scripts/make-twconfig-fixture.mjs`.
-// The output goes to the gitignored `.test-fixtures/` workspace; see
-// `scripts/ensure-test-fixtures.mjs` for the canonical regeneration entry
-// point (`npm run fixtures:setup`).
+// The output goes to the gitignored `test/.test-fixtures/` workspace;
+// see `scripts/ensure-test-fixtures.mjs` for the canonical regeneration
+// entry point (`npm run fixtures:setup`).
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,7 @@ import JSZip from 'jszip';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const outDir = resolve(root, '.test-fixtures');
+const outDir = resolve(root, 'test/.test-fixtures');
 const outPath = resolve(outDir, 'twconfig-fixture.sb3');
 mkdirSync(outDir, { recursive: true });
 
