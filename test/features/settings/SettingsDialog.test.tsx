@@ -1,5 +1,5 @@
-import { describe, expect, it, beforeEach } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -23,18 +23,20 @@ describe('SettingsDialog — layout', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   });
 
-  it('renders the four categories in order', () => {
+  it('renders the five categories in order', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const sections = screen.getAllByTestId(/^settings-section-/);
     expect(sections.map((el) => el.getAttribute('data-testid'))).toEqual([
       'settings-section-runtime',
       'settings-section-rendering',
       'settings-section-limits',
+      'settings-section-turbowasm',
       'settings-section-others',
     ]);
     expect(screen.getByText('Runtime')).toBeInTheDocument();
     expect(screen.getByText('Rendering')).toBeInTheDocument();
     expect(screen.getByText('Limits')).toBeInTheDocument();
+    expect(screen.getByText('TurboWasm')).toBeInTheDocument();
     expect(screen.getByText('Others')).toBeInTheDocument();
   });
 
@@ -62,20 +64,51 @@ describe('SettingsDialog — layout', () => {
     expect(screen.getByText('Remove Misc Limits')).toBeInTheDocument();
   });
 
-  it('renders the Others section with Volume and Disable Compiler', () => {
+  it('renders the Others section with Volume and Disable Compiler (no TurboWasm items)', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    expect(screen.getByText('Volume')).toBeInTheDocument();
-    expect(screen.getByText('Disable Compiler')).toBeInTheDocument();
-    expect(screen.getByText('TurboWasm Acceleration')).toBeInTheDocument();
+    // SettingsSection adds data-testid to its <h3> heading. Use the
+    // heading to scope, then climb to its parent <section> region so
+    // `within(...)` searches the section's children (rows).
+    const othersSection = screen
+      .getByTestId('settings-section-others')
+      .closest('section') as HTMLElement;
+    expect(within(othersSection).getByText('Volume')).toBeInTheDocument();
+    expect(within(othersSection).getByText('Disable Compiler')).toBeInTheDocument();
+    // TurboWasm items have moved to their own section.
+    expect(within(othersSection).queryByText('TurboWasm Acceleration')).toBeNull();
+    expect(within(othersSection).queryByText('Performance Mode')).toBeNull();
+    expect(within(othersSection).queryByText('SVG Acceleration')).toBeNull();
   });
 
-  it('renders the SVG Acceleration dropdown in the Others section', () => {
+  it('renders the TurboWasm section with TurboWasm Acceleration, Performance Mode, and SVG Acceleration', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const turboSection = screen
+      .getByTestId('settings-section-turbowasm')
+      .closest('section') as HTMLElement;
+    expect(within(turboSection).getByText('TurboWasm Acceleration')).toBeInTheDocument();
+    expect(within(turboSection).getByText('Performance Mode')).toBeInTheDocument();
+    expect(within(turboSection).getByText('SVG Acceleration')).toBeInTheDocument();
+  });
+
+  it('renders the Performance Mode dropdown in the TurboWasm section', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const select = screen.getByLabelText('Performance mode');
+    expect(select).toBeInTheDocument();
+    const turboSection = screen
+      .getByTestId('settings-section-turbowasm')
+      .closest('section') as HTMLElement;
+    expect(within(turboSection).getByLabelText('Performance mode')).toBe(select);
+  });
+
+  it('renders the SVG Acceleration dropdown in the TurboWasm section', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     expect(screen.getByText('SVG Acceleration')).toBeInTheDocument();
-    // The 3rd Value is the SVG acceleration select; verify the trigger
-    // button is rendered with the right aria-label.
     const select = screen.getByLabelText('SVG acceleration mode');
     expect(select).toBeInTheDocument();
+    const turboSection = screen
+      .getByTestId('settings-section-turbowasm')
+      .closest('section') as HTMLElement;
+    expect(within(turboSection).getByLabelText('SVG acceleration mode')).toBe(select);
   });
 
   it('SVG Acceleration select reflects the current store value', () => {
@@ -179,6 +212,107 @@ describe('SettingsDialog — TurboWasm Acceleration toggle', () => {
     const s = useSettingsStore.getState();
     expect(s.advanced.turboWasmAccelerationEnabled).toBe(false);
     expect(s.defaultAdvanced.turboWasmAccelerationEnabled).toBe(true);
+  });
+});
+
+describe('SettingsDialog — TurboWasm dropdowns inside a Dialog', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+      performanceMode: 'auto',
+      svgAccelerationMode: 'off',
+    });
+  });
+
+  // Radix Dialog locks the page by applying `pointer-events: none` on
+  // <body> while the dialog is open. The SelectField inside this dialog
+  // is rendered through Radix Popover's portal, which lands directly
+  // under <body>. Without an explicit opt-in, every portal'd descendant
+  // — wrapper, content root, listbox, options — inherits the body style
+  // and the dropdown *renders* but no option can be clicked. The fix
+  // lives in src/components/ui/popover.tsx (forces `pointer-events:
+  // auto` on the Radix content root). These tests catch a regression of
+  // that fix from the user perspective.
+
+  it('Radix Dialog locks the body with pointer-events: none (the precondition this section guards)', () => {
+    // The original bug surfaced as: opening the dropdown rendered the
+    // listbox, but no option was clickable. Root cause: Radix Dialog
+    // applies `pointer-events: none` inline on <body> while the dialog
+    // is open, and `pointer-events` is *inherited* (CSS UI 4), so the
+    // portal'd Popover Content (and every option inside it) inherited
+    // `none`. The fix lives in src/components/ui/popover.tsx — it
+    // forces `pointer-events: auto` on the Radix Popover Content root.
+    //
+    // We pin the *precondition* here: while the dialog is open, the
+    // body really does carry `pointer-events: none`. Combined with the
+    // popover.tsx contract below and the manual browser smoke, this is
+    // enough to guard the user-visible regression.
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(document.body.style.pointerEvents).toBe('none');
+  });
+
+  it('Popover Content applies pointer-events: auto (regression for dropdown clicks in any wrapping Dialog)', async () => {
+    // Direct regression test for the user-reported bug. Even though we
+    // cannot easily click through Radix Dialog → Popover in jsdom (the
+    // Dialog's outside-pointer-event latch reads `getBoundingClientRect`,
+    // which jsdom returns as zeros and confuses the dialog's
+    // inside/outside classification), we *can* assert that whenever a
+    // SelectField's popover content is mounted in any DOM tree, the
+    // Radix Popover Content root carries `pointer-events: auto`. That
+    // is what neutralises the inherited body `pointer-events: none`
+    // applied by Radix Dialog.
+    const { Popover, PopoverContent, PopoverTrigger } = await import(
+      '@/components/ui/popover'
+    );
+    // Render an isolated PopoverContent (no surrounding Dialog) so jsdom
+    // mounts its portal normally. We then inspect the resulting Radix
+    // Popover Content root to verify the className + style contract that
+    // protects every SelectField in the real app.
+    const Wrapper = (): React.JSX.Element => (
+      <Popover open>
+        <PopoverTrigger aria-label="probe trigger">trigger</PopoverTrigger>
+        <PopoverContent aria-label="probe content">content</PopoverContent>
+      </Popover>
+    );
+    render(<Wrapper />);
+    const content = await screen.findByLabelText('probe content');
+    // The fix is in two layers: a Tailwind `pointer-events-auto` class
+    // (which compiles to `pointer-events: auto`) and an inline style of
+    // the same property. Both must remain so that future refactors
+    // cannot silently drop the override.
+    expect(content.className).toMatch(/pointer-events-auto/);
+    expect(content.getAttribute('style') ?? '').toMatch(/pointer-events:\s*auto/);
+  });
+
+  it('SelectField option click propagates value to the consumer (the canonical dropdown semantic)', async () => {
+    // Mounting SelectField inside a Radix Dialog makes the click path
+    // awkward in jsdom (see precondition test above), so we exercise it
+    // here without the surrounding dialog. End-to-end behaviour is
+    // covered by the manual browser smoke; in jsdom we pin the
+    // lower-level contract: clicking an option calls `onChange(opt)`.
+    const { SelectField } = await import('@/components/ui/select');
+    const onChange = vi.fn<(v: 'auto' | 'force-wasm') => void>();
+    const user = userEvent.setup();
+    render(
+      <SelectField<'auto' | 'force-wasm'>
+        id="probe-select"
+        ariaLabel="probe select"
+        value="auto"
+        onChange={onChange}
+        options={[
+          { value: 'auto', label: 'Auto', description: 'auto description' },
+          { value: 'force-wasm', label: 'Force WASM', description: 'wasm description' },
+        ]}
+      />,
+    );
+    await user.click(screen.getByLabelText('probe select'));
+    await user.click(screen.getByRole('option', { name: /Force WASM/i }));
+    expect(onChange).toHaveBeenCalledWith('force-wasm');
   });
 });
 

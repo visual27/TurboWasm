@@ -414,30 +414,14 @@ const LimitsSection = React.memo(function LimitsSection({
   );
 });
 
-const OthersSection = React.memo(function OthersSection({
+const TurboWasmSection = React.memo(function TurboWasmSection({
   advanced,
   patch,
 }: RuntimeSectionProps): React.JSX.Element {
-  const volume = useSettingsStore((s) => s.volume);
-  const setVolume = useSettingsStore((s) => s.setVolume);
   const performanceMode = useSettingsStore((s) => s.performanceMode);
   const setPerformanceMode = useSettingsStore((s) => s.setPerformanceMode);
   const svgAccelerationMode = useSettingsStore((s) => s.svgAccelerationMode);
   const setSvgAccelerationMode = useSettingsStore((s) => s.setSvgAccelerationMode);
-  const onSliderChange = React.useCallback(
-    (values: number[]) => {
-      const v = values[0];
-      if (typeof v === 'number') setVolume(clampVolume(v));
-    },
-    [setVolume],
-  );
-  const onVolumeCommit = React.useCallback(
-    (v: number) => setVolume(clampVolume(v)),
-    [setVolume],
-  );
-  // Stable reference so Radix Slider doesn't see a fresh `[volume]` array
-  // each render.
-  const volumeArr = React.useMemo(() => [volume], [volume]);
   const onPerformanceModeChange = React.useCallback(
     (mode: PerformanceMode) => setPerformanceMode(mode),
     [setPerformanceMode],
@@ -447,41 +431,7 @@ const OthersSection = React.memo(function OthersSection({
     [setSvgAccelerationMode],
   );
   return (
-    <SettingsSection id="others" title="Others">
-      <FieldRow id="volume" label="Volume" description="Master audio volume.">
-        <div className="flex items-center gap-2">
-          <Slider
-            value={volumeArr}
-            min={0}
-            max={100}
-            step={1}
-            onValueChange={onSliderChange}
-            aria-label="Volume slider"
-            className="w-32"
-          />
-          <NumberField
-            id="volume"
-            value={volume}
-            onCommit={onVolumeCommit}
-            min={0}
-            max={100}
-            step={1}
-            ariaLabel="Volume number"
-            className="h-9 w-16 text-right tabular-nums"
-          />
-        </div>
-      </FieldRow>
-      <FieldRow
-        id="disable-compiler"
-        label="Disable Compiler"
-        description="Force the VM to interpret scripts (slower but more compatible)."
-      >
-        <SwitchField
-          id="disable-compiler"
-          checked={advanced.disableCompiler}
-          onChange={(v) => patch({ disableCompiler: v })}
-        />
-      </FieldRow>
+    <SettingsSection id="turbowasm" title="TurboWasm">
       <FieldRow
         id="turbo-wasm-acceleration"
         label="TurboWasm Acceleration"
@@ -518,6 +468,66 @@ const OthersSection = React.memo(function OthersSection({
           onChange={onSvgAccelerationModeChange}
           options={SVG_ACCELERATION_MODE_OPTIONS}
           ariaLabel="SVG acceleration mode"
+        />
+      </FieldRow>
+    </SettingsSection>
+  );
+});
+
+const OthersSection = React.memo(function OthersSection({
+  advanced,
+  patch,
+}: RuntimeSectionProps): React.JSX.Element {
+  const volume = useSettingsStore((s) => s.volume);
+  const setVolume = useSettingsStore((s) => s.setVolume);
+  const onSliderChange = React.useCallback(
+    (values: number[]) => {
+      const v = values[0];
+      if (typeof v === 'number') setVolume(clampVolume(v));
+    },
+    [setVolume],
+  );
+  const onVolumeCommit = React.useCallback(
+    (v: number) => setVolume(clampVolume(v)),
+    [setVolume],
+  );
+  // Stable reference so Radix Slider doesn't see a fresh `[volume]` array
+  // each render.
+  const volumeArr = React.useMemo(() => [volume], [volume]);
+  return (
+    <SettingsSection id="others" title="Others">
+      <FieldRow id="volume" label="Volume" description="Master audio volume.">
+        <div className="flex items-center gap-2">
+          <Slider
+            value={volumeArr}
+            min={0}
+            max={100}
+            step={1}
+            onValueChange={onSliderChange}
+            aria-label="Volume slider"
+            className="w-32"
+          />
+          <NumberField
+            id="volume"
+            value={volume}
+            onCommit={onVolumeCommit}
+            min={0}
+            max={100}
+            step={1}
+            ariaLabel="Volume number"
+            className="h-9 w-16 text-right tabular-nums"
+          />
+        </div>
+      </FieldRow>
+      <FieldRow
+        id="disable-compiler"
+        label="Disable Compiler"
+        description="Force the VM to interpret scripts (slower but more compatible)."
+      >
+        <SwitchField
+          id="disable-compiler"
+          checked={advanced.disableCompiler}
+          onChange={(v) => patch({ disableCompiler: v })}
         />
       </FieldRow>
     </SettingsSection>
@@ -566,6 +576,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
             <RuntimeSection advanced={advanced} patch={patch} />
             <RenderingSection advanced={advanced} patch={patch} />
             <LimitsSection advanced={advanced} patch={patch} />
+            <TurboWasmSection advanced={advanced} patch={patch} />
             <OthersSection advanced={advanced} patch={patch} />
           </div>
         </ScrollArea>
