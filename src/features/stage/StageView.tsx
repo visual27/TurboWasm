@@ -116,6 +116,10 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
         state.advanced !== prev.advanced ||
         state.performanceMode !== prev.performanceMode
       ) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[tw-stage-size] StageView store subscribe: prev=${prev.advanced.stageWidth}x${prev.advanced.stageHeight} next=${state.advanced.stageWidth}x${state.advanced.stageHeight} performanceModeSame=${state.performanceMode === prev.performanceMode}`,
+        );
         apply(state.advanced, state.performanceMode, prev.performanceMode);
       }
     });
@@ -145,21 +149,47 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
 
   // Single coalesced relayout trigger. Any layout-affecting change
   // (fullscreen, ready, stage-size, high-quality-pen) schedules at most one
-  // double-rAF relayout per frame. `highQualityPen` is in the deps so that
-  // toggling it while in fullscreen flips the layout box between 100%/100%
-  // and stageWidth/stageHeight and forces a canvas resize.
+  // triple-rAF relayout per frame. Three rAFs are required so the
+  // browser has a chance to (1) commit the new `aspectRatio` CSS on
+  // the inner ref, (2) reflow the stage-mount, and (3) settle the
+  // Scaffolding `_root` size before we ask it to relayout. Two rAFs
+  // is occasionally too tight: a 2nd project load that switches the
+  // aspect ratio (e.g. twconfig 480x270 after a 800x600 first load)
+  // would land the Scaffolding on a stale `_root` size and persist
+  // the wrong GL canvas drawing buffer / `_overlays` transform
+  // until the user reloaded the page. `highQualityPen` is in the deps
+  // so that toggling it while in fullscreen flips the layout box
+  // between 100%/100% and stageWidth/stageHeight and forces a canvas
+  // resize.
   const isReady = loadState === 'ready';
   useEffect(() => {
     setScaffoldingResizeMode('preserve-ratio');
     if (!initializedRef.current) return;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[tw-stage-size] StageView relayout effect triggered: stageWidth/Height=${stageWidth}x${stageHeight} isFullscreen=${isFullscreen} isReady=${isReady} highQualityPen=${highQualityPen}`,
+    );
     let raf2 = 0;
+    let raf3 = 0;
     const raf1 = requestAnimationFrame(() => {
+      // eslint-disable-next-line no-console
+      console.log('[tw-stage-size] StageView rAF1 relayout');
       relayoutScaffolding();
-      raf2 = requestAnimationFrame(() => relayoutScaffolding());
+      raf2 = requestAnimationFrame(() => {
+        // eslint-disable-next-line no-console
+        console.log('[tw-stage-size] StageView rAF2 relayout');
+        relayoutScaffolding();
+        raf3 = requestAnimationFrame(() => {
+          // eslint-disable-next-line no-console
+          console.log('[tw-stage-size] StageView rAF3 relayout');
+          relayoutScaffolding();
+        });
+      });
     });
     return () => {
       cancelAnimationFrame(raf1);
       cancelAnimationFrame(raf2);
+      cancelAnimationFrame(raf3);
     };
   }, [isFullscreen, isReady, stageWidth, stageHeight, highQualityPen]);
 

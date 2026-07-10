@@ -480,6 +480,74 @@ function bindEvents(scaffolding: ScaffoldingInstance): void {
       }
     });
   }
+
+  // [tw-stage-size] diagnostics: observe Scaffolding-side state changes that
+  // the React commit phase cannot intercept. The vendored Scaffolding does
+  // NOT forward VM `STAGE_SIZE_CHANGED` to its own EventTarget (see
+  // vendored/scaffolding/src/scaffolding.js `setup()`: it only installs
+  // an internal listener that updates `this.width/height` and calls
+  // `this.relayout()`), so we subscribe to the VM event directly to see
+  // the post-`runtime.setStageSize` size delta. The `relayout()` wrap
+  // observes the canvas / CSS state that the Scaffolding's internal
+  // handler mutates, so a single `Filter: /\[tw-stage-size\]/` diff
+  // shows the full cause-and-effect chain.
+  if (attachedScaffoldingHasVm(scaffolding)) {
+    const vm = asVm(scaffolding.vm);
+    vm.on('STAGE_SIZE_CHANGED', ((width: unknown, height: unknown) => {
+      const w = typeof width === 'number' ? width : -1;
+      const h = typeof height === 'number' ? height : -1;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[tw-stage-size] Scaffolding STAGE_SIZE_CHANGED: incoming=${w}x${h} this.width/height(before)=${scaffolding.width}x${scaffolding.height} _root.offsetWidth/Height=${(scaffolding as unknown as { _root?: { offsetWidth?: number; offsetHeight?: number } })._root?.offsetWidth ?? '?'}x${(scaffolding as unknown as { _root?: { offsetWidth?: number; offsetHeight?: number } })._root?.offsetHeight ?? '?'}`,
+      );
+    }) as (...args: unknown[]) => unknown);
+  }
+  installRelayoutDiagnostics(scaffolding);
+}
+
+/**
+ * [tw-stage-size] diagnostics: wrap `scaffolding.relayout` so we can
+ * observe the Scaffolding-side canvas / CSS state immediately before and
+ * after every relayout pass (initial mount, window resize, and the
+ * STAGE_SIZE_CHANGED-triggered pass). The pre-snapshot is the "old DOM
+ * reads" that the React commit phase would see, and the post-snapshot is
+ * the "new layout values" that the next draw frame consumes.
+ */
+function installRelayoutDiagnostics(scaffolding: ScaffoldingInstance): void {
+  const sc = scaffolding as unknown as {
+    relayout?: () => void;
+    width?: number;
+    height?: number;
+    _root?: { offsetWidth?: number; offsetHeight?: number };
+    _layers?: { style?: { width?: string; height?: string } };
+    _canvas?: { width?: number; height?: number };
+    layersRect?: { left: number; top: number; width: number; height: number };
+  };
+  if (typeof sc.relayout !== 'function' || (sc as { __twStageSizeDiag?: boolean }).__twStageSizeDiag) {
+    return;
+  }
+  (sc as { __twStageSizeDiag?: boolean }).__twStageSizeDiag = true;
+  const original = sc.relayout.bind(scaffolding);
+  sc.relayout = function diagRelayout(this: unknown): void {
+    const w0 = sc.width;
+    const h0 = sc.height;
+    const rootW0 = sc._root?.offsetWidth;
+    const rootH0 = sc._root?.offsetHeight;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[tw-stage-size] Scaffolding relayout in: sc.width/height=${w0}x${h0} _root.offsetWidth/Height=${rootW0 ?? '?'}x${rootH0 ?? '?'}`,
+    );
+    original();
+    const layersW = sc._layers?.style?.width;
+    const layersH = sc._layers?.style?.height;
+    const canvasW = sc._canvas?.width;
+    const canvasH = sc._canvas?.height;
+    const rect = sc.layersRect;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[tw-stage-size] Scaffolding relayout out: _layers.style=${layersW ?? '?'}x${layersH ?? '?'} canvas=${canvasW ?? '?'}x${canvasH ?? '?'} layersRect=${rect ? `${rect.left},${rect.top},${rect.width}x${rect.height}` : '?'}`,
+    );
+  };
 }
 
 function attachedScaffoldingHasVm(scaffolding: ScaffoldingInstance): boolean {
@@ -705,10 +773,21 @@ export function applySettings(
 ): void {
   if (!attachedScaffolding || !currentAdvanced) return;
   const previous = currentAdvanced;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[tw-stage-size] applySettings in: prev=${previous.stageWidth}x${previous.stageHeight} next=${advanced.stageWidth}x${advanced.stageHeight}`,
+  );
   currentAdvanced = { ...advanced };
   applyAdvancedSettings(attachedScaffolding, currentAdvanced);
   const vm = asVm(attachedScaffolding.vm);
   if (vm.setStageSize) {
+    const runtimeBefore = vm.runtime as unknown as { stageWidth?: number; stageHeight?: number };
+    const rtBeforeW = runtimeBefore.stageWidth;
+    const rtBeforeH = runtimeBefore.stageHeight;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[tw-stage-size] applySettings vm.setStageSize call: target=${currentAdvanced.stageWidth}x${currentAdvanced.stageHeight} runtime(was)=${rtBeforeW}x${rtBeforeH}`,
+    );
     vm.setStageSize(currentAdvanced.stageWidth, currentAdvanced.stageHeight);
   }
   if (
@@ -739,6 +818,28 @@ export function applySettings(
       mode: advanced.svgAccelerationMode,
     });
   }
+  // [tw-stage-size] explicit relayout after applySettings. The Scaffolding's
+  // STAGE_SIZE_CHANGED handler already calls relayout, but it does so with
+  // the *current* `_root.offsetWidth/Height` — which is still the old
+  // aspect ratio at this point because the React commit that flips the
+  // inner-ref `aspectRatio` CSS has not run yet. The early rAF1/rAF2
+  // eventually catches up, but on the 2nd project load that is sometimes
+  // too late: a brief window of "old `_root` size × new logical size"
+  // gets baked into the GL canvas drawing buffer / `_overlays`
+  // transform, and the subsequent rAFs are not enough to recover before
+  // the user sees a misaligned frame. Calling relayoutScaffolding()
+  // here forces an extra pass with the freshly written `this.width/height`
+  // and the (still stale) `_root` size, which the rAFs will then
+  // re-resolve once the layout has actually reflowed. The net effect is
+  // the user sees a brief, harmless reflow rather than a persistent
+  // misaligned state.
+  if (previous.stageWidth !== advanced.stageWidth || previous.stageHeight !== advanced.stageHeight) {
+    relayoutScaffolding();
+  }
+  // eslint-disable-next-line no-console
+  console.log(
+    `[tw-stage-size] applySettings out: currentAdvanced=${currentAdvanced.stageWidth}x${currentAdvanced.stageHeight}`,
+  );
 }
 
 export function setVolume(volume: number): void {
@@ -1130,24 +1231,35 @@ export async function loadProjectFromArrayBuffer(
 
     if (options.mergeTwconfig !== false) {
       const overrides = await readTwconfigFromArrayBuffer(buf);
-      if (Object.keys(overrides).length > 0) {
-        // Reset to the saved defaults first, then layer the project's
-        // overrides on top. This is the canonical "TurboWarp twconfig
-        // takes priority" merge — keys present in `overrides` win, keys
-        // absent fall back to the saved defaults, and the previous
-        // project's overrides never leak forward. The same merge runs
-        // on the React side via {@link buildProjectAdvanced} in
-        // `applyRuntimeOverrides` so the module-local `currentAdvanced`
-        // and the store-side `advanced` are computed by the same
-        // function and can never drift.
-        const baseline = useSettingsStore.getState().defaultAdvanced;
-        currentAdvanced = buildProjectAdvanced(baseline, overrides);
-        // Also push the overrides into the React-side settings store so the
-        // Settings dialog reflects the same values the VM is currently using.
-        // This was previously module-local only, leaving the dialog out of
-      // sync with the runtime stage.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[tw-stage-size] twconfig pre-parse overrides: ${JSON.stringify(overrides)}`,
+      );
+      // Reset to the saved defaults first, then layer the project's
+      // overrides on top. This is the canonical "TurboWarp twconfig
+      // takes priority" merge — keys present in `overrides` win, keys
+      // absent fall back to the saved defaults, and the previous
+      // project's overrides never leak forward. The same merge runs
+      // on the React side via {@link buildProjectAdvanced} in
+      // `applyRuntimeOverrides` so the module-local `currentAdvanced`
+      // and the store-side `advanced` are computed by the same
+      // function and can never drift.
+      const baseline = useSettingsStore.getState().defaultAdvanced;
+      currentAdvanced = buildProjectAdvanced(baseline, overrides);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[tw-stage-size] twconfig merge: currentAdvanced=${currentAdvanced.stageWidth}x${currentAdvanced.stageHeight}`,
+      );
+      // Push the (possibly empty) overrides into the React-side settings store
+      // so the Settings dialog reflects the same values the VM is currently
+      // using. We intentionally call this even when `overrides` is empty:
+      // a project with no `// _twconfig_` comment must still reset the
+      // runtime `advanced` to the saved defaults — otherwise a project that
+      // had a `// _twconfig_` immediately before this one would leave its
+      // stage-size / fps / high-quality-pen values stuck on the new project.
+      // `applyRuntimeOverrides({})` is a fast `buildProjectAdvanced(defaultAdvanced, {})`
+      // call, so the cost is one extra Zustand notification per load.
       useSettingsStore.getState().applyRuntimeOverrides(overrides);
-    }
   }
   // Always apply the resolved settings so Scaffolding's internal width/height
   // and the React-side settings are in sync — even when there are no twconfig
@@ -1155,7 +1267,33 @@ export async function loadProjectFromArrayBuffer(
   applyAdvancedSettings(attachedScaffolding, currentAdvanced);
   const vm = asVm(attachedScaffolding.vm);
   if (vm.setStageSize) {
+    const runtimeBefore = vm.runtime as unknown as { stageWidth?: number; stageHeight?: number };
+    const rtBeforeW = runtimeBefore.stageWidth;
+    const rtBeforeH = runtimeBefore.stageHeight;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[tw-stage-size] loadProject vm.setStageSize (explicit, post-applyAdvancedSettings): target=${currentAdvanced.stageWidth}x${currentAdvanced.stageHeight} runtime(was)=${rtBeforeW}x${rtBeforeH}`,
+    );
     vm.setStageSize(currentAdvanced.stageWidth, currentAdvanced.stageHeight);
+  }
+  // [tw-stage-size] diagnostics: snapshot renderer + canvas state right
+  // before the new project is handed to the VM. After the await we
+  // snapshot again so a diff tells us which side (Scaffolding width,
+  // renderer _nativeSize, GL canvas drawing buffer, or
+  // _overlaysOuter transform) drifted apart during `loadProject`.
+  {
+    const sc = attachedScaffolding as unknown as {
+      width: number;
+      height: number;
+      _canvas?: { width?: number; height?: number };
+      _overlays?: { style?: { transform?: string } };
+    };
+    const r = sc._canvas;
+    const ov = sc._overlays;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[tw-stage-size] loadProject before await loadProject: scaffolding.width/height=${sc.width}x${sc.height} canvas=${r?.width ?? '?'}x${r?.height ?? '?'} _overlays.transform=${ov?.style?.transform ?? '?'}`,
+    );
   }
 
   // Inspect the project for custom extension URLs BEFORE asking the VM to
@@ -1229,6 +1367,25 @@ export async function loadProjectFromArrayBuffer(
     // drawn content was effectively lost when we later resized to the
     // proper stage dimensions. Force a relayout + redraw on the next two
     // animation frames so the canvas repaints at the real size.
+    // [tw-stage-size] diagnostics: snapshot the renderer + canvas + overlay
+    // state right after `loadProject` resolves, so a diff against the
+    // "before" snapshot above pinpoints which side drifted during the
+    // await (typical suspects: stale GL canvas drawing buffer, stale
+    // `_overlaysOuter` transform, stale renderer `_nativeSize`).
+    {
+      const sc = attachedScaffolding as unknown as {
+        width: number;
+        height: number;
+        _canvas?: { width?: number; height?: number };
+        _overlays?: { style?: { transform?: string } };
+      };
+      const r = sc._canvas;
+      const ov = sc._overlays;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[tw-stage-size] loadProject after await loadProject: scaffolding.width/height=${sc.width}x${sc.height} canvas=${r?.width ?? '?'}x${r?.height ?? '?'} _overlays.transform=${ov?.style?.transform ?? '?'}`,
+      );
+    }
     requestAnimationFrame(() => {
       relayoutScaffolding();
       requestAnimationFrame(() => {
