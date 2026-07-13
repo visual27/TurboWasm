@@ -5,7 +5,7 @@ index 762bfbe..a41b446 100644
 @@ -475,6 +475,22 @@ class PenSkin extends Skin {
      _setCanvasSize (canvasSize) {
          const [width, height] = canvasSize;
- 
+
 +        // TurboWasm: degenerate native-size guard. Zero, non-finite, or
 +        // negative dimensions would cause the WebGL texture / framebuffer
 +        // creation below and `new ImageData(width, height)` (line below
@@ -25,13 +25,39 @@ index 762bfbe..a41b446 100644
          // tw: do not resize if new size === old size
          if (this._size && this._size[0] === width && this._size[1] === height) {
              return;
+@@ -511,6 +527,32 @@ class PenSkin extends Skin {
+             this._framebuffer = twgl.createFramebufferInfo(gl, attachments, width, height);
+         }
+
++        // TurboWasm: force every drawable backed by this PenSkin to recompute
++        // its model matrix on the next render. The size getter returns
++        // `_nativeSize`, which the drawable's `_calculateTransform` reads
++        // to compute `_skinScale` and `rotationAdjusted`. Without this
++        // hint, the drawable can cache the OLD `_skinScale` (e.g. when
++        // the PenSkin was recreated during a project load between two
++        // stage-size changes) and draw the pen layer at the top-left of
++        // the old stage range, instead of the new size. We also fire the
++        // standard `WasAltered` event so any external listeners see the
++        // transition (idempotent with the call from `onNativeSizeChanged`).
++        if (this._renderer && this._renderer._drawList) {
++            for (let i = 0; i < this._renderer._drawList.length; i++) {
++                const drawable = this._renderer._allDrawables[this._renderer._drawList[i]];
++                if (drawable && drawable._skin === this) {
++                    drawable._skinWasAltered();
++                }
++            }
++        }
++        this.emitWasAltered();
++
+         gl.clearColor(0, 0, 0, 0);
+         gl.clear(gl.COLOR_BUFFER_BIT);
 
 diff --git a/node_modules/scratch-render/src/RenderWebGL.js b/node_modules/scratch-render/src/RenderWebGL.js
 index 5363d68..5562485 100644
 --- a/node_modules/scratch-render/src/RenderWebGL.js
 +++ b/node_modules/scratch-render/src/RenderWebGL.js
 @@ -1494,8 +1496,24 @@ class RenderWebGL extends EventEmitter {
- 
+
          // Set a reasonable max limit width and height for the bufferInfo bounds
          const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
 -        const clampedWidth = Math.min(MAX_EXTRACTED_DRAWABLE_DIMENSION, canvasSpaceBounds.width, maxTextureSize);
@@ -54,6 +80,6 @@ index 5363d68..5562485 100644
 +                height: 0
 +            };
 +        }
- 
+
          // Make a new bufferInfo since this._queryBufferInfo is limited to 480x360
          const bufferInfo = twgl.createFramebufferInfo(gl, [{format: gl.RGBA}], clampedWidth, clampedHeight);
