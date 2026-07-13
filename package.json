@@ -1,4 +1,4 @@
-{
+ {
   "name": "turbowasm-viewer",
   "private": true,
   "version": "0.1.0",
@@ -7,7 +7,7 @@
   "scripts": {
     "setup": "node scripts/setup-vendored.mjs",
     "dev": "npm run wasm:build && vite",
-    "build": "npm run wasm:build && tsc --noEmit && tsc --noEmit -p tsconfig.node.json && vite build",
+    "build": "cd vendored/scaffolding && npm install && npm run wasm:build && tsc --noEmit && tsc --noEmit -p tsconfig.node.json && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "lint": "eslint . --max-warnings 0",
