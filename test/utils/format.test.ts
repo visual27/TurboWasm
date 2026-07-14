@@ -7,7 +7,7 @@ import {
   clampVolume,
   formatInteger,
 } from '@/utils/format';
-import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
+import { DEFAULT_ADVANCED_SETTINGS, FPS_MAX, FPS_MIN } from '@/utils/constants';
 
 describe('format utilities', () => {
   describe('clamp', () => {
@@ -35,11 +35,14 @@ describe('format utilities', () => {
   });
 
   describe('clampFps', () => {
-    it('respects 1..240 range', () => {
-      expect(clampFps(0)).toBe(1);
-      expect(clampFps(300)).toBe(240);
+    it('respects FPS_MIN..FPS_MAX range', () => {
+      expect(clampFps(0)).toBe(FPS_MIN);
+      // A value well above the previous 240 ceiling must clamp to the
+      // current FPS_MAX (set higher in src/utils/constants to support
+      // very high-fps displays and benchmarks).
+      expect(clampFps(FPS_MAX + 60)).toBe(FPS_MAX);
       expect(clampFps(60)).toBe(60);
-      expect(clampFps(NaN)).toBe(1);
+      expect(clampFps(NaN)).toBe(FPS_MIN);
     });
   });
 

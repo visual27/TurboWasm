@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { readSettings, writeSettings } from '@/lib/persistence';
-import { STORAGE_KEYS, STORAGE_VERSION, DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
+import {
+  STORAGE_KEYS,
+  STORAGE_VERSION,
+  DEFAULT_ADVANCED_SETTINGS,
+  FPS_MAX,
+} from '@/utils/constants';
 
 describe('persistence', () => {
   beforeEach(() => {
@@ -28,6 +33,7 @@ describe('persistence', () => {
       allowedExtensionUrls: ['https://example.com/a.js'],
       performanceMode: 'auto',
       svgAccelerationMode: 'off',
+      userExplicitFps: null,
     });
     const settings = readSettings();
     expect(settings.theme).toBe('dark');
@@ -54,7 +60,10 @@ describe('persistence', () => {
     const settings = readSettings();
     expect(settings.theme).toBe('system');
     expect(settings.volume).toBe(100);
-    expect(settings.advanced.fps).toBe(240);
+    // FPS_MAX is defined in src/utils/constants; the persistence layer
+    // must clamp against the same constant (the test value 9999 is
+    // intentionally well above it).
+    expect(settings.advanced.fps).toBe(FPS_MAX);
     expect(settings.advanced.stageWidth).toBe(1);
     expect(settings.advanced.stageHeight).toBeGreaterThanOrEqual(1);
   });
@@ -89,6 +98,7 @@ describe('persistence', () => {
       allowedExtensionUrls: [],
       performanceMode: 'auto',
       svgAccelerationMode: 'off',
+      userExplicitFps: null,
     });
     const settings = readSettings();
     expect(settings.advanced.extensionSandboxMode).toBe('iframe');
@@ -192,6 +202,7 @@ describe('persistence', () => {
       ],
       performanceMode: 'auto',
       svgAccelerationMode: 'off',
+      userExplicitFps: null,
     });
     const settings = readSettings();
     expect(settings.allowedExtensionUrls).toEqual([
@@ -312,6 +323,7 @@ describe('persistence', () => {
         allowedExtensionUrls: [],
         performanceMode: 'force-wasm',
         svgAccelerationMode: 'off',
+        userExplicitFps: null,
       });
       const settings = readSettings();
       expect(settings.performanceMode).toBe('force-wasm');
@@ -377,6 +389,7 @@ describe('persistence', () => {
         allowedExtensionUrls: [],
         performanceMode: 'auto',
         svgAccelerationMode: 'cache-only',
+        userExplicitFps: null,
       });
       const settings = readSettings();
       expect(settings.svgAccelerationMode).toBe('cache-only');
@@ -394,6 +407,7 @@ describe('persistence', () => {
         allowedExtensionUrls: [],
         performanceMode: 'auto',
         svgAccelerationMode: 'mip-chain',
+        userExplicitFps: null,
       });
       const settings = readSettings();
       expect(settings.svgAccelerationMode).toBe('mip-chain');
@@ -435,6 +449,7 @@ describe('persistence', () => {
         allowedExtensionUrls: [],
         performanceMode: 'auto',
         svgAccelerationMode: 'cache-only',
+        userExplicitFps: null,
       });
       const settings = readSettings();
       expect(settings.advanced.svgAccelerationMode).toBe('cache-only');

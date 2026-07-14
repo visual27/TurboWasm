@@ -207,6 +207,17 @@ export interface SettingsStoreShape {
    * v3 → v4 migration in `src/lib/persistence.ts`.
    */
   svgAccelerationMode: SvgAccelerationMode;
+  /**
+   * Most recent non-30 fps the user explicitly chose (via the Settings
+   * dialog NumberField, "Set as default", or Alt+Flag from a non-30
+   * value). Used as priority-1 of `useSettingsStore.cycleFpsShortcut`'s
+   * "preferred FPS" computation so the Alt+Flag toggle round-trips
+   * across both presses and reloads. `null` means the user has never
+   * set an explicit non-30 fps; the toggle falls back to
+   * `defaultAdvanced.fps` (when !== 30) or 60. Migrated from
+   * `advanced.fps` / `defaultAdvanced.fps` on the v4 → v5 read.
+   */
+  userExplicitFps: number | null;
 }
 
 export interface SettingsStoreSerialized {

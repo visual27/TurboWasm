@@ -152,7 +152,23 @@ function emptyShape(): SettingsStoreShape {
     allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
     performanceMode: DEFAULT_PERFORMANCE_MODE,
     svgAccelerationMode: DEFAULT_SVG_ACCELERATION_MODE,
+    // No user history yet; the Alt+Flag shortcut falls back to
+    // defaultAdvanced.fps (when !== 30) or 60.
+    userExplicitFps: null,
   };
+}
+
+/**
+ * Derive the v5 `userExplicitFps` seed from a v4-or-earlier payload. The
+ * most recent non-30 fps the user had set is whichever of `advanced.fps`
+ * and `defaultAdvanced.fps` differs from 30, preferring `advanced.fps`
+ * (the user's most recent runtime intent). Returns `null` when both are
+ * 30 (no user preference).
+ */
+function deriveUserExplicitFps(advanced: AdvancedSettings, defaultAdvanced: AdvancedSettings): number | null {
+  if (advanced.fps !== 30) return advanced.fps;
+  if (defaultAdvanced.fps !== 30) return defaultAdvanced.fps;
+  return null;
 }
 
 export function readSettings(): SettingsStoreShape {
@@ -166,13 +182,14 @@ export function readSettings(): SettingsStoreShape {
     // payload was at least tagged version 1. v2 payloads use two distinct
     // fields (`advanced` + `defaultAdvanced`). v3 adds a top-level
     // `performanceMode`. v4 adds `advanced.svgAccelerationMode` (Stage 2
-    // of the TurboWasm Acceleration plan). Anything else (including
-    // untagged / wrong-version / corrupt blobs) resets to defaults.
+    // of the TurboWasm Acceleration plan). v5 adds the top-level
+    // `userExplicitFps` (Alt+Flag FPS shortcut). Anything outside this
+    // range (including untagged / wrong-version / corrupt blobs) resets
+    // to defaults.
     if (
-      parsed.version !== 1 &&
-      parsed.version !== 2 &&
-      parsed.version !== 3 &&
-      parsed.version !== STORAGE_VERSION
+      typeof parsed.version !== 'number' ||
+      parsed.version < 1 ||
+      parsed.version > STORAGE_VERSION
     ) {
       return emptyShape();
     }
@@ -206,28 +223,39 @@ export function readSettings(): SettingsStoreShape {
       // saved `true` does not silently re-enable the toggle. v3 → v4
       // fields are seeded via the `defaultAdvanced` spread below.
       const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
+      const defaultAdvanced = { ...advanced, disableCompiler: false };
       return {
         theme,
         volume,
         lastNonMuteVolume,
         advanced,
-        defaultAdvanced: { ...advanced, disableCompiler: false },
+        defaultAdvanced,
         allowedExtensionUrls,
         performanceMode,
         svgAccelerationMode,
+        // v4 → v5 migration: seed `userExplicitFps` from the v1 fields.
+        userExplicitFps: deriveUserExplicitFps(advanced, defaultAdvanced),
       };
     }
 
-    // v2 (or v3 or v4). v2/v3/v4 share the `advanced` + `defaultAdvanced`
+    // v2 / v3 / v4 / v5. v2/v3/v4 share the `advanced` + `defaultAdvanced`
     // shape; v3 added the top-level `performanceMode`, v4 added
-    // `svgAccelerationMode` (we sanitised it above). Older payloads
-    // without `svgAccelerationMode` inside `advanced` get the default
-    // applied via `sanitizeAdvanced`'s `base.svgAccelerationMode` branch.
+    // `svgAccelerationMode` (we sanitised it above), v5 added the
+    // top-level `userExplicitFps`. Older payloads without
+    // `svgAccelerationMode` inside `advanced` get the default applied
+    // via `sanitizeAdvanced`'s `base.svgAccelerationMode` branch.
     const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
     const defaultAdvanced = sanitizeAdvanced(
       parsed.state?.defaultAdvanced ?? parsed.state?.advanced,
       true,
     );
+    // v4 → v5 migration: derive userExplicitFps from the v4 fields if
+    // not already present on the payload. A v5 payload must always have
+    // the field (writeSettings emits it), but we sanitise defensively.
+    const userExplicitFps =
+      typeof parsed.state?.userExplicitFps === 'number' && parsed.state.userExplicitFps !== 30
+        ? clampFps(parsed.state.userExplicitFps)
+        : deriveUserExplicitFps(advanced, defaultAdvanced);
     return {
       theme,
       volume,
@@ -237,6 +265,7 @@ export function readSettings(): SettingsStoreShape {
       allowedExtensionUrls,
       performanceMode,
       svgAccelerationMode,
+      userExplicitFps,
     };
   } catch {
     return emptyShape();

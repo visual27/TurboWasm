@@ -44,6 +44,8 @@ function ControlBarImpl({
   const volume = useSettingsStore((s) => s.volume);
   const setVolume = useSettingsStore((s) => s.setVolume);
   const toggleMute = useSettingsStore((s) => s.toggleMute);
+  const toggleTurboMode = useSettingsStore((s) => s.toggleTurboMode);
+  const cycleFpsShortcut = useSettingsStore((s) => s.cycleFpsShortcut);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const isPaused = usePlayerStore((s) => s.isPaused);
   const isFullscreen = usePlayerStore((s) => s.isFullscreen);
@@ -90,7 +92,32 @@ function ControlBarImpl({
     else pause();
   }, [isPaused]);
 
-  const onGreenFlagClick = React.useCallback(() => greenFlag(), []);
+  // Modifier-key shortcuts on the green flag button. The `MouseEvent` carries
+  // the same modifier state as the underlying click, so this works whether
+  // the user holds Shift / Ctrl-or-Cmd / Alt at the moment of mousedown or
+  // while the browser dispatches the synthesized `click`. We deliberately
+  // check one modifier at a time (Shift first because Turbo Mode is the
+  // most common power-user shortcut, then Ctrl/Cmd vs Alt on the same
+  // click) and return early so the unmodified `greenFlag()` call never
+  // fires alongside a shortcut action.
+  const onGreenFlagClick = React.useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>): void => {
+      if (e.shiftKey) {
+        toggleTurboMode();
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        toggleMute();
+        return;
+      }
+      if (e.altKey) {
+        cycleFpsShortcut();
+        return;
+      }
+      greenFlag();
+    },
+    [toggleMute, toggleTurboMode, cycleFpsShortcut],
+  );
   const onStopClick = React.useCallback(() => stop(), []);
   const onMuteToggle = React.useCallback(() => toggleMute(), [toggleMute]);
 
@@ -114,7 +141,7 @@ function ControlBarImpl({
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="Start (green flag)"
+                aria-label="Start (green flag). Hold Shift to toggle Turbo Mode, Ctrl/Cmd to toggle mute, Alt to cycle FPS between 30 and your preferred value."
                 onClick={onGreenFlagClick}
                 onMouseDown={preventFocusOnMouseDown}
                 data-testid="green-flag"
@@ -123,7 +150,12 @@ function ControlBarImpl({
                 <Flag className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Run</TooltipContent>
+            <TooltipContent>
+              <span>Run</span>
+              <span className="mt-1 block text-[10px] opacity-70">
+                Shift: Turbo · Ctrl/Cmd: Mute · Alt: Cycle FPS
+              </span>
+            </TooltipContent>
           </Tooltip>
 
           <Tooltip>

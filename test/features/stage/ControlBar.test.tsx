@@ -304,4 +304,160 @@ describe('ControlBar', () => {
       expect(playerMocks.greenFlag).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('green-flag modifier-key shortcuts', () => {
+    // Helpers for clicking the flag button with a given set of modifier
+    // keys. `fireEvent.click` does not expose `altKey` / `shiftKey` /
+    // `ctrlKey` / `metaKey` directly, so we synthesise a `MouseEvent` with
+    // the desired flags and dispatch it on the button. The browser would
+    // populate these fields from the live keyboard state on a real click.
+    function clickFlagWithModifiers(modifiers: {
+      shiftKey?: boolean;
+      ctrlKey?: boolean;
+      metaKey?: boolean;
+      altKey?: boolean;
+    }): void {
+      const btn = screen.getByTestId('green-flag');
+      const ev = new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        shiftKey: modifiers.shiftKey ?? false,
+        ctrlKey: modifiers.ctrlKey ?? false,
+        metaKey: modifiers.metaKey ?? false,
+        altKey: modifiers.altKey ?? false,
+      });
+      btn.dispatchEvent(ev);
+    }
+
+    it('Shift+Flag toggles advanced.turboMode (does NOT call greenFlag)', () => {
+      useSettingsStore.setState({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, turboMode: false },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      clickFlagWithModifiers({ shiftKey: true });
+      expect(useSettingsStore.getState().advanced.turboMode).toBe(true);
+      expect(playerMocks.greenFlag).not.toHaveBeenCalled();
+    });
+
+    it('Ctrl+Flag invokes toggleMute (does NOT call greenFlag)', () => {
+      useSettingsStore.setState({ volume: 80, lastNonMuteVolume: 80 });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      clickFlagWithModifiers({ ctrlKey: true });
+      expect(useSettingsStore.getState().volume).toBe(0);
+      expect(useSettingsStore.getState().lastNonMuteVolume).toBe(80);
+      expect(playerMocks.greenFlag).not.toHaveBeenCalled();
+    });
+
+    it('Cmd/Meta+Flag invokes toggleMute (macOS equivalent)', () => {
+      useSettingsStore.setState({ volume: 80, lastNonMuteVolume: 80 });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      clickFlagWithModifiers({ metaKey: true });
+      expect(useSettingsStore.getState().volume).toBe(0);
+      expect(useSettingsStore.getState().lastNonMuteVolume).toBe(80);
+      expect(playerMocks.greenFlag).not.toHaveBeenCalled();
+    });
+
+    it('Alt+Flag cycles fps from 30 to the preferred value (default state → 60)', () => {
+      useSettingsStore.setState({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+      });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      clickFlagWithModifiers({ altKey: true });
+      expect(useSettingsStore.getState().advanced.fps).toBe(60);
+      expect(playerMocks.greenFlag).not.toHaveBeenCalled();
+    });
+
+    it('Alt+Flag cycles fps back to 30 when current fps is non-30', () => {
+      useSettingsStore.setState({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 60 },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+      });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      clickFlagWithModifiers({ altKey: true });
+      expect(useSettingsStore.getState().advanced.fps).toBe(30);
+      expect(playerMocks.greenFlag).not.toHaveBeenCalled();
+    });
+
+    it('Shift takes precedence over Alt when both are held (Turbo wins, FPS unchanged)', () => {
+      useSettingsStore.setState({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30, turboMode: false },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+      });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      clickFlagWithModifiers({ shiftKey: true, altKey: true });
+      expect(useSettingsStore.getState().advanced.turboMode).toBe(true);
+      expect(useSettingsStore.getState().advanced.fps).toBe(30);
+    });
+
+    it('Ctrl/Cmd takes precedence over Alt when both are held (Mute wins, FPS unchanged)', () => {
+      useSettingsStore.setState({
+        theme: 'system',
+        volume: 80,
+        lastNonMuteVolume: 80,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+      });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      clickFlagWithModifiers({ ctrlKey: true, altKey: true });
+      expect(useSettingsStore.getState().volume).toBe(0);
+      expect(useSettingsStore.getState().advanced.fps).toBe(30);
+    });
+
+    it('a plain (unmodified) click still calls greenFlag()', () => {
+      useSettingsStore.setState({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      });
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      clickFlagWithModifiers({});
+      expect(playerMocks.greenFlag).toHaveBeenCalledTimes(1);
+      // And none of the shortcut side-effects fired.
+      expect(useSettingsStore.getState().advanced.turboMode).toBe(false);
+      expect(useSettingsStore.getState().volume).toBe(100);
+      expect(useSettingsStore.getState().advanced.fps).toBe(DEFAULT_ADVANCED_SETTINGS.fps);
+    });
+
+    it('the flag button tooltip advertises the modifier shortcuts', () => {
+      renderWithProviders(
+        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
+      );
+      const btn = screen.getByTestId('green-flag');
+      expect(btn.getAttribute('aria-label')).toMatch(/Shift.*Turbo/);
+      expect(btn.getAttribute('aria-label')).toMatch(/Ctrl.*Cmd.*[Mm]ute/);
+      expect(btn.getAttribute('aria-label')).toMatch(/Alt.*[Ff][Pp][Ss]/);
+    });
+  });
 });

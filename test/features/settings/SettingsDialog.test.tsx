@@ -3,7 +3,7 @@ import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
 import { useSettingsStore } from '@/stores/useSettingsStore';
-import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
+import { DEFAULT_ADVANCED_SETTINGS, FPS_MAX } from '@/utils/constants';
 
 describe('SettingsDialog — layout', () => {
   beforeEach(() => {
@@ -376,14 +376,16 @@ describe('SettingsDialog — NumberField commit semantics', () => {
     expect((screen.getByLabelText('FPS') as HTMLInputElement).value).toBe('26');
   });
 
-  it('clamps out-of-range FPS on commit (500 → 240)', async () => {
+  it('clamps out-of-range FPS on commit (1500 → FPS_MAX)', async () => {
     const user = userEvent.setup();
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
     fpsInput.focus();
-    await user.keyboard('{Backspace}500');
+    // 1500 is well above FPS_MAX (1000). The NumberField must clamp on
+    // commit so the runtime never sees an out-of-range framerate.
+    await user.keyboard('{Backspace}1500');
     await user.keyboard('{Enter}');
-    expect(useSettingsStore.getState().advanced.fps).toBe(240);
+    expect(useSettingsStore.getState().advanced.fps).toBe(FPS_MAX);
   });
 
   it('rolls back to the external value on Escape without committing', async () => {

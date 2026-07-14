@@ -17,6 +17,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger } from '@/utils/format';
 import type { AdvancedSettings, PerformanceMode, SvgAccelerationMode } from '@/types/settings';
 import { Button } from '@/components/ui/button';
+import { FPS_MAX, FPS_MIN } from '@/utils/constants';
 
 /**
  * Human-readable labels + descriptions for the Performance Mode dropdown.
@@ -287,8 +288,8 @@ const RuntimeSection = React.memo(function RuntimeSection({
           id="fps"
           value={advanced.fps}
           onCommit={(v) => patch({ fps: clampFps(v) })}
-          min={1}
-          max={240}
+          min={FPS_MIN}
+          max={FPS_MAX}
           ariaLabel="FPS"
         />
       </FieldRow>

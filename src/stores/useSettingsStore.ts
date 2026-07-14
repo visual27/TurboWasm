@@ -14,7 +14,7 @@ import {
   VOLUME_MAX,
   VOLUME_MIN,
 } from '@/utils/constants';
-import { clampVolume } from '@/utils/format';
+import { clampFps, clampVolume } from '@/utils/format';
 import { readSettings, writeSettings } from '@/lib/persistence';
 import { buildProjectAdvanced } from '@/runtime/twconfig';
 
@@ -69,6 +69,22 @@ export interface SettingsState {
    * {@link SvgAccelerationMode} for the full set of values.
    */
   svgAccelerationMode: SvgAccelerationMode;
+  /**
+   * The user's most recent non-30 FPS — the value that
+   * {@link cycleFpsShortcut} should round-trip back to when the runtime
+   * FPS is at {@link FPS_SHORTCUT_DEFAULT}. Updated by:
+   *
+   *  - `patchAdvanced` when the patch explicitly sets a non-30 FPS.
+   *  - `saveAdvancedAsDefault` when the runtime FPS is non-30.
+   *  - `cycleFpsShortcut` itself, when toggling from a non-30 FPS back
+   *    to 30 (so the next press can return).
+   *
+   * `null` means the user has never set an explicit non-30 FPS; the
+   * shortcut falls back to `defaultAdvanced.fps` (when !== 30) or 60.
+   * Persisted across reloads so a user who toggled to e.g. 45 last
+   * session picks up where they left off.
+   */
+  userExplicitFps: number | null;
   setTheme: (theme: Theme) => void;
   setVolume: (volume: number) => void;
   /**
@@ -80,6 +96,20 @@ export interface SettingsState {
    * Returns the new volume.
    */
   toggleMute: () => number;
+  /**
+   * Toggle the runtime Turbo Mode flag. In-memory only — the user must
+   * press "Set as default" to make the change survive a reload. Returns
+   * the new value of `advanced.turboMode`.
+   */
+  toggleTurboMode: () => boolean;
+  /**
+   * Cycle the runtime FPS between the system default (30) and the
+   * "preferred FPS" computed by {@link computePreferredFps}. Pressed
+   * while FPS is 30 it switches to the preferred value; pressed while
+   * FPS is anything else it switches back to 30. In-memory only.
+   * Returns the new FPS.
+   */
+  cycleFpsShortcut: () => number;
   /**
    * Update one or more runtime advanced settings in memory. Does NOT write
    * to localStorage — the user must press "Set as default" to make the
@@ -179,6 +209,51 @@ export function computeMuteToggle(
   return { volume: VOLUME_MIN, lastNonMuteVolume: currentVolume };
 }
 
+/**
+ * The system default FPS used by the Alt+Flag shortcut as one of the two
+ * cycle endpoints. Kept as a constant so the implementation lives next to
+ * {@link DEFAULT_ADVANCED_SETTINGS.fps} without depending on the runtime
+ * store.
+ */
+export const FPS_SHORTCUT_DEFAULT = 30;
+
+/**
+ * The fallback FPS used when neither the user's explicit override nor
+ * the saved default differs from {@link FPS_SHORTCUT_DEFAULT}. Matches
+ * the priority order documented on {@link SettingsState.cycleFpsShortcut}.
+ */
+export const FPS_SHORTCUT_FALLBACK = 60;
+
+/**
+ * Compute the "preferred FPS" the Alt+Flag shortcut should switch to
+ * whenever the runtime FPS is currently the system default (30). The
+ * priority order is:
+ *
+ *  1. {@link SettingsState.userExplicitFps}, the most recent non-30 FPS
+ *     the user explicitly chose (via the Settings dialog NumberField,
+ *     "Set as default", or Alt+Flag itself). This is the strongest
+ *     signal because it captures user intent across toggles and reloads,
+ *     even when the runtime `advanced.fps` has just been snapped back
+ *     to 30 by the shortcut.
+ *  2. The saved default FPS, unless it equals {@link FPS_SHORTCUT_DEFAULT}.
+ *     A non-30 default means the user pressed "Set as default" with a
+ *     non-default value and we should respect that.
+ *  3. {@link FPS_SHORTCUT_FALLBACK} (60), when neither of the above is
+ *     available.
+ */
+export function computePreferredFps(
+  userExplicitFps: number | null,
+  defaultAdvancedFps: number,
+): number {
+  if (userExplicitFps !== null && userExplicitFps !== FPS_SHORTCUT_DEFAULT) {
+    return userExplicitFps;
+  }
+  if (defaultAdvancedFps !== FPS_SHORTCUT_DEFAULT) {
+    return defaultAdvancedFps;
+  }
+  return FPS_SHORTCUT_FALLBACK;
+}
+
 // High-frequency setters (setVolume, setExtensionSandboxMode) coalesce their
 // disk writes through this microtask + idle debouncer. The latest snapshot
 // wins; intermediate states are skipped. We still flush synchronously on
@@ -214,6 +289,7 @@ function schedulePersist(snapshot: SettingsState): void {
           allowedExtensionUrls: snap.allowedExtensionUrls,
           performanceMode: snap.performanceMode,
           svgAccelerationMode: snap.svgAccelerationMode,
+          userExplicitFps: snap.userExplicitFps,
         });
       }
     };
@@ -244,6 +320,7 @@ function persistImmediate(state: SettingsState): void {
     allowedExtensionUrls: state.allowedExtensionUrls,
     performanceMode: state.performanceMode,
     svgAccelerationMode: state.svgAccelerationMode,
+    userExplicitFps: state.userExplicitFps,
   });
 }
 
@@ -260,6 +337,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   performanceMode: initial.performanceMode ?? DEFAULT_PERFORMANCE_MODE,
   svgAccelerationMode:
     initial.svgAccelerationMode ?? initial.advanced.svgAccelerationMode ?? DEFAULT_SVG_ACCELERATION_MODE,
+  // The persistence layer derives this on read for legacy payloads, so
+  // the value here is always either the user's saved choice or a
+  // sensible fallback (null = no preference). We accept null because the
+  // v4 → v5 migration in persistence.ts uses `deriveUserExplicitFps`
+  // and that helper returns `null` when both `advanced.fps` and
+  // `defaultAdvanced.fps` are 30.
+  userExplicitFps: initial.userExplicitFps ?? null,
   setTheme: (theme) => {
     set({ theme });
     persistImmediate(get());
@@ -281,12 +365,62 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persistImmediate(get());
     return next;
   },
+  toggleTurboMode: () => {
+    // Mirrors `patchAdvanced({ turboMode })` semantics: in-memory only,
+    // no localStorage write. The Settings dialog stays the single
+    // source of truth for "Set as default" persistence — the user must
+    // press that button there to make the change survive a reload.
+    const next = !get().advanced.turboMode;
+    set({ advanced: { ...get().advanced, turboMode: next } });
+    return next;
+  },
+  cycleFpsShortcut: () => {
+    // Mirrors `patchAdvanced({ fps })` semantics for `advanced.fps`
+    // (in-memory only — the user must press "Set as default" to make
+    // the change survive a reload). Two endpoints: the system default
+    // (30) and the "preferred FPS" computed by `computePreferredFps`.
+    //
+    // When toggling *to* 30 from a non-30 value, we also remember the
+    // previous value in `userExplicitFps` and persist it via
+    // `schedulePersist` so a reload picks up the round-trip endpoint.
+    // This is what makes the Alt+Flag latch robust across reloads;
+    // without it, after the first toggle the runtime `advanced.fps`
+    // becomes 30 and the priority check would lose track of the
+    // user's actual preference. We persist *only* the latch field —
+    // the runtime fps stays in-memory and gets overwritten by
+    // `applyRuntimeOverrides` on the next project load anyway.
+    const { advanced, defaultAdvanced, userExplicitFps } = get();
+    if (advanced.fps === FPS_SHORTCUT_DEFAULT) {
+      const next = clampFps(computePreferredFps(userExplicitFps, defaultAdvanced.fps));
+      set({ advanced: { ...advanced, fps: next } });
+      return next;
+    }
+    set({
+      advanced: { ...advanced, fps: FPS_SHORTCUT_DEFAULT },
+      userExplicitFps: advanced.fps,
+    });
+    // Persist only the latch by writing the current snapshot through the
+    // debounced path. The runtime fps is included too, but
+    // `applyRuntimeOverrides` resets it on the next project load — and
+    // until a project loads, the runtime fps is the one we just set
+    // (30), which is exactly what the user sees on the in-memory toggle.
+    schedulePersist(get());
+    return FPS_SHORTCUT_DEFAULT;
+  },
   patchAdvanced: (patch) => {
     // In-memory only. The Settings dialog edits the runtime `advanced`
     // without persisting — the user must press "Set as default" to make
     // changes survive a reload.
     const merged: AdvancedSettings = { ...get().advanced, ...patch };
-    set({ advanced: merged });
+    // Remember any explicit FPS the user types into the Settings dialog
+    // NumberField (or any other non-30 patchAdvanced call site). 30 is
+    // the system default and would only reset `userExplicitFps` to a
+    // value the priority check would skip anyway.
+    const userExplicitFpsUpdate =
+      typeof patch.fps === 'number' && patch.fps !== FPS_SHORTCUT_DEFAULT
+        ? clampFps(patch.fps)
+        : get().userExplicitFps;
+    set({ advanced: merged, userExplicitFps: userExplicitFpsUpdate });
   },
   applyRuntimeOverrides: (overrides) => {
     // Project-scoped runtime settings: always reset to the saved
@@ -322,7 +456,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       disableCompiler: false,
       turboWasmAccelerationEnabled: true,
     };
-    set({ defaultAdvanced: snapshot });
+    // A non-30 runtime FPS at "Set as default" time is also the user's
+    // explicit preference — keep the Alt+Flag latched value in sync so
+    // a reload picks up the same round-trip endpoint.
+    const userExplicitFps =
+      advanced.fps !== FPS_SHORTCUT_DEFAULT ? clampFps(advanced.fps) : get().userExplicitFps;
+    set({ defaultAdvanced: snapshot, userExplicitFps });
     persistImmediate(get());
   },
   setExtensionSandboxMode: (mode) => {
@@ -340,11 +479,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   resetAdvanced: () => {
     // Reset the runtime to the saved defaults (with disableCompiler forced
-    // off) and clear the extension allow-list.
+    // off) and clear the extension allow-list. Also clear the Alt+Flag
+    // FPS latch so the shortcut falls back to the saved default (or 60)
+    // instead of a stale preference from before the reset.
     const next: AdvancedSettings = { ...get().defaultAdvanced, disableCompiler: false };
+    const userExplicitFps =
+      next.fps !== FPS_SHORTCUT_DEFAULT ? clampFps(next.fps) : null;
     set({
       advanced: next,
       allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
+      userExplicitFps,
     });
     persistImmediate(get());
   },
@@ -428,6 +572,7 @@ export function flushSettingsPersistForTesting(): void {
       allowedExtensionUrls: snap.allowedExtensionUrls,
       performanceMode: snap.performanceMode,
       svgAccelerationMode: snap.svgAccelerationMode,
+      userExplicitFps: snap.userExplicitFps,
     });
   }
 }

@@ -26,7 +26,7 @@ export const STAGE_MAX_WIDTH = 8192;
 export const STAGE_MIN_HEIGHT = 1;
 export const STAGE_MAX_HEIGHT = 8192;
 export const FPS_MIN = 1;
-export const FPS_MAX = 240;
+export const FPS_MAX = 1000;
 export const VOLUME_MIN = 0;
 export const VOLUME_MAX = 100;
 
@@ -39,9 +39,12 @@ export const STORAGE_KEYS = {
 // `disableCompiler` to always start as `false`. Bumped to 3 when the
 // schema added the top-level `performanceMode` field. Bumped to 4 when
 // `advanced` gained the `svgAccelerationMode` field (Stage 2 of the
-// TurboWasm Acceleration plan). Older payloads are read and migrated on
-// the fly — see `src/lib/persistence.ts`.
-export const STORAGE_VERSION = 4;
+// TurboWasm Acceleration plan). Bumped to 5 when the top-level
+// `userExplicitFps` field was added to remember the user's most recent
+// non-30 fps across toggles and reloads (drives the Alt+Flag FPS
+// shortcut's round-trip behavior). Older payloads are read and migrated
+// on the fly — see `src/lib/persistence.ts`.
+export const STORAGE_VERSION = 5;
 
 /**
  * Default value for `performanceMode` when no user preference has been

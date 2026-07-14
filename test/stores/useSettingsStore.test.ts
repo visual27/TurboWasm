@@ -1,9 +1,23 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { useSettingsStore, computeMuteToggle } from '@/stores/useSettingsStore';
+import {
+  useSettingsStore,
+  computeMuteToggle,
+  computePreferredFps,
+  flushSettingsPersistForTesting,
+  FPS_SHORTCUT_DEFAULT,
+  FPS_SHORTCUT_FALLBACK,
+} from '@/stores/useSettingsStore';
 import { DEFAULT_ADVANCED_SETTINGS, VOLUME_MAX } from '@/utils/constants';
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 
 function resetStore(): void {
+  // Drain any debounced persist scheduled by the previous test before
+  // we wipe localStorage. Otherwise the snapshot from the previous test
+  // (which may include a stale `defaultAdvanced.fps`) gets written into
+  // the current test's localStorage and pollutes assertions that read
+  // the persisted payload.
+  flushSettingsPersistForTesting();
+  localStorage.clear();
   useSettingsStore.setState({
     theme: 'system',
     volume: 100,
@@ -13,6 +27,7 @@ function resetStore(): void {
     allowedExtensionUrls: [],
     performanceMode: 'auto',
     svgAccelerationMode: 'off',
+    userExplicitFps: null,
   });
 }
 
@@ -28,9 +43,9 @@ describe('useSettingsStore — basic', () => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
     expect(raw).toBeTruthy();
     expect(JSON.parse(raw as string).state.theme).toBe('dark');
-    // The persisted payload is tagged with the v4 schema so future
+    // The persisted payload is tagged with the v5 schema so future
     // schema bumps can read it back correctly.
-    expect(JSON.parse(raw as string).version).toBe(4);
+    expect(JSON.parse(raw as string).version).toBe(5);
   });
 
   it('clamps volume on setVolume', () => {
@@ -194,9 +209,9 @@ describe('useSettingsStore — performanceMode', () => {
       version: number;
     };
     expect(parsed.state.performanceMode).toBe('force-wasm');
-    // The persisted payload is tagged with the v4 schema so future
+    // The persisted payload is tagged with the v5 schema so future
     // schema bumps can read it back correctly.
-    expect(parsed.version).toBe(4);
+    expect(parsed.version).toBe(5);
   });
 
   it('setPerformanceMode accepts all four valid modes', () => {
@@ -227,7 +242,7 @@ describe('useSettingsStore — svgAccelerationMode', () => {
       version: number;
     };
     expect(parsed.state.svgAccelerationMode).toBe('cache-only');
-    expect(parsed.version).toBe(4);
+    expect(parsed.version).toBe(5);
   });
 
   it('setSvgAccelerationMode accepts every valid mode', () => {
@@ -367,6 +382,8 @@ describe('useSettingsStore.toggleMute (smart restore)', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
       performanceMode: 'auto',
+      svgAccelerationMode: 'off',
+      userExplicitFps: null,
     });
   });
 
@@ -410,5 +427,193 @@ describe('useSettingsStore.toggleMute (smart restore)', () => {
     useSettingsStore.setState({ volume: 0, lastNonMuteVolume: 0 });
     useSettingsStore.getState().toggleMute();
     expect(useSettingsStore.getState().volume).toBe(100);
+  });
+});
+
+describe('computePreferredFps (pure)', () => {
+  it('exposes the system default and fallback FPS as named constants', () => {
+    expect(FPS_SHORTCUT_DEFAULT).toBe(30);
+    expect(FPS_SHORTCUT_FALLBACK).toBe(60);
+  });
+
+  it('returns userExplicitFps when set and non-30 (priority 1)', () => {
+    expect(computePreferredFps(45, 30)).toBe(45);
+    expect(computePreferredFps(60, 45)).toBe(60);
+  });
+
+  it('treats userExplicitFps=30 as "no preference" and falls through to defaultAdvanced.fps', () => {
+    // The latch stores the most recent non-30 fps the user set; 30 is
+    // the system default and would just bounce the toggle. We collapse
+    // it to "null" semantically here.
+    expect(computePreferredFps(30, 45)).toBe(45);
+  });
+
+  it('returns defaultAdvancedFps when userExplicitFps is null and defaultAdvanced.fps !== 30 (priority 2)', () => {
+    expect(computePreferredFps(null, 45)).toBe(45);
+    expect(computePreferredFps(null, 120)).toBe(120);
+  });
+
+  it('falls back to 60 when both userExplicitFps and defaultAdvanced.fps are unavailable (priority 3)', () => {
+    expect(computePreferredFps(null, 30)).toBe(60);
+  });
+});
+
+describe('useSettingsStore.toggleTurboMode', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetStore();
+  });
+
+  it('flips advanced.turboMode from false to true and returns true', () => {
+    expect(useSettingsStore.getState().advanced.turboMode).toBe(false);
+    const result = useSettingsStore.getState().toggleTurboMode();
+    expect(result).toBe(true);
+    expect(useSettingsStore.getState().advanced.turboMode).toBe(true);
+  });
+
+  it('flips advanced.turboMode from true back to false', () => {
+    useSettingsStore.getState().patchAdvanced({ turboMode: true });
+    const result = useSettingsStore.getState().toggleTurboMode();
+    expect(result).toBe(false);
+    expect(useSettingsStore.getState().advanced.turboMode).toBe(false);
+  });
+
+  it('does NOT write to localStorage (mirrors patchAdvanced semantics)', async () => {
+    useSettingsStore.getState().toggleTurboMode();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    if (raw) {
+      const parsed = JSON.parse(raw) as {
+        state: { advanced: { turboMode: boolean }; defaultAdvanced: { turboMode: boolean } };
+      };
+      // defaultAdvanced must NOT be touched by toggleTurboMode.
+      expect(parsed.state.defaultAdvanced.turboMode).toBe(false);
+    }
+  });
+});
+
+describe('useSettingsStore.cycleFpsShortcut', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetStore();
+  });
+
+  it('returns 60 when starting from the system-default state (no preference)', () => {
+    expect(useSettingsStore.getState().advanced.fps).toBe(30);
+    expect(useSettingsStore.getState().userExplicitFps).toBeNull();
+    const next = useSettingsStore.getState().cycleFpsShortcut();
+    expect(next).toBe(60);
+    expect(useSettingsStore.getState().advanced.fps).toBe(60);
+  });
+
+  it('switches back to 30 when pressed with a non-30 fps, latching userExplicitFps', () => {
+    useSettingsStore.getState().patchAdvanced({ fps: 60 });
+    const next = useSettingsStore.getState().cycleFpsShortcut();
+    expect(next).toBe(30);
+    expect(useSettingsStore.getState().advanced.fps).toBe(30);
+    // The latch must remember 60 so the next press can round-trip.
+    expect(useSettingsStore.getState().userExplicitFps).toBe(60);
+  });
+
+  it('round-trips 30 ⇄ user-explicit fps via Settings dialog (no save-as-default)', () => {
+    // User sets 45 in Settings dialog. The latch records 45.
+    useSettingsStore.getState().patchAdvanced({ fps: 45 });
+    expect(useSettingsStore.getState().userExplicitFps).toBe(45);
+    // Alt+Flag: 45 → 30. Latch holds 45.
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(30);
+    expect(useSettingsStore.getState().userExplicitFps).toBe(45);
+    // Alt+Flag: 30 → 45 (priority-1, via userExplicitFps).
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(45);
+    // And again: 45 → 30. Toggle round-trips.
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(30);
+  });
+
+  it('round-trips 30 ⇄ user-explicit fps even after save-as-default', () => {
+    // User saves 45 as the default. Latch still records 45.
+    useSettingsStore.getState().patchAdvanced({ fps: 45 });
+    useSettingsStore.getState().saveAdvancedAsDefault();
+    expect(useSettingsStore.getState().userExplicitFps).toBe(45);
+    // 45 → 30.
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(30);
+    // 30 → 45 (priority-1, via userExplicitFps).
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(45);
+  });
+
+  it('falls back to defaultAdvanced.fps when the latch is null and the default is non-30', () => {
+    // User saved 45 as default in a previous session but the latch was
+    // cleared (e.g. via reset). The toggle must still find 45 through
+    // the defaultAdvanced fallback.
+    useSettingsStore.setState({
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 45 },
+      userExplicitFps: null,
+    });
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(45);
+    // 45 → 30. Latch records 45 (next time we won't even need the
+    // defaultAdvanced fallback).
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(30);
+    expect(useSettingsStore.getState().userExplicitFps).toBe(45);
+    // 30 → 45 via latch.
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(45);
+  });
+
+  it('clamps the preferred fps into the FPS_MIN..FPS_MAX range', () => {
+    // Simulate an absurd userExplicitFps > FPS_MAX (e.g. typed by hand).
+    useSettingsStore.setState({
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
+      userExplicitFps: 9999,
+    });
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBeLessThanOrEqual(1000);
+  });
+
+  it('does NOT write defaultAdvanced.fps, and the runtime fps is in-memory only', async () => {
+    useSettingsStore.getState().cycleFpsShortcut();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+    const s = useSettingsStore.getState();
+    expect(s.defaultAdvanced.fps).toBe(DEFAULT_ADVANCED_SETTINGS.fps);
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    if (raw) {
+      const parsed = JSON.parse(raw) as {
+        state: { advanced: { fps: number }; defaultAdvanced: { fps: number } };
+      };
+      // defaultAdvanced.fps must remain at 30.
+      expect(parsed.state.defaultAdvanced.fps).toBe(30);
+    }
+  });
+
+  it('persists userExplicitFps so a reload restores the round-trip endpoint', async () => {
+    // The latch is captured on the *down-press* (non-30 → 30), where the
+    // user is explicitly leaving their non-30 choice. The up-press
+    // (30 → 60) only computes the preferred value via the priority
+    // chain; we don't promote that computed value to "user explicit".
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(60); // 30 → 60 (latch still null)
+    expect(useSettingsStore.getState().userExplicitFps).toBeNull();
+    expect(useSettingsStore.getState().cycleFpsShortcut()).toBe(30); // 60 → 30, latch = 60
+    expect(useSettingsStore.getState().userExplicitFps).toBe(60);
+    // Allow the debounced persist to flush.
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    expect(raw).toBeTruthy();
+    const parsed = JSON.parse(raw as string) as {
+      state: { userExplicitFps: number | null };
+      version: number;
+    };
+    expect(parsed.state.userExplicitFps).toBe(60);
+    expect(parsed.version).toBe(5);
+  });
+
+it('patchAdvanced with a non-30 fps updates the latch even when advanced.fps matches defaultAdvanced.fps', () => {
+    // User edits the FPS field to 45 in the dialog. advanced.fps becomes
+    // 45, defaultAdvanced.fps stays 30 (not saved yet), so the latch
+    // captures 45 for the Alt+Flag round-trip.
+    useSettingsStore.getState().patchAdvanced({ fps: 45 });
+    expect(useSettingsStore.getState().userExplicitFps).toBe(45);
+    // patchAdvanced with 30 (the system default) is a no-op for the latch.
+    useSettingsStore.getState().patchAdvanced({ fps: 30 });
+    expect(useSettingsStore.getState().userExplicitFps).toBe(45);
   });
 });
