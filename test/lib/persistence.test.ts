@@ -164,6 +164,7 @@ describe('persistence', () => {
     expect(Object.keys(settings.advanced).sort()).toEqual(
       [
         'disableCompiler',
+        'enableGpuKernels',
         'extensionSandboxMode',
         'fps',
         'highQualityPen',
