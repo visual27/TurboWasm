@@ -1,0 +1,864 @@
+import { scratchCompatHeader } from './scratch-compat';
+import type {
+  AxisFinal,
+  BindDirective,
+  Diagnostic,
+  MapDirective,
+  ParsedProject,
+  RawBlock,
+  RegionVerdict,
+  RepeatDirective,
+  WorkgroupSizeDirective,
+} from './types';
+
+export interface EmitInput {
+  regionVerdict: RegionVerdict;
+  parsedProject: ParsedProject;
+  runtimeState?: { listLengths: Record<string, number> };
+}
+
+export interface WorkgroupSize {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface WorkgroupLimits {
+  maxComputeWorkgroupSizeX: number;
+  maxComputeWorkgroupSizeY: number;
+  maxComputeWorkgroupSizeZ: number;
+  maxComputeInvocationsPerWorkgroup: number;
+}
+
+export interface IdentifierRenameResult {
+  renameTable: Record<string, string>;
+  diagnostics: Diagnostic[];
+}
+
+const DEFAULT_WORKGROUP_SIZE: WorkgroupSize = { x: 64, y: 1, z: 1 };
+const DEFAULT_WORKGROUP_LIMITS: WorkgroupLimits = {
+  maxComputeWorkgroupSizeX: 256,
+  maxComputeWorkgroupSizeY: 256,
+  maxComputeWorkgroupSizeZ: 64,
+  maxComputeInvocationsPerWorkgroup: 256,
+};
+
+const RESERVED_IDENTIFIERS: ReadonlySet<string> = new Set([
+  'alias',
+  'array',
+  'asm',
+  'bf16',
+  'bool',
+  'break',
+  'builtin',
+  'case',
+  'compute',
+  'const',
+  'const_assert',
+  'continue',
+  'continuing',
+  'default',
+  'discard',
+  'dispatch',
+  'do',
+  'else',
+  'enable',
+  'enum',
+  'f16',
+  'f32',
+  'f64',
+  'false',
+  'fn',
+  'for',
+  'global_invocation_id',
+  'handle',
+  'i8',
+  'i16',
+  'i32',
+  'i64',
+  'if',
+  'let',
+  'local_invocation_id',
+  'loop',
+  'mat',
+  'override',
+  'premerge',
+  'regardless',
+  'requires',
+  'return',
+  'struct',
+  'switch',
+  'true',
+  'typedef',
+  'u8',
+  'u16',
+  'u32',
+  'u64',
+  'unless',
+  'using',
+  'var',
+  'vec',
+  'void',
+  'while',
+  'workgroup_id',
+]);
+
+const KNOWN_FORMULA_FUNCTIONS: ReadonlySet<string> = new Set([
+  'select',
+  'min',
+  'max',
+  'clamp',
+  'sin',
+  'cos',
+  'pow',
+  'exp',
+  'log',
+  'floor',
+  'ceil',
+  'fract',
+  'abs',
+  'sqrt',
+  'mix',
+  'step',
+  'f32',
+  'i32',
+  'u32',
+  'scratch_div',
+  'scratch_mod',
+  'scratch_index_clamp',
+  'scratch_list_read_f32',
+  'scratch_list_read_i32',
+  'scratch_list_write_f32',
+  'scratch_bool',
+]);
+
+const BINARY_INPUTS: Readonly<Record<string, readonly [string, string]>> = {
+  operator_add: ['NUM1', 'NUM2'],
+  operator_subtract: ['NUM1', 'NUM2'],
+  operator_multiply: ['NUM1', 'NUM2'],
+  operator_divide: ['NUM1', 'NUM2'],
+  operator_mod: ['NUM1', 'NUM2'],
+  operator_gt: ['OPERAND1', 'OPERAND2'],
+  operator_lt: ['OPERAND1', 'OPERAND2'],
+  operator_equals: ['OPERAND1', 'OPERAND2'],
+  operator_and: ['OPERAND1', 'OPERAND2'],
+  operator_or: ['OPERAND1', 'OPERAND2'],
+};
+
+interface EmitterContext {
+  regionId: string;
+  blocks: Record<string, RawBlock>;
+  bindings: BindDirective[];
+  bindingNames: Map<string, string>;
+  lengthNames: Map<string, string>;
+  renameTable: Record<string, string>;
+  mapNames: Set<string>;
+  sequentialNames: Set<string>;
+  diagnostics: Diagnostic[];
+  diagnosedBlocks: Set<string>;
+  expressionStack: Set<string>;
+}
+
+export function clampWorkgroupSize(
+  size: Readonly<WorkgroupSize>,
+  limits: Readonly<WorkgroupLimits>,
+): WorkgroupSize {
+  const maxInvocations = positiveInteger(limits.maxComputeInvocationsPerWorkgroup);
+  const x = clampDimension(size.x, limits.maxComputeWorkgroupSizeX, maxInvocations);
+  const remainingAfterX = Math.max(1, Math.floor(maxInvocations / x));
+  const y = clampDimension(size.y, limits.maxComputeWorkgroupSizeY, remainingAfterX);
+  const remainingAfterY = Math.max(1, Math.floor(remainingAfterX / y));
+  const z = clampDimension(size.z, limits.maxComputeWorkgroupSizeZ, remainingAfterY);
+  return { x, y, z };
+}
+
+export function renameIdentifiers(
+  maps: readonly MapDirective[],
+  regionId = '',
+): IdentifierRenameResult {
+  const renameTable: Record<string, string> = {};
+  const diagnostics: Diagnostic[] = [];
+  const occupied = new Set(maps.map((map) => map.var));
+
+  for (const map of maps) {
+    if (!RESERVED_IDENTIFIERS.has(map.var) || renameTable[map.var] !== undefined) continue;
+    let salt = 0;
+    let renamed = hashedIdentifier(map.var, salt);
+    while (occupied.has(renamed) || RESERVED_IDENTIFIERS.has(renamed)) {
+      salt += 1;
+      renamed = hashedIdentifier(map.var, salt);
+    }
+    occupied.add(renamed);
+    renameTable[map.var] = renamed;
+    diagnostics.push({
+      severity: 'warn',
+      code: 'gpu.identifier_collision',
+      message: `@map var '${map.var}' was renamed to '${renamed}' for WGSL emission`,
+      regionId,
+      blockId: map.blockId,
+      line: map.line,
+    });
+  }
+
+  return { renameTable, diagnostics };
+}
+
+export function emitRegion(input: EmitInput): { wgsl: string; diagnostics: Diagnostic[] } {
+  const { regionVerdict } = input;
+  const diagnostics: Diagnostic[] = [];
+  const maps = regionVerdict.directives.filter((item): item is MapDirective => item.kind === 'map');
+  const repeats = regionVerdict.directives.filter(
+    (item): item is RepeatDirective => item.kind === 'repeat',
+  );
+  const bindings = regionVerdict.directives
+    .filter((item): item is BindDirective => item.kind === 'bind')
+    .slice()
+    .sort((a, b) => a.slot - b.slot);
+  const workgroupDirective = regionVerdict.directives.find(
+    (item): item is WorkgroupSizeDirective => item.kind === 'workgroup_size',
+  );
+  const requestedWorkgroup = workgroupDirective
+    ? { x: workgroupDirective.x, y: workgroupDirective.y, z: workgroupDirective.z }
+    : DEFAULT_WORKGROUP_SIZE;
+  const workgroupSize = clampWorkgroupSize(requestedWorkgroup, DEFAULT_WORKGROUP_LIMITS);
+
+  if (!sameWorkgroupSize(requestedWorkgroup, workgroupSize)) {
+    diagnostics.push({
+      severity: 'info',
+      code: 'gpu.workgroup_size_clamped',
+      message: `workgroup size (${requestedWorkgroup.x}, ${requestedWorkgroup.y}, ${requestedWorkgroup.z}) was clamped to (${workgroupSize.x}, ${workgroupSize.y}, ${workgroupSize.z})`,
+      regionId: regionVerdict.regionId,
+      blockId: regionVerdict.blockId,
+    });
+  }
+
+  const renamed = renameIdentifiers(maps, regionVerdict.regionId);
+  diagnostics.push(...renamed.diagnostics);
+  const blocks = collectTargetBlocks(input.parsedProject, regionVerdict.spriteId);
+  const bindingNames = createBindingNames(bindings);
+  const lengthNames = new Map<string, string>();
+  for (const binding of bindings) {
+    const storageName = bindingNames.get(binding.name) ?? binding.name;
+    lengthNames.set(binding.name, safeIdentifier(`${storageName}_length`));
+  }
+
+  const sequentialRepeats = repeats.filter(
+    (repeat) => (regionVerdict.axes[repeat.name]?.finalAxis ?? repeat.axis) === 'sequential',
+  );
+  const context: EmitterContext = {
+    regionId: regionVerdict.regionId,
+    blocks,
+    bindings,
+    bindingNames,
+    lengthNames,
+    renameTable: renamed.renameTable,
+    mapNames: new Set(maps.map((map) => map.var)),
+    sequentialNames: new Set(sequentialRepeats.map((repeat) => repeat.name)),
+    diagnostics,
+    diagnosedBlocks: new Set(),
+    expressionStack: new Set(),
+  };
+
+  const lines: string[] = [scratchCompatHeader(), '', emitUniforms(bindings, lengthNames), ''];
+  for (const binding of bindings) lines.push(emitBinding(binding, bindingNames));
+  if (bindings.length > 0) lines.push('');
+
+  lines.push(`// ${dispatchPlan(repeats, regionVerdict, workgroupSize)}`);
+  lines.push(
+    `@compute @workgroup_size(${workgroupSize.x},${workgroupSize.y},${workgroupSize.z})`,
+  );
+  lines.push(`${mainSignature(regionVerdict.parallelAxes)} {`);
+
+  const orderedMaps = orderMaps(maps, regionVerdict.cascade.topoOrder);
+  for (const map of orderedMaps) {
+    const emittedName = renamed.renameTable[map.var] ?? map.var;
+    const formula = emitFormula(map.formula, map, renamed.renameTable, diagnostics, regionVerdict.regionId);
+    lines.push(`  let ${emittedName}: f32 = ${formula};`);
+  }
+
+  const bodyStart = findBodyStart(blocks[regionVerdict.blockId], blocks, regionVerdict.blockId);
+  const bodyLines = bodyStart ? emitStatementChain(bodyStart, context) : [];
+  appendSequentialBody(lines, bodyLines, sequentialRepeats, context);
+  lines.push('}');
+
+  return { wgsl: lines.join('\n'), diagnostics };
+}
+
+function positiveInteger(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.floor(value));
+}
+
+function clampDimension(value: number, deviceLimit: number, invocationLimit: number): number {
+  return Math.min(positiveInteger(value), positiveInteger(deviceLimit), invocationLimit);
+}
+
+function sameWorkgroupSize(a: Readonly<WorkgroupSize>, b: Readonly<WorkgroupSize>): boolean {
+  return a.x === b.x && a.y === b.y && a.z === b.z;
+}
+
+function hashedIdentifier(identifier: string, salt: number): string {
+  let hash = 0x811c9dc5;
+  const input = salt === 0 ? identifier : `${identifier}:${salt}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `__tw_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function safeIdentifier(identifier: string): string {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier) && !RESERVED_IDENTIFIERS.has(identifier)) {
+    return identifier;
+  }
+  return hashedIdentifier(identifier, 0);
+}
+
+function collectTargetBlocks(project: ParsedProject, spriteId: string): Record<string, RawBlock> {
+  const preferred = project.targets.find((target) => target.id === spriteId);
+  if (preferred) return preferred.blocks;
+  const blocks: Record<string, RawBlock> = {};
+  for (const target of project.targets) Object.assign(blocks, target.blocks);
+  return blocks;
+}
+
+function createBindingNames(bindings: readonly BindDirective[]): Map<string, string> {
+  const names = new Map<string, string>();
+  const occupied = new Set<string>();
+  for (const binding of bindings) {
+    let name = safeIdentifier(binding.name);
+    let salt = 0;
+    while (occupied.has(name)) {
+      salt += 1;
+      name = hashedIdentifier(binding.name, salt);
+    }
+    occupied.add(name);
+    names.set(binding.name, name);
+  }
+  return names;
+}
+
+function emitUniforms(
+  bindings: readonly BindDirective[],
+  lengthNames: ReadonlyMap<string, string>,
+): string {
+  const fields = bindings.map((binding) => {
+    const name = lengthNames.get(binding.name) ?? safeIdentifier(`${binding.name}_length`);
+    return `  ${name}: u32,`;
+  });
+  if (fields.length === 0) fields.push('  __tw_padding: u32,');
+  return `struct ScratchUniforms {\n${fields.join('\n')}\n};\n@group(0) @binding(0) var<uniform> u_scratch: ScratchUniforms;`;
+}
+
+function emitBinding(
+  binding: BindDirective,
+  bindingNames: ReadonlyMap<string, string>,
+): string {
+  const access = binding.readOnly ? 'read' : 'read_write';
+  const elementType = binding.dtype === 'i32' ? 'i32' : binding.dtype === 'byte' ? 'u32' : 'f32';
+  const name = bindingNames.get(binding.name) ?? binding.name;
+  return `@group(0) @binding(${binding.slot}) var<storage, ${access}> ${name}: array<${elementType}>;`;
+}
+
+function mainSignature(parallelAxes: RegionVerdict['parallelAxes']): string {
+  const axes = new Set(parallelAxes.map((item) => item.axis));
+  const params = ['@builtin(global_invocation_id) gid: vec3<u32>'];
+  if (hasAxisPrefix(axes, 'local_')) {
+    params.push('@builtin(local_invocation_id) lid: vec3<u32>');
+  }
+  if (hasAxisPrefix(axes, 'workgroup_')) {
+    params.push('@builtin(workgroup_id) wid: vec3<u32>');
+  }
+  return `fn main(${params.join(', ')})`;
+}
+
+function hasAxisPrefix(axes: ReadonlySet<AxisFinal>, prefix: string): boolean {
+  for (const axis of axes) {
+    if (axis.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function orderMaps(maps: readonly MapDirective[], topoOrder: readonly string[]): MapDirective[] {
+  const byName = new Map(maps.map((map) => [map.var, map]));
+  const ordered: MapDirective[] = [];
+  const emitted = new Set<string>();
+  for (const name of topoOrder) {
+    const map = byName.get(name);
+    if (!map || emitted.has(name)) continue;
+    ordered.push(map);
+    emitted.add(name);
+  }
+  for (const map of maps) {
+    if (!emitted.has(map.var)) ordered.push(map);
+  }
+  return ordered;
+}
+
+function emitFormula(
+  rawFormula: string,
+  directive: MapDirective | RepeatDirective,
+  renameTable: Readonly<Record<string, string>>,
+  diagnostics: Diagnostic[],
+  regionId: string,
+): string {
+  validateFormula(rawFormula, directive, diagnostics, regionId);
+  let formula = renameFormulaIdentifiers(rawFormula, renameTable);
+  if (formula.includes('//')) {
+    formula = substituteBinaryOperator(formula, '//', (left, right) => `floor(${left} / ${right})`);
+    diagnostics.push({
+      severity: 'warn',
+      code: 'gpu.emitter_integer_division_substituted',
+      message: `integer division in '${directiveFormulaName(directive)}' was emitted as floor(a / b)`,
+      regionId,
+      blockId: directive.blockId,
+      line: directive.line,
+    });
+  }
+  if (formula.includes('^')) {
+    formula = substituteBinaryOperator(formula, '^', (left, right) => `exp(${left} * log(${right}))`);
+    diagnostics.push({
+      severity: 'warn',
+      code: 'gpu.emitter_generic_pow_substituted',
+      message: `generic exponentiation in '${directiveFormulaName(directive)}' was emitted with exp/log`,
+      regionId,
+      blockId: directive.blockId,
+      line: directive.line,
+    });
+  }
+  return castI32Calls(formula);
+}
+
+function directiveFormulaName(directive: MapDirective | RepeatDirective): string {
+  return directive.kind === 'map' ? directive.var : directive.name;
+}
+
+function validateFormula(
+  formula: string,
+  directive: MapDirective | RepeatDirective,
+  diagnostics: Diagnostic[],
+  regionId: string,
+): void {
+  const invalid = new Set<string>();
+  let offset = 0;
+  while (offset < formula.length) {
+    const remaining = formula.slice(offset);
+    const whitespace = remaining.match(/^\s+/);
+    if (whitespace) {
+      offset += whitespace[0].length;
+      continue;
+    }
+    const number = remaining.match(/^(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/);
+    if (number) {
+      offset += number[0].length;
+      continue;
+    }
+    const identifier = remaining.match(/^[A-Za-z_][A-Za-z0-9_]*/);
+    if (identifier) {
+      const token = identifier[0];
+      const after = formula.slice(offset + token.length);
+      if (/^\s*\(/.test(after) && !KNOWN_FORMULA_FUNCTIONS.has(token)) invalid.add(token);
+      offset += token.length;
+      continue;
+    }
+    const operator = remaining.match(/^(?:\/\/|<=|>=|==|!=|&&|\|\||[+\-*/%^<>=!(),.])/);
+    if (operator) {
+      offset += operator[0].length;
+      continue;
+    }
+    invalid.add(remaining[0] ?? '');
+    offset += 1;
+  }
+
+  for (const token of invalid) {
+    diagnostics.push({
+      severity: 'warn',
+      code: 'gpu.emitter_invalid_formula_token',
+      message: `formula '${directiveFormulaName(directive)}' contains unsupported token '${token}'`,
+      regionId,
+      blockId: directive.blockId,
+      line: directive.line,
+    });
+  }
+}
+
+function renameFormulaIdentifiers(
+  formula: string,
+  renameTable: Readonly<Record<string, string>>,
+): string {
+  return formula.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (identifier) => {
+    return renameTable[identifier] ?? identifier;
+  });
+}
+
+function substituteBinaryOperator(
+  formula: string,
+  operator: '//' | '^',
+  replacement: (left: string, right: string) => string,
+): string {
+  const operand =
+    '(?:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\([^()]*\\))?|(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?|\\([^()]*\\))';
+  const escaped = operator === '//' ? '\\/\\/' : '\\^';
+  const pattern = new RegExp(`(${operand})\\s*${escaped}\\s*(${operand})`);
+  let output = formula;
+  let match = pattern.exec(output);
+  while (match && match[1] !== undefined && match[2] !== undefined) {
+    output = `${output.slice(0, match.index)}${replacement(match[1], match[2])}${output.slice(match.index + match[0].length)}`;
+    match = pattern.exec(output);
+  }
+  return output;
+}
+
+function castI32Calls(formula: string): string {
+  const functionName = 'scratch_list_read_i32';
+  let output = formula;
+  let searchFrom = 0;
+  while (searchFrom < output.length) {
+    const start = output.indexOf(`${functionName}(`, searchFrom);
+    if (start < 0) break;
+    if (output.slice(Math.max(0, start - 4), start) === 'f32(') {
+      searchFrom = start + functionName.length;
+      continue;
+    }
+    const open = start + functionName.length;
+    const close = findClosingParen(output, open);
+    if (close < 0) break;
+    const call = output.slice(start, close + 1);
+    output = `${output.slice(0, start)}f32(${call})${output.slice(close + 1)}`;
+    searchFrom = close + 6;
+  }
+  return output;
+}
+
+function findClosingParen(value: string, openIndex: number): number {
+  let depth = 0;
+  for (let index = openIndex; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === '(') depth += 1;
+    else if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function dispatchPlan(
+  repeats: readonly RepeatDirective[],
+  verdict: RegionVerdict,
+  workgroupSize: Readonly<WorkgroupSize>,
+): string {
+  const dimensions = ['1', '1', '1'];
+  const formulas: string[][] = [[], [], []];
+  for (const repeat of repeats) {
+    const axis = verdict.axes[repeat.name]?.finalAxis ?? repeat.axis;
+    if (axis === 'sequential' || axis.startsWith('local_')) continue;
+    const dimension = axis.endsWith('_y') ? 1 : axis.endsWith('_z') ? 2 : 0;
+    const denominator = dimension === 0 ? workgroupSize.x : dimension === 1 ? workgroupSize.y : workgroupSize.z;
+    const formula = axis.startsWith('workgroup_')
+      ? repeat.formula
+      : `ceil(${repeat.formula} / ${denominator})`;
+    formulas[dimension]?.push(formula);
+  }
+  for (let index = 0; index < dimensions.length; index += 1) {
+    const values = formulas[index] ?? [];
+    if (values.length === 1) dimensions[index] = values[0] ?? '1';
+    else if (values.length > 1) dimensions[index] = `max(${values.join(', ')})`;
+  }
+  return `dispatchWorkgroups(${dimensions.join(', ')})`;
+}
+
+function findBodyStart(
+  regionBlock: RawBlock | undefined,
+  blocks: Readonly<Record<string, RawBlock>>,
+  regionBlockId: string,
+): string | null {
+  if (regionBlock) {
+    const substack = blockReference(regionBlock.inputs['SUBSTACK'], blocks);
+    if (substack) return substack;
+  }
+  for (const block of Object.values(blocks)) {
+    if (block?.parent === regionBlockId) return block.id;
+  }
+  return null;
+}
+
+function appendSequentialBody(
+  lines: string[],
+  bodyLines: readonly string[],
+  repeats: readonly RepeatDirective[],
+  context: EmitterContext,
+): void {
+  if (repeats.length === 0) {
+    for (const line of bodyLines) lines.push(`  ${line}`);
+    return;
+  }
+
+  let depth = 1;
+  for (const repeat of repeats) {
+    const name = context.renameTable[repeat.name] ?? repeat.name;
+    const formula = emitFormula(
+      repeat.formula,
+      repeat,
+      context.renameTable,
+      context.diagnostics,
+      context.regionId,
+    );
+    const indent = '  '.repeat(depth);
+    lines.push(
+      `${indent}// for (let ${name}: u32 = 0; ${name} < ${formula}; ${name} = ${name} + 1) {`,
+    );
+    lines.push(
+      `${indent}for (var ${name}: u32 = 0u; ${name} < u32(${formula}); ${name} = ${name} + 1u) {`,
+    );
+    depth += 1;
+  }
+  for (const line of bodyLines) lines.push(`${'  '.repeat(depth)}${line}`);
+  for (let index = repeats.length - 1; index >= 0; index -= 1) {
+    depth -= 1;
+    lines.push(`${'  '.repeat(depth)}}`);
+  }
+}
+
+function emitStatementChain(startId: string, context: EmitterContext): string[] {
+  const lines: string[] = [];
+  const visited = new Set<string>();
+  let currentId: string | null = startId;
+  while (currentId !== null && !visited.has(currentId)) {
+    visited.add(currentId);
+    const currentBlock: RawBlock | undefined = context.blocks[currentId];
+    if (!currentBlock) break;
+    lines.push(...emitStatement(currentBlock, context));
+    currentId = currentBlock.next;
+  }
+  return lines;
+}
+
+function emitStatement(block: RawBlock, context: EmitterContext): string[] {
+  if (block.opcode === 'data_setvariableto') return [];
+  if (block.opcode === 'data_replaceitemoflist') {
+    const statement = emitListWrite(block, context);
+    return statement ? [statement] : [];
+  }
+  if (BINARY_INPUTS[block.opcode] || block.opcode === 'operator_not' || block.opcode === 'data_itemoflist') {
+    return [`let __tw_expr_${shortHash(block.id)}: f32 = ${emitBlockExpression(block, context)};`];
+  }
+  diagnoseUnsupported(block, context);
+  return [];
+}
+
+function emitBlockExpression(block: RawBlock, context: EmitterContext): string {
+  if (context.expressionStack.has(block.id)) {
+    diagnoseUnsupported(block, context);
+    return '0.0';
+  }
+  context.expressionStack.add(block.id);
+  const expression = emitBlockExpressionInner(block, context);
+  context.expressionStack.delete(block.id);
+  return expression;
+}
+
+function emitBlockExpressionInner(block: RawBlock, context: EmitterContext): string {
+  const binaryInputs = BINARY_INPUTS[block.opcode];
+  if (binaryInputs) {
+    const left = emitInput(block.inputs[binaryInputs[0]], context);
+    const right = emitInput(block.inputs[binaryInputs[1]], context);
+    switch (block.opcode) {
+      case 'operator_add':
+        return `(${left} + ${right})`;
+      case 'operator_subtract':
+        return `(${left} - ${right})`;
+      case 'operator_multiply':
+        return `(${left} * ${right})`;
+      case 'operator_divide':
+        return `scratch_div(${left}, ${right})`;
+      case 'operator_mod':
+        return `scratch_mod(${left}, ${right})`;
+      case 'operator_gt':
+        return `select(0.0, 1.0, ${left} >= ${right})`;
+      case 'operator_lt':
+        return `select(0.0, 1.0, ${left} <= ${right})`;
+      case 'operator_equals':
+        return `select(0.0, 1.0, ${left} == ${right})`;
+      case 'operator_and':
+        return `select(0.0, 1.0, scratch_bool(${left}) * scratch_bool(${right}) != 0.0)`;
+      case 'operator_or':
+        return `select(0.0, 1.0, max(scratch_bool(${left}), scratch_bool(${right})) != 0.0)`;
+      default:
+        break;
+    }
+  }
+  if (block.opcode === 'operator_not') {
+    const operand = emitInput(block.inputs['OPERAND'], context);
+    return `select(1.0, 0.0, scratch_bool(${operand}) != 0.0)`;
+  }
+  if (block.opcode === 'data_itemoflist') return emitListRead(block, context);
+  if (isNumberReporter(block.opcode)) return emitNumberField(block);
+  if (block.opcode === 'data_variable') {
+    const variable = fieldName(block.fields['VARIABLE']);
+    if (variable && context.mapNames.has(variable)) {
+      const name = context.renameTable[variable] ?? variable;
+      return context.sequentialNames.has(variable) ? `f32(${name})` : name;
+    }
+  }
+  diagnoseUnsupported(block, context);
+  return '0.0';
+}
+
+function emitInput(input: unknown, context: EmitterContext): string {
+  const reference = blockReference(input, context.blocks);
+  if (reference) {
+    const block = context.blocks[reference];
+    if (block) return emitBlockExpression(block, context);
+  }
+  const literal = inputLiteral(input, context.blocks);
+  if (typeof literal === 'number') return formatF32(literal);
+  if (typeof literal === 'string') {
+    const numeric = Number(literal);
+    if (literal.trim().length > 0 && !Number.isNaN(numeric)) return formatF32(numeric);
+    const renamed = context.renameTable[literal];
+    if (renamed) return renamed;
+    if (context.mapNames.has(literal)) return literal;
+  }
+  return '0.0';
+}
+
+function blockReference(
+  input: unknown,
+  blocks: Readonly<Record<string, RawBlock>>,
+): string | null {
+  if (typeof input === 'string' && blocks[input]) return input;
+  if (Array.isArray(input)) {
+    for (const item of input.slice(1)) {
+      const reference = blockReference(item, blocks);
+      if (reference) return reference;
+    }
+    return null;
+  }
+  if (!input || typeof input !== 'object') return null;
+  const value = input as Record<string, unknown>;
+  for (const key of ['id', 'block', 'shadow']) {
+    const candidate = value[key];
+    if (typeof candidate === 'string' && blocks[candidate]) return candidate;
+  }
+  return blockReference(value['value'], blocks);
+}
+
+function inputLiteral(
+  input: unknown,
+  blocks: Readonly<Record<string, RawBlock>>,
+): string | number | null {
+  if (typeof input === 'number') return input;
+  if (typeof input === 'string') return blocks[input] ? null : input;
+  if (Array.isArray(input)) {
+    for (let index = input.length - 1; index >= 0; index -= 1) {
+      const literal = inputLiteral(input[index], blocks);
+      if (literal !== null) return literal;
+    }
+    return null;
+  }
+  if (!input || typeof input !== 'object') return null;
+  const value = input as Record<string, unknown>;
+  for (const key of ['value', 'text']) {
+    const literal = inputLiteral(value[key], blocks);
+    if (literal !== null) return literal;
+  }
+  return null;
+}
+
+function emitListRead(block: RawBlock, context: EmitterContext): string {
+  const binding = bindingForList(block, context);
+  if (!binding) {
+    diagnoseUnsupported(block, context);
+    return 'scratch_div(0.0, 0.0)';
+  }
+  const index = emitInput(block.inputs['INDEX'], context);
+  const storageName = context.bindingNames.get(binding.name) ?? binding.name;
+  const lengthName = context.lengthNames.get(binding.name) ?? `${storageName}_length`;
+  const checkedIndex = `scratch_index_clamp(${index}, u_scratch.${lengthName})`;
+  if (binding.dtype === 'f32') {
+    return `scratch_list_read_f32(&${storageName}, ${checkedIndex}, u_scratch.${lengthName})`;
+  }
+  if (binding.dtype === 'i32') {
+    return `f32(scratch_list_read_i32(&${storageName}, ${checkedIndex}, u_scratch.${lengthName}))`;
+  }
+  diagnoseUnsupported(block, context);
+  return 'scratch_div(0.0, 0.0)';
+}
+
+function emitListWrite(block: RawBlock, context: EmitterContext): string | null {
+  const binding = bindingForList(block, context);
+  if (!binding || binding.readOnly || binding.dtype !== 'f32') {
+    diagnoseUnsupported(block, context);
+    return null;
+  }
+  const index = emitInput(block.inputs['INDEX'], context);
+  const value = emitInput(block.inputs['ITEM'], context);
+  const storageName = context.bindingNames.get(binding.name) ?? binding.name;
+  const lengthName = context.lengthNames.get(binding.name) ?? `${storageName}_length`;
+  return `scratch_list_write_f32(&${storageName}, scratch_index_clamp(${index}, u_scratch.${lengthName}), u_scratch.${lengthName}, ${value});`;
+}
+
+function bindingForList(block: RawBlock, context: EmitterContext): BindDirective | undefined {
+  const listName = fieldName(block.fields['LIST']);
+  if (listName) {
+    const exact = context.bindings.find((binding) => binding.name === listName);
+    if (exact) return exact;
+  }
+  return context.bindings.length === 1 ? context.bindings[0] : undefined;
+}
+
+function fieldName(field: unknown): string | null {
+  if (typeof field === 'string') return field;
+  if (Array.isArray(field)) {
+    const first = field[0];
+    return typeof first === 'string' ? first : null;
+  }
+  if (!field || typeof field !== 'object') return null;
+  const value = field as Record<string, unknown>;
+  for (const key of ['value', 'name', 'id']) {
+    if (typeof value[key] === 'string') return value[key] as string;
+  }
+  return null;
+}
+
+function isNumberReporter(opcode: string): boolean {
+  return (
+    opcode === 'math_number' ||
+    opcode === 'math_integer' ||
+    opcode === 'math_whole_number' ||
+    opcode === 'math_positive_number' ||
+    opcode === 'math_angle'
+  );
+}
+
+function emitNumberField(block: RawBlock): string {
+  const raw = fieldName(block.fields['NUM']);
+  if (raw === null) return '0.0';
+  const number = Number(raw);
+  return Number.isNaN(number) ? '0.0' : formatF32(number);
+}
+
+function formatF32(value: number): string {
+  if (Number.isNaN(value)) return 'scratch_div(0.0, 0.0)';
+  if (value === Number.POSITIVE_INFINITY) return 'scratch_div(1.0, 0.0)';
+  if (value === Number.NEGATIVE_INFINITY) return 'scratch_div(-1.0, 0.0)';
+  if (Object.is(value, -0)) return '-0.0';
+  return Number.isInteger(value) ? `${value}.0` : String(value);
+}
+
+function diagnoseUnsupported(block: RawBlock, context: EmitterContext): void {
+  if (context.diagnosedBlocks.has(block.id)) return;
+  context.diagnosedBlocks.add(block.id);
+  context.diagnostics.push({
+    severity: 'warn',
+    code: 'gpu.emitter_unsupported_opcode',
+    message: `opcode '${block.opcode}' is not supported by the WGSL emitter`,
+    regionId: context.regionId,
+    blockId: block.id,
+  });
+}
+
+function shortHash(value: string): string {
+  return hashedIdentifier(value, 0).slice(-8);
+}
