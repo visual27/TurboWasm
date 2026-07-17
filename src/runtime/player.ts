@@ -29,6 +29,22 @@ import {
 } from '@/runtime/tw-wasm/applyTurboWasmAcceleration';
 import { detectCapabilities, type RuntimeCapabilities } from '@/runtime/tw-wasm/capabilities';
 import { initWasmCollision } from '@/runtime/tw-wasm/wasm-collision-client';
+import {
+  applyGpuKernels,
+  __getGpuKernelForBrowserVerify,
+  __uninstallGpuKernelRegistryForTesting,
+} from '@/runtime/gpu-kernel/apply-gpu-kernels';
+import { initializeGpuKernels } from '@/runtime/gpu-kernel/initialize-gpu-kernels';
+import { KernelRegistry } from '@/runtime/gpu-kernel/kernel-registry';
+import { ListBufferPool } from '@/runtime/gpu-kernel/list-buffer-binding';
+import { useErrorLogStore } from '@/stores/useErrorLogStore';
+import {
+  collectRegionVerdictsFromArrayBuffer,
+} from '@/runtime/gpu-kernel/region-verdict-pipeline';
+import type {
+  ParsedProject,
+  RawBlock,
+} from '@/runtime/gpu-kernel/types';
 
 let attachedContainer: HTMLElement | null = null;
 let attachedScaffolding: ScaffoldingInstance | null = null;
@@ -566,11 +582,16 @@ function attachedScaffoldingHasVm(scaffolding: ScaffoldingInstance): boolean {
     const renderer = (attachedScaffolding?.renderer ?? null) as
       | (Record<string, unknown> & { _twWasmIsTouchingDrawables?: unknown })
       | null;
+    const kernelRegistry = activeGpuRegistry
+      ? __getGpuKernelForBrowserVerify(activeGpuRegistry)
+      : { size: 0, jsOnly: 0, canonicalKeys: [] };
     (window as unknown as { __turbowasm: unknown }).__turbowasm = {
       scaffolding: attachedScaffolding,
       renderer,
       capabilities: runtimeCapabilities,
       performanceMode: useSettingsStore.getState().performanceMode,
+      kernelRegistry,
+      enableGpuKernels: currentAdvanced?.enableGpuKernels ?? true,
     };
   }
 
@@ -1297,6 +1318,14 @@ export async function loadProjectFromArrayBuffer(
 
   const token = ++projectLoadToken;
   try {
+    // GPU compute kernel pipeline (M6): pre-parse the project for
+    // `@compute` regions, run the M3 D1/D2/D3 verdicts on each, then
+    // hand the resulting RegionVerdicts to `initializeGpuKernels`
+    // (M5). The registry + pool install via `applyGpuKernels` below
+    // after the VM is loaded so the M2 hook in scratch3_control.js
+    // can find its lookup.
+    await bootstrapGpuKernels(loadBuf);
+
     await attachedScaffolding.loadProject(loadBuf);
     if (token !== projectLoadToken) return;
     setCloudProvider(getCloudProvider());
@@ -1447,4 +1476,274 @@ export async function loadProjectFromId(
 
 export function isAttached(): boolean {
   return attachedScaffolding !== null;
+}
+
+/**
+ * GPU compute kernel bootstrap (M6): dispatched from
+ * `loadProjectFromArrayBuffer` before the VM parses the project. We
+ * pre-parse here so the M2 hook can already see kernels by the time
+ * the VM reaches the first `@compute` repeat block.
+ *
+ * Per spec §7.1 the pipeline is sync-wrapped-in-async — pre-compile
+ * may be async but the per-dispatch path stays sync (handled in M5).
+ * We also forward M3/M5 diagnostics to `useErrorLogStore` per spec
+ * §9. Each entry is gated by `defaultMaxLogs=5`; we surface the
+ * first five region demotes as warn, the rest as info. The store
+ * already enforces this fallback (see ErrorLogPanel — info entries
+ * don't show in the panel by default).
+ */
+let activeGpuRegistry: KernelRegistry | null = null;
+let activeGpuPool: ListBufferPool | null = null;
+/**
+ * Test-only handle to inspect the active GPU pool. Production code
+ * consumes `activeGpuPool` indirectly via `applyGpuKernels`; tests
+ * reach into the pool to validate rebind behaviour after a list
+ * resize.
+ */
+export function __getGpuPoolForTesting(): ListBufferPool | null {
+  return activeGpuPool;
+}
+/**
+ * Test-only handle to inspect the active GPU registry.
+ */
+export function __getGpuRegistryForTesting(): KernelRegistry | null {
+  return activeGpuRegistry;
+}
+
+async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
+  // Always start clean: a previous project might have leaked a
+  // dispatcher into `window.__turboWasmGpuKernelLookup`. Without
+  // this reset, kernels from project A would persist into B until
+  // the page reloads.
+  if (activeGpuRegistry) {
+    activeGpuRegistry.clearForProjectReload();
+  }
+  __uninstallGpuKernelRegistryForTesting();
+  activeGpuRegistry = null;
+  activeGpuPool = null;
+
+  const settings = useSettingsStore.getState();
+  const performanceMode = settings.performanceMode;
+  const enableGpuKernels = currentAdvanced?.enableGpuKernels ?? true;
+
+  // Short-circuit when the user has disabled the path explicitly.
+  if (!enableGpuKernels) {
+    // eslint-disable-next-line no-console
+    console.log('[gpu-kernel] enableGpuKernels=false; skipping @compute pre-parse');
+    return;
+  }
+  if (performanceMode === 'legacy-only') {
+    // eslint-disable-next-line no-console
+    console.log('[gpu-kernel] performanceMode=legacy-only; skipping @compute pre-parse');
+    return;
+  }
+
+  // Parse the buffer into a ParsedProject-shape so M3 + M5 can drive the
+  // pipeline. We do NOT use vendored scratch-vm here — the vendored VM
+  // would also work but its deserializeProject has side effects we don't
+  // want twice. JSZip is already a project dep (test fixtures use it).
+  const parsedProject = await parseProjectJsonFromArrayBuffer(buf);
+  if (!parsedProject) {
+    // Couldn't parse the SB3 — let the VM try and surface the real error.
+    return;
+  }
+
+  const parsed = toParsedProject(parsedProject);
+  const { verdicts, allDirectives } = collectRegionVerdictsFromArrayBuffer(parsed);
+  if (verdicts.length === 0) return;
+
+  // Surface M3 diagnostics. Cap to avoid log spam on heavily demoted
+  // projects (defaultMaxLogs=5).
+  const warn = (msg: string): void => {
+    useErrorLogStore.getState().push('warn', msg);
+  };
+  const info = (msg: string): void => {
+    useErrorLogStore.getState().push('info', msg);
+  };
+  let regionDiagCount = 0;
+  const REGION_DIAG_CAP = 5;
+  for (const verdict of verdicts) {
+    for (const d of verdict.diagnostics) {
+      const msg = `[${d.code || 'gpu.diagnostic'}] ${d.message}`;
+      if (d.severity === 'warn' && regionDiagCount < REGION_DIAG_CAP) {
+        warn(msg);
+        regionDiagCount += 1;
+      } else if (d.severity === 'warn' && regionDiagCount >= REGION_DIAG_CAP) {
+        info(msg);
+      } else if (d.severity === 'info') {
+        info(msg);
+      }
+    }
+  }
+
+  // M5 boot — initialise the WebGPU device, build pipelines, install
+  // the M2 hook lookup table.
+  const runtimeState = computeInitialListLengths(parsedProject, settings);
+  const result = await initializeGpuKernels({
+    regions: verdicts,
+    parsedProject: parsed,
+    runtimeState,
+    performanceMode,
+    enabled: true,
+  });
+  activeGpuRegistry = result.registry;
+  activeGpuPool = result.pool;
+  // The M5 contract uses `GpuLikeDispatchDevice` (a wider shape than
+  // `GpuLikeDevice`), but `initializeGpuKernels` only constrains it to
+  // the narrower `GpuLikeDevice` so test doubles can populate just the
+  // createBuffer / queue fields. In production the WebGPU device has
+  // the createCommandEncoder factory too, so the cast is safe; in
+  // jsdom / non-WebGPU environments the dispatcher short-circuits on
+  // `device === null` before touching this shape (see
+  // `__dispatch-kernel-sync.ts`).
+  const dispatchDevice =
+    result.device === null
+      ? null
+      : (result.device as unknown as Parameters<typeof applyGpuKernels>[0]['device']);
+  applyGpuKernels({
+    enabled: true,
+    performanceMode,
+    registry: result.registry,
+    pool: result.pool,
+    device: dispatchDevice,
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[gpu-kernel] bootstrapped ${verdicts.length} region(s); ${allDirectives.length} directive(s); ` +
+      `device=${result.device ? 'available' : 'null'}; canonicalKeys=${result.registry.list().map((k) => k.canonicalKey).join(',') || '(none)'}`,
+  );
+}
+
+async function parseProjectJsonFromArrayBuffer(
+  buf: ArrayBuffer,
+): Promise<ParsedProjectShape | null> {
+  // Lightweight SB3 parser: read the first zip entry matching project.json,
+  // JSON.parse it, normalise the comments + blocks into the shape M3 expects.
+  // We keep it minimal (no asset decompression) because M3 only needs the
+  // block tree + comments.
+  try {
+    const jszipModule = await import('jszip');
+    const JSZipCtor: new (b: ArrayBuffer) => {
+      file(name: string): { async(type: 'string'): Promise<string> } | null;
+    } =
+      ((jszipModule as { default?: unknown }).default as new (b: ArrayBuffer) => {
+        file(name: string): { async(type: 'string'): Promise<string> } | null;
+      }) ??
+      (jszipModule as unknown as new (b: ArrayBuffer) => {
+        file(name: string): { async(type: 'string'): Promise<string> } | null;
+      });
+    const zip = new JSZipCtor(buf);
+    const projectJson = (await zip.file('project.json')?.async('string')) ?? null;
+    if (!projectJson) return null;
+    const json = JSON.parse(projectJson) as {
+      targets?: Array<{
+        id?: string;
+        name?: string;
+        isStage?: boolean;
+        blocks?: Record<string, unknown>;
+      }>;
+      comments?: Record<string, { blockId: string; text: string }>;
+    };
+    const targets = json.targets ?? [];
+    const comments = json.comments ?? {};
+    return { json, targets, comments };
+  } catch {
+    return null;
+  }
+}
+
+interface ParsedProjectShape {
+  json: {
+    targets?: Array<{
+      id?: string;
+      name?: string;
+      isStage?: boolean;
+      blocks?: Record<string, unknown>;
+    }>;
+    comments?: Record<string, { blockId: string; text: string }>;
+  };
+  targets: Array<{
+    id?: string;
+    name?: string;
+    isStage?: boolean;
+    blocks?: Record<string, unknown>;
+  }>;
+  comments: Record<string, { blockId: string; text: string }>;
+}
+
+/**
+ * Build the parsed project shape that M3 expects. We coerce the
+ * scratch-vm-style comments and blocks into the `ParsedProject`
+ * shape defined in `types.ts` so `extractRegions` / `analyzeAxes` /
+ * etc. work without depending on vendored scratch-vm at runtime.
+ */
+function toParsedProject(shape: ParsedProjectShape): ParsedProject {
+  const parsedComments: Record<string, { blockId: string; text: string }> = {};
+  for (const [cid, c] of Object.entries(shape.comments)) {
+    if (!c) continue;
+    if (typeof c.blockId !== 'string' || typeof c.text !== 'string') continue;
+    parsedComments[cid] = { blockId: c.blockId, text: c.text };
+  }
+
+  const targets = shape.targets
+    .map((target, idx) => {
+      const id =
+        typeof target.id === 'string' && target.id.length > 0 ? target.id : `t${idx}`;
+      const blockMap: Record<string, RawBlock> = {};
+      for (const [bid, rawBlock] of Object.entries(target.blocks ?? {})) {
+        if (!rawBlock || typeof rawBlock !== 'object') continue;
+        const block = rawBlock as {
+          opcode?: unknown;
+          next?: unknown;
+          parent?: unknown;
+          inputs?: unknown;
+          fields?: unknown;
+          mutation?: unknown;
+        };
+        blockMap[bid] = {
+          id: bid,
+          opcode: typeof block.opcode === 'string' ? block.opcode : '',
+          next: typeof block.next === 'string' ? block.next : null,
+          parent: typeof block.parent === 'string' ? block.parent : null,
+          inputs: isRecord(block.inputs) ? block.inputs : {},
+          fields: isRecord(block.fields) ? block.fields : {},
+          mutation: block.mutation,
+        };
+      }
+      const parsedTarget: ParsedProject['targets'][number] = {
+        id,
+        isStage: Boolean(target.isStage),
+        blocks: blockMap,
+      };
+      return parsedTarget;
+    })
+    .filter((t) => Object.keys(t.blocks).length > 0 || t.isStage);
+
+  return { targets, comments: parsedComments };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function computeInitialListLengths(
+  shape: ParsedProjectShape,
+  _settings: unknown,
+): { listLengths: Record<string, number> } {
+  // Walk the project JSON's variables for any list — the @bind name
+  // matches the lower-cased list name. For projects that have no
+  // @compute regions this stays empty (initialisation is lazy in M5).
+  const listLengths: Record<string, number> = {};
+  for (const target of shape.targets ?? []) {
+    const vars = (target as { variables?: Record<string, { name?: string; type?: string; value?: unknown }> })
+      .variables;
+    if (!vars) continue;
+    for (const [, v] of Object.entries(vars)) {
+      if (!v || v.type !== 'list') continue;
+      if (typeof v.name !== 'string') continue;
+      listLengths[v.name.toLowerCase()] = Array.isArray(v.value) ? v.value.length : 0;
+    }
+  }
+  return { listLengths };
 }

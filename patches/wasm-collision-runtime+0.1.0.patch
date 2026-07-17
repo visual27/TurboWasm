@@ -1,11 +1,10 @@
 diff --git a/node_modules/scratch-render/src/RenderWebGL.js b/node_modules/scratch-render/src/RenderWebGL.js
-index 0000000..0000001 100644
 --- a/node_modules/scratch-render/src/RenderWebGL.js
 +++ b/node_modules/scratch-render/src/RenderWebGL.js
-@@ -1061,6 +1061,14 @@ class RenderWebGL extends EventEmitter {
+@@ -1061,6 +1061,14 @@
      isTouchingColor (drawableID, color3b, mask3b) {
          const candidates = this._candidatesTouching(drawableID, this._visibleDrawList);
- 
+
 +        // TurboWasm: optional WASM SIMD acceleration. The host application
 +        // (TurboWasm Viewer) installs a hook on `this._twWasmIsTouchingColor`
 +        // at runtime; when present we delegate and return its boolean result.
@@ -17,17 +16,18 @@ index 0000000..0000001 100644
          let bounds;
          if (colorMatches(color3b, this._backgroundColor3b, 0)) {
              // If the color we're checking for is the background color, don't confine the check to
-@@ -1253,8 +1261,13 @@ class RenderWebGL extends EventEmitter {
+@@ -1253,8 +1261,13 @@
      isTouchingDrawables (drawableID, candidateIDs = this._drawList) {
-         // if we are invisible we don't touch anything.
+         // if we are invisible we never touch anything.
          if (!this._allDrawables[drawableID]._visible) {
              return false;
          }
-+
+
 +        // TurboWasm: optional WASM SIMD acceleration. See isTouchingColor above.
 +        if (typeof this._twWasmIsTouchingDrawables === 'function') {
 +            try { return !!this._twWasmIsTouchingDrawables(this, drawableID, candidateIDs); } catch (e) {}
 +        }
- 
++
          const candidates = this._candidatesTouching(drawableID,
              // even if passed an invisible drawable, we will NEVER touch it!
+             candidateIDs.filter(id => this._allDrawables[id]._visible));
