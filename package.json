@@ -23,7 +23,9 @@
     "fixtures:setup": "node scripts/ensure-test-fixtures.mjs",
     "pretest": "node scripts/ensure-test-fixtures.mjs",
     "make:svg-sprite-fixture": "node scripts/make-svg-sprite-fixture.mjs",
-    "verify:turbowarp-equivalent": "node scripts/verify-turbowarp-equivalent.mjs"
+    "verify:turbowarp-equivalent": "node scripts/verify-turbowarp-equivalent.mjs",
+    "verify:gpu-kernel": "node scripts/verify-gpu-kernel.mjs",
+    "bench:gpu-kernel": "node scripts/bench-gpu-kernel-init.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "1.1.2",

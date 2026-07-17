@@ -54,6 +54,7 @@ export const FIXTURE_GENERATORS = {
   'repro.sb3': () => import('./make-repro-fixture.mjs').then((m) => m.makeRepro()),
   'stage-size-sprite-repro.sb3': () =>
     import('./make-stage-size-sprite-repro.mjs').then((m) => m.writeStageSizeSpriteRepro()),
+  'expo-fixture.sb3': () => import('./make-expo-fixture.mjs').then((m) => m.makeExpoFixture()),
 };
 
 /**
