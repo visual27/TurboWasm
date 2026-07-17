@@ -16,6 +16,7 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   stageHeight: 360,
   extensionSandboxMode: 'worker',
   turboWasmAccelerationEnabled: true,
+  enableGpuKernels: true,
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
@@ -47,9 +48,14 @@ export const STORAGE_KEYS = {
 // renderer (Phase 3) — both were never wired beyond feature detection.
 // v5 → v6 migration downgrades any `performanceMode: 'force-webgpu'`
 // payload to `'auto'` so a user who had pinned WebGPU before the
-// removal does not silently end up on a no-op path. Older payloads are
-// read and migrated on the fly — see `src/lib/persistence.ts`.
-export const STORAGE_VERSION = 6;
+// removal does not silently end up on a no-op path. Bumped to 7 when
+// `advanced.enableGpuKernels` was added for the GPU compute kernel
+// pipeline (M1 of the GPU kernel plan, see
+// `src/runtime/gpu-kernel/`). v6 → v7 migration fills the field with
+// `true` for existing payloads; the field is otherwise identical in
+// shape to `turboWasmAccelerationEnabled`. Older payloads are read and
+// migrated on the fly — see `src/lib/persistence.ts`.
+export const STORAGE_VERSION = 7;
 
 /**
  * Default value for `performanceMode` when no user preference has been

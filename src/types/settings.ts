@@ -89,6 +89,29 @@ export interface AdvancedSettings {
    * so the user cannot accidentally lock themselves into the legacy path.
    */
   turboWasmAccelerationEnabled: boolean;
+  /**
+   * Whether compute-kernel regions marked with the `@compute` comment DSL
+   * (see `src/runtime/gpu-kernel/comment-parser.ts`) are offloaded to
+   * WebGPU compute shaders.
+   *
+   * `true` (default): the pre-parse pipeline parses the DSL, runs the
+   * D1/D2/D3 static analyses, and tries to install WebGPU compute
+   * pipelines for every eligible region. Failures fall back to the JS
+   * path (D1/D3 demote the whole region; D4 demotes at runtime when the
+   * device is lost).
+   *
+   * `false`: the pre-parse pipeline still runs (so D1 demoted regions
+   * surface in the ErrorLogPanel as informational entries), but no
+   * pipelines are created and the VM hook short-circuits straight to the
+   * JS path.
+   *
+   * Ignored when `performanceMode === 'legacy-only'` (the existing
+   * `selectBackendTier` early-return makes the GPU code path unreachable).
+   * `saveAdvancedAsDefault()` forces this back to `true` for the same
+   * reason as `turboWasmAccelerationEnabled`: the user cannot lock
+   * themselves off the GPU path.
+   */
+  enableGpuKernels: boolean;
 }
 
 /**

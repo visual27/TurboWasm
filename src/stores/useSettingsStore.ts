@@ -427,12 +427,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // already persisted via `setVolume`; `disableCompiler` is always
     // forced off and `turboWasmAccelerationEnabled` is always forced on
     // so a user who disabled acceleration cannot lock themselves into the
-    // legacy path via "Set as default".
+    // legacy path via "Set as default". Same applies to
+    // `enableGpuKernels`: turning the GPU pipeline off via "Set as
+    // default" would lock the user out of every `@compute` region.
     const { advanced } = get();
     const snapshot: AdvancedSettings = {
       ...advanced,
       disableCompiler: false,
       turboWasmAccelerationEnabled: true,
+      enableGpuKernels: true,
     };
     // A non-30 runtime FPS at "Set as default" time is also the user's
     // explicit preference — keep the Alt+Flag latched value in sync so

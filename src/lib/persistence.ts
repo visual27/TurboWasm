@@ -110,6 +110,13 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
       typeof r.turboWasmAccelerationEnabled === 'boolean'
         ? r.turboWasmAccelerationEnabled
         : base.turboWasmAccelerationEnabled,
+    // v6 → v7 migration: a previous payload might not have
+    // `enableGpuKernels`. Default to `true` (same default as
+    // `turboWasmAccelerationEnabled`) so the user does not silently land
+    // on the JS path. Following the spec, `saveAdvancedAsDefault()` will
+    // also force this field back to `true` on the saved-default side.
+    enableGpuKernels:
+      typeof r.enableGpuKernels === 'boolean' ? r.enableGpuKernels : base.enableGpuKernels,
   };
 }
 
@@ -190,7 +197,8 @@ export function readSettings(): SettingsStoreShape {
     // `performanceMode`. v4 added `advanced.svgAccelerationMode` (later
     // retired in v6). v5 added the top-level `userExplicitFps`. v6
     // dropped `svgAccelerationMode` (and its top-level mirror) and the
-    // `'force-webgpu'` performance mode. Anything outside this range
+    // `'force-webgpu'` performance mode. v7 added
+    // `advanced.enableGpuKernels`. Anything outside this range
     // (including untagged / wrong-version / corrupt blobs) resets to
     // defaults.
     if (

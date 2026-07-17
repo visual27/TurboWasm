@@ -426,6 +426,18 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
           ariaLabel="Performance mode"
         />
       </FieldRow>
+      <FieldRow
+        id="enable-gpu-kernels"
+        label="GPU Kernels"
+        description="Offload @compute regions (marked in a project via the // @compute comment DSL) to WebGPU compute shaders. Falls back to the JS path when WebGPU is unavailable, when a region is unsupported (D1/D2/D3 demote), or when Performance Mode is 'legacy-only'."
+      >
+        <SwitchField
+          id="enable-gpu-kernels"
+          checked={advanced.enableGpuKernels}
+          onChange={(v) => patch({ enableGpuKernels: v })}
+          ariaLabel="GPU Kernels toggle"
+        />
+      </FieldRow>
     </SettingsSection>
   );
 });

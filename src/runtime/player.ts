@@ -644,6 +644,7 @@ function getCurrentAdvanced(): AdvancedSettings {
     stageHeight: 360,
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
+    enableGpuKernels: true,
   };
 }
 
@@ -662,6 +663,7 @@ function defaultAdvanced(): AdvancedSettings {
     stageHeight: 360,
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
+    enableGpuKernels: true,
   };
 }
 
