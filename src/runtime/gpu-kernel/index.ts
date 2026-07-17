@@ -1,10 +1,10 @@
 /**
  * Public re-exports for the GPU compute kernel pipeline (M3 — DSL parser
- * + D1/D2/D3 static analysis).
+ * + D1/D2/D3 static analysis, M4 — WGSL emitter, M5 — runtime dispatch).
  *
- * Higher layers (M4 wgsl-emitter, M5 kernel-registry) import the
- * building blocks from here so the M3 module boundaries are not
- * accidentally crossed.
+ * Higher layers (the runtime player + vendored scratch-vm hook in M2)
+ * import the building blocks from here so the per-milestone module
+ * boundaries are not accidentally crossed.
  */
 
 export * from './types';
@@ -31,3 +31,54 @@ export type {
   WorkgroupLimits,
   WorkgroupSize,
 } from './wgsl-emitter';
+export {
+  analyzeBufferAccesses,
+  analyzeRegionDependencies,
+  canonicalKeyOf,
+  KernelRegistry,
+} from './kernel-registry';
+export type { BufferAccessEntry, DispatchOutcome, Kernel } from './kernel-registry';
+export {
+  BYTES_PER_ELEMENT,
+  GPU_BUFFER_USAGE_COPY_DST,
+  GPU_BUFFER_USAGE_COPY_SRC,
+  GPU_BUFFER_USAGE_STORAGE,
+  ListBufferPool,
+} from './list-buffer-binding';
+export type {
+  GpuLikeBuffer,
+  GpuLikeDevice,
+  GpuLikeQueue,
+  ListBufferBinding,
+  ListBufferDtype,
+  ListBufferPoolOptions,
+} from './list-buffer-binding';
+export {
+  completeReadback,
+  dispatchKernelSync,
+} from './__dispatch-kernel-sync';
+export type {
+  DispatchContext,
+  DispatchResult,
+  GPipeline,
+  GpuLikeCommandEncoder,
+  GpuLikeComputePassEncoder,
+  GpuLikeDispatchDevice,
+} from './__dispatch-kernel-sync';
+export {
+  applyGpuKernels,
+  __getGpuKernelForBrowserVerify,
+  __installGpuKernelRegistryForTesting,
+  __setGpuKernelLookup,
+  __uninstallGpuKernelRegistryForTesting,
+} from './apply-gpu-kernels';
+export type {
+  ApplyGpuKernelsOptions,
+  ApplyGpuKernelsResult,
+  LookupFn,
+} from './apply-gpu-kernels';
+export {
+  initializeGpuKernels,
+  __resetAdapterUnavailableWarningForTesting,
+} from './initialize-gpu-kernels';
+export type { InitializeInput, InitializeResult, RequestAdapterFn } from './initialize-gpu-kernels';
