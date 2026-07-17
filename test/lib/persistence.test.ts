@@ -32,7 +32,6 @@ describe('persistence', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
       allowedExtensionUrls: ['https://example.com/a.js'],
       performanceMode: 'auto',
-      svgAccelerationMode: 'off',
       userExplicitFps: null,
     });
     const settings = readSettings();
@@ -97,7 +96,6 @@ describe('persistence', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
       performanceMode: 'auto',
-      svgAccelerationMode: 'off',
       userExplicitFps: null,
     });
     const settings = readSettings();
@@ -105,8 +103,6 @@ describe('persistence', () => {
   });
 
   it('falls back to safe defaults when extension fields are missing or invalid', () => {
-    // Simulate a snapshot from before the extensionSandboxMode field
-    // existed (the key is absent entirely).
     localStorage.setItem(
       STORAGE_KEYS.settings,
       JSON.stringify({
@@ -123,7 +119,6 @@ describe('persistence', () => {
     const settings = readSettings();
     expect(settings.advanced.extensionSandboxMode).toBe('worker');
 
-    // Now simulate the key being present but with a bogus value.
     localStorage.setItem(
       STORAGE_KEYS.settings,
       JSON.stringify({
@@ -145,9 +140,6 @@ describe('persistence', () => {
   });
 
   it('silently drops the legacy allowProjectExtensions field', () => {
-    // Snapshots from before the rewrite stored allowProjectExtensions
-    // inside `advanced`. The new shape no longer has that field; the
-    // migration just ignores it.
     localStorage.setItem(
       STORAGE_KEYS.settings,
       JSON.stringify({
@@ -167,7 +159,8 @@ describe('persistence', () => {
     const settings = readSettings();
     expect(settings.theme).toBe('dark');
     // The legacy field is no longer part of the typed shape — verify
-    // the surviving keys are exactly the post-rewrite ones.
+    // the surviving keys are exactly the post-v6 ones (the retired
+    // `svgAccelerationMode` is no longer present).
     expect(Object.keys(settings.advanced).sort()).toEqual(
       [
         'disableCompiler',
@@ -180,7 +173,6 @@ describe('persistence', () => {
         'removeMiscLimits',
         'stageHeight',
         'stageWidth',
-        'svgAccelerationMode',
         'turboMode',
         'turboWasmAccelerationEnabled',
         'warpTimer',
@@ -197,11 +189,10 @@ describe('persistence', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [
         'https://example.com/a.js',
-        'https://example.com/a.js', // duplicate
-        '  https://example.com/b.js  ', // trimmed
+        'https://example.com/a.js',
+        '  https://example.com/b.js  ',
       ],
       performanceMode: 'auto',
-      svgAccelerationMode: 'off',
       userExplicitFps: null,
     });
     const settings = readSettings();
@@ -268,8 +259,6 @@ describe('persistence', () => {
     });
 
     it('forces disableCompiler off in both advanced and defaultAdvanced on v1 load', () => {
-      // A user previously persisted disableCompiler: true under v1. After
-      // the schema split the toggle must always start as false.
       localStorage.setItem(
         STORAGE_KEYS.settings,
         JSON.stringify({
@@ -293,9 +282,6 @@ describe('persistence', () => {
 
   describe('v2 → v3 migration (performanceMode field)', () => {
     it('seeds performanceMode to "auto" when reading a v2 payload without the field', () => {
-      // A v2 payload predates the performanceMode field. The migration
-      // must default it to 'auto' so a user upgrading their saved
-      // settings picks up the recommended default.
       localStorage.setItem(
         STORAGE_KEYS.settings,
         JSON.stringify({
@@ -322,17 +308,13 @@ describe('persistence', () => {
         defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
         allowedExtensionUrls: [],
         performanceMode: 'force-wasm',
-        svgAccelerationMode: 'off',
         userExplicitFps: null,
       });
       const settings = readSettings();
       expect(settings.performanceMode).toBe('force-wasm');
     });
 
-    it('falls back to "auto" when reading a v3 payload with an unknown performanceMode', () => {
-      // A future v4 might add a new performanceMode value. We must
-      // gracefully fall back to the safe default so the viewer keeps
-      // working until the user upgrades.
+    it('falls back to "auto" when reading a payload with an unknown performanceMode', () => {
       localStorage.setItem(
         STORAGE_KEYS.settings,
         JSON.stringify({
@@ -352,71 +334,11 @@ describe('persistence', () => {
     });
   });
 
-  describe('v3 → v4 migration (svgAccelerationMode field)', () => {
-    it('seeds svgAccelerationMode to "off" when reading a v3 payload without the field', () => {
-      // A v3 payload predates the svgAccelerationMode field. The migration
-      // must default it to 'off' so a user upgrading their saved settings
-      // picks up the Stage 1 baseline (bit-identical TurboWarp rendering).
-      localStorage.setItem(
-        STORAGE_KEYS.settings,
-        JSON.stringify({
-          state: {
-            theme: 'dark',
-            volume: 50,
-            lastNonMuteVolume: 50,
-            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
-            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
-            performanceMode: 'auto',
-          },
-          version: 3,
-        }),
-      );
-      const settings = readSettings();
-      expect(settings.svgAccelerationMode).toBe('off');
-      // The field must also be seeded inside `advanced` so the runtime
-      // `applySvgAcceleration` reads the default there too.
-      expect(settings.advanced.svgAccelerationMode).toBe('off');
-      expect(settings.defaultAdvanced.svgAccelerationMode).toBe('off');
-    });
-
-    it('round-trips a persisted svgAccelerationMode through storage', () => {
-      writeSettings({
-        theme: 'system',
-        volume: 100,
-        lastNonMuteVolume: 100,
-        advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'cache-only' },
-        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'cache-only' },
-        allowedExtensionUrls: [],
-        performanceMode: 'auto',
-        svgAccelerationMode: 'cache-only',
-        userExplicitFps: null,
-      });
-      const settings = readSettings();
-      expect(settings.svgAccelerationMode).toBe('cache-only');
-      expect(settings.advanced.svgAccelerationMode).toBe('cache-only');
-      expect(settings.defaultAdvanced.svgAccelerationMode).toBe('cache-only');
-    });
-
-    it('round-trips mip-chain through storage', () => {
-      writeSettings({
-        theme: 'system',
-        volume: 100,
-        lastNonMuteVolume: 100,
-        advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'mip-chain' },
-        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'mip-chain' },
-        allowedExtensionUrls: [],
-        performanceMode: 'auto',
-        svgAccelerationMode: 'mip-chain',
-        userExplicitFps: null,
-      });
-      const settings = readSettings();
-      expect(settings.svgAccelerationMode).toBe('mip-chain');
-    });
-
-    it('falls back to "off" when reading a v4 payload with an unknown svgAccelerationMode', () => {
-      // A future Stage 3 / Stage 4 might add new modes. We must gracefully
-      // fall back to the safe default so the viewer keeps working until
-      // the user upgrades.
+  describe('v5 → v6 migration (retire force-webgpu + svgAccelerationMode)', () => {
+    it('downgrades force-webgpu to auto on read', () => {
+      // A user had pinned WebGPU before the v6 retirement. The
+      // migration must downgrade silently so they end up on the WASM
+      // SIMD path instead of a no-op tier.
       localStorage.setItem(
         STORAGE_KEYS.settings,
         JSON.stringify({
@@ -424,36 +346,42 @@ describe('persistence', () => {
             theme: 'system',
             volume: 100,
             lastNonMuteVolume: 100,
-            advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'totally-fake' },
-            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'totally-fake' },
-            performanceMode: 'auto',
-            svgAccelerationMode: 'totally-fake',
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            performanceMode: 'force-webgpu',
           },
-          version: STORAGE_VERSION,
+          version: 5,
         }),
       );
       const settings = readSettings();
-      expect(settings.svgAccelerationMode).toBe('off');
-      expect(settings.advanced.svgAccelerationMode).toBe('off');
+      expect(settings.performanceMode).toBe('auto');
     });
 
-    it('v4 payload preserves both advanced and defaultAdvanced svgAccelerationMode', () => {
-      // The user may have set the runtime to 'cache-only' but saved the
-      // default as 'off'. Both must round-trip independently.
-      writeSettings({
-        theme: 'system',
-        volume: 100,
-        lastNonMuteVolume: 100,
-        advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'cache-only' },
-        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'off' },
-        allowedExtensionUrls: [],
-        performanceMode: 'auto',
-        svgAccelerationMode: 'cache-only',
-        userExplicitFps: null,
-      });
+    it('drops the retired svgAccelerationMode field on read', () => {
+      // A v5 payload still carries the SVG acceleration mirror (top
+      // level and inside `advanced`). The migration must strip both so
+      // a user upgrading does not see a phantom field in the store
+      // shape.
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'cache-only' },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, svgAccelerationMode: 'cache-only' },
+            performanceMode: 'auto',
+            svgAccelerationMode: 'mip-chain',
+          },
+          version: 5,
+        }),
+      );
       const settings = readSettings();
-      expect(settings.advanced.svgAccelerationMode).toBe('cache-only');
-      expect(settings.defaultAdvanced.svgAccelerationMode).toBe('off');
+      expect('svgAccelerationMode' in settings.advanced).toBe(false);
+      expect('svgAccelerationMode' in settings.defaultAdvanced).toBe(false);
+      // The top-level mirror is no longer part of the shape either.
+      expect('svgAccelerationMode' in settings).toBe(false);
     });
   });
 });

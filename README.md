@@ -1,6 +1,6 @@
 # TurboWasm Viewer
 
-A minimal, statically-deployed **SB3 viewer** built on top of [TurboWarp Scaffolding](https://github.com/TurboWarp/scaffolding). The runtime is accelerated by a three-tier collision-detection pipeline (WebGPU compute → WASM SIMD → original JavaScript), an optional WebGPU instanced sprite renderer, and a `resvg-wasm` based SVG rasterizer. Each tier degrades gracefully on environments that do not support it.
+A minimal, statically-deployed **SB3 viewer** built on top of [TurboWarp Scaffolding](https://github.com/TurboWarp/scaffolding). The runtime is accelerated by a WASM-SIMD collision-detection pipeline (`TurboWasm Acceleration`) with a 2-way WASM-SIMD ↔ JavaScript fallback chain. Each tier degrades gracefully on environments that do not support it.
 
 This project is **not** a Scratch editor — it is a read-only player for `.sb3` projects.
 
@@ -8,13 +8,10 @@ This project is **not** a Scratch editor — it is a read-only player for `.sb3`
 
 - Drag & Drop, file picker, and Project ID loading (Scratch / Trampoline).
 - TurboWarp Runtime execution via `@turbowarp/scaffolding`.
-- **TurboWasm acceleration pipeline** (see [Advanced Settings mapping](#advanced-settings-mapping)):
-  - Phase 1: WASM SIMD batched `isTouchingColor` / `isTouchingDrawables` with per-lane perspective divide.
-  - Phase 2: WebGPU compute pipeline for `isTouchingColor` / `isTouchingDrawables` with a 1-frame delayed result snapshot (spec §4.3).
-  - Phase 3: WebGPU instanced sprite renderer that reduces draw-call count to one per unique skin.
-  - Three-tier fallback chain (`WebGPU → WASM SIMD → JS`) plus a `Performance Mode` selector (`auto` / `force-wasm` / `force-webgpu` / `legacy-only`).
-- **Stage 2 SVG acceleration** (see [SVG acceleration](#svg-acceleration-stage-2)): opt-in LRU `ImageBitmap` cache + pre-decoded MIP chain + `OffscreenCanvas` Web Worker, with `off` / `cache-only` / `mip-chain` modes that are pixel-equivalent to the Stage 1 TurboWarp baseline.
-- Advanced settings (FPS, Interpolation, Warp Timer, High Quality Pen, Turbo Mode, Compiler toggle, Infinity Clones, Remove Fencing, Remove Misc Limits, Stage size, **Performance Mode**, **SVG Acceleration**) with **immediate apply**.
+- **TurboWasm Acceleration** (see [Advanced Settings mapping](#advanced-settings-mapping)):
+  - WASM SIMD batched `isTouchingColor` / `isTouchingDrawables` with per-lane perspective divide.
+  - WASM-SIMD ↔ JavaScript 2-tier fallback chain plus a `Performance Mode` selector (`auto` / `force-wasm` / `legacy-only`).
+- Advanced settings (FPS, Interpolation, Warp Timer, High Quality Pen, Turbo Mode, Compiler toggle, Infinity Clones, Remove Fencing, Remove Misc Limits, Stage size, **Performance Mode**) with **immediate apply**.
 - `twconfig` parsing from project comments (read-only).
 - System / Light / Dark theme with `prefers-color-scheme` support.
 - Stage-only Fullscreen mode with overlay controls.
@@ -23,6 +20,8 @@ This project is **not** a Scratch editor — it is a read-only player for `.sb3`
 - `localStorage` persistence for theme, volume, and advanced settings (`tw-viewer:settings:v1`).
 - Pluggable Extension registrar interface (add-ons reserved for future).
 - Pluggable Cloud Variables provider interface (no-op default; reserved for future).
+
+> **Retired features (v6):** The previous Settings dialog exposed a `Force WebGPU` Performance Mode and an `SVG Acceleration` dropdown (Stage 2 of the original TurboWasm plan). Both were removed because the corresponding runtime paths (`gpu-collision.ts`, `gpu-batch-renderer.ts`, `svg-acceleration/*`) were never wired beyond feature detection — the JS-side hooks always returned `null`, so the UI selectors silently fell through to the JavaScript path. See the [v6 migration notes in AGENTS.md](AGENTS.md) for details and the persisted `force-webgpu` downgrade behaviour.
 
 ## Quick start
 
@@ -71,6 +70,12 @@ was generated inside `vendored/`). For the vendored scaffolding / scratch-vm
 patches, regenerate from the vendored working copies with
 `git -C vendored/<repo> diff > patches/vendored/<repo>.patch`.
 
+The `wasm-collision-runtime+0.1.0.patch` install the optional WASM-SIMD
+collision hooks in `RenderWebGL.isTouchingColor` /
+`RenderWebGL.isTouchingDrawables`. The patch no longer carries the WebGPU
+compute / instanced renderer / SVG acceleration hooks (those paths were
+retired in v6).
+
 The patches live in the source files under
 `vendored/scaffolding/node_modules/scratch-render/src/`, but the runtime
 loads the UMD bundle at `vendored/scaffolding/dist/scaffolding-min.js`.
@@ -92,26 +97,22 @@ src/
   stores/       # Zustand stores (settings, project, error log, player)
   lib/          # thin wrappers (persistence, validation, scaffolding loader)
   runtime/      # TurboWarp Runtime integration (player façade, twconfig, extensions, cloud-provider)
-    tw-wasm/    # TurboWasm acceleration pipeline
-      applyTurboWasmAcceleration.ts   # 3-tier fallback chain
-      capabilities.ts                # Phase 0 feature detection
-      wasm-collision-client.ts        # Phase 1: WASM SIMD host
-      gpu-collision.ts                # Phase 2: WebGPU compute host
-      gpu-batch-renderer.ts           # Phase 3: WebGPU instanced renderer
-      wgsl-loader.ts                  # WGSL ?raw import shim
-      wgsl/                           # WGSL shader sources
+    tw-wasm/    # TurboWasm acceleration pipeline (WASM SIMD only)
+      applyTurboWasmAcceleration.ts   # WASM-SIMD ↔ JS fallback chain
+      capabilities.ts                # WASM-SIMD feature detection
+      wasm-collision-client.ts        # WASM-SIMD host
   services/     # external API integrations (scratch-project metadata + data)
   utils/        # pure utilities (clamp, format, constants)
   types/        # shared type definitions
   styles/       # global CSS
 
-wasm-collision/   # Rust crate → wasm-collision-bg.wasm (Phase 1, gitignored)
+wasm-collision/   # Rust crate → wasm-collision-bg.wasm (gitignored)
 scripts/          # vendored setup, postinstall, browser verification
 test/             # Vitest specs (jsdom env, single source of truth for the runtime contract)
 vendored/         # vendored scratch-vm / scratch-render / Scaffolding (gitignored)
 ```
 
-Feature First architecture: each feature owns its UI and state hooks. Cross-feature imports go through `lib/` / `hooks/` / `stores`.
+Feature First architecture: each feature owns its UI and state hooks. Cross-feature imports go through `lib/` / `hooks/` / `stores/`.
 
 ## Advanced Settings mapping
 
@@ -120,7 +121,7 @@ The Settings dialog maps directly to the TurboWarp VM/Runtime APIs:
 | Setting              | Target                                              |
 | -------------------- | --------------------------------------------------- |
 | FPS                  | `vm.runtime.frameLoop.setFramerate(v)`              |
-| Interpolation        | `vm.runtime.frameLoop.setInterpolation(v)`          |
+| Interpolation        | `vm.setInterpolation(v)` (also updates `runtime.interpolationEnabled` and emits `INTERPOLATION_CHANGED`) |
 | High Quality Pen     | `vm.renderer.setUseHighQualityRender(v)`            |
 | Warp Timer           | `vm.runtime.setCompilerOptions({warpTimer})`        |
 | Infinite Clones      | `vm.runtime.setRuntimeOptions({maxClones: ∞})`      |
@@ -131,57 +132,29 @@ The Settings dialog maps directly to the TurboWarp VM/Runtime APIs:
 | Stage Width / Height | `vm.setStageSize(w, h)`                             |
 | TurboWasm Acceleration | `applyTurboWasmAcceleration(enabled, caps, mode)` |
 | Performance Mode     | `applyTurboWasmAcceleration(enabled, caps, mode)` (controls tier selection; see below) |
-| SVG Acceleration     | `applySvgAcceleration(scaffolding, { mode })` (Stage 2; see below) |
 
 ### Performance Mode
 
 The **Performance Mode** dropdown is the user-facing selector for the
-three-tier acceleration pipeline. The default is `auto`, which picks
-the best available backend at startup. The other three are explicit
+collision-detection backend. The default is `auto`, which uses the WASM
+SIMD path when the runtime detects SIMD support and falls back to the
+original JavaScript collision loop otherwise. The other two are explicit
 overrides for debugging and benchmarking:
 
-- **`auto`** — WebGPU when supported, then WASM SIMD, then the
-  original JavaScript path. The recommended default.
+- **`auto`** — WASM SIMD when supported, otherwise the original JavaScript
+  path. The recommended default.
 - **`force-wasm`** — Always use the WASM SIMD path when it has
-  initialised. Useful for isolating WebGPU behaviour.
-- **`force-webgpu`** — Always use WebGPU when it has initialised;
-  fall through to WASM SIMD, then JavaScript.
+  initialised. Falls back to JavaScript when SIMD is unavailable.
 - **`legacy-only`** — All TurboWasm hooks are cleared. The runtime
   behaves identically to the unmodified `scratch-render`. The
   Definition-of-Done parity requirement.
 
 The setting persists in `localStorage` (key `tw-viewer:settings:v1`,
-schema version 3) so a reload picks up the same backend. The
-`!reset-advanced` and `!reset-performance` debug commands revert the
-mode to `auto`; see [Debug commands](#debug-commands) below.
-
-### SVG Acceleration (Stage 2)
-
-The **SVG Acceleration** dropdown is the user-facing selector for the
-Stage 2 SVG rendering pipeline. Stage 1 (the default Stage 1 baseline
-at the time of this commit) uses the unmodified TurboWarp Scaffolding
-`drawImage(this._svgImage, 0, 0)` path — every pixel in the rendered
-sprite is the same bytes TurboWarp would produce, and the
-`verify-turbowarp-equivalent.mjs` harness keeps the diff count at
-zero across modes. Stage 2 layers opt-in speedups on top of that
-baseline; every mode stays pixel-equivalent to `'off'`.
-
-- **`off`** — Stage 1 baseline. No TurboWasm SVG hooks are installed;
-  SVGSkin falls through to the upstream `drawImage` path. Default.
-- **`cache-only`** — Reuse the browser's decoded `ImageBitmap` for
-  the same SVG across `setSVG` calls. Cuts the per-costume-load
-  browser SVG-parse cost. Still uses `drawImage` for the final
-  rasterisation, so the output is bit-identical to `'off'`.
-- **`mip-chain`** — Pre-decode multiple MIP scales (0.25x / 0.5x /
-  1x / 2x / 4x) and offload large SVG decode to a Web Worker via
-  `OffscreenCanvas` when available. Falls back to the main thread
-  on Safari FP (no `OffscreenCanvas`); `!dump` shows
-  `workerActive: false` in that environment.
-
-The setting persists in `localStorage` (key `tw-viewer:settings:v1`,
-schema version 4) so a reload picks up the same mode. The
-`!reset-advanced` and `!reset-svg` debug commands revert the mode to
-`off`; see [Debug commands](#debug-commands) below.
+schema version 6). The `!reset-performance` debug command reverts the
+mode to `auto`; see [Debug commands](#debug-commands) below. A user who
+had pinned `'force-webgpu'` before the v6 retirement will be silently
+downgraded to `'auto'` on first load — the migration lives in
+`src/lib/persistence.ts`.
 
 ## Extension points
 
@@ -200,28 +173,25 @@ Vite injects build-time values; changing them requires a rebuild.
 
 ## Performance pipeline
 
-The Viewer ships three phases of acceleration (Phases 0–3). Each tier
-degrades gracefully when its backing is not available — see
-[AGENTS.md](AGENTS.md) for the operator-facing diagnostic table and
-the [Verification](#verification) section for the test surface.
-Phase 4 (`resvg-wasm` SVG rasterizer) was removed; see
-[Phase 4 撤廃 (resvg-wasm) と TurboWarp 同等性検証](AGENTS.md#phase-4-撤廃-resvg-wasm-と-turbowarp-同等性検証)
-in AGENTS.md for the rationale.
+The Viewer ships one collision-detection pipeline (`TurboWasm Acceleration`),
+backed by the WASM-SIMD collision module. Phase 2 (WebGPU compute), Phase 3
+(WebGPU instanced renderer), and Stage 2 (SVG acceleration) were all
+retired in v6 because their JS-side hooks were never wired beyond feature
+detection — see the [AGENTS.md → "Phase 4 撤廃"](AGENTS.md) section for
+the Phase 4 (resvg-wasm) precedent that established the same pattern.
 
-| Phase | Path                                              | Implementation                              |
-| ----- | ------------------------------------------------- | ------------------------------------------- |
-| 0     | Feature detection + 3-tier fallback chain         | `src/runtime/tw-wasm/capabilities.ts`       |
-| 1     | WASM SIMD batched `isTouchingColor` / `isTouchingDrawables` | `wasm-collision/` (Rust), `wasm-collision-client.ts` |
-| 2     | WebGPU compute pipeline (1-frame delayed result)  | `src/runtime/tw-wasm/gpu-collision.ts`      |
-| 3     | WebGPU instanced sprite renderer                  | `src/runtime/tw-wasm/gpu-batch-renderer.ts` |
+| Path                                | Implementation                                                    |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| WASM SIMD `isTouchingColor` / `isTouchingDrawables` | `wasm-collision/` (Rust), `wasm-collision-client.ts` |
+| 2-tier fallback chain (`wasm` ↔ `js`) | `src/runtime/tw-wasm/applyTurboWasmAcceleration.ts`         |
 
-WGSL shader sources live under `src/runtime/tw-wasm/wgsl/` and are
-bundled by Vite via `?raw` imports. The vendored `scratch-render` is
-patched (`patches/wasm-collision-runtime+0.1.0.patch`) to install
-the host-side hooks that the runtime reads at frame time:
-`_twWasmIsTouchingColor`, `_twWasmIsTouchingDrawables`,
-`_twWasmGpuTouchingStart`, `_twWasmGpuTouchingFin`, and
-`_twWasmDrawSprites`.
+The vendored `scratch-render` is patched
+(`patches/wasm-collision-runtime+0.1.0.patch`) to install the host-side
+hooks that the runtime reads at frame time: `_twWasmIsTouchingColor` and
+`_twWasmIsTouchingDrawables`. The previously-installed
+`_twWasmGpuTouchingStart`, `_twWasmGpuTouchingFin`, `_twWasmDrawSprites`,
+and `_twWasmSvgAcceleration` hooks were retired along with the matching
+runtime paths.
 
 `*.wasm` files are served with `Content-Type: application/wasm` and
 `Cache-Control: public, max-age=31536000, immutable` via
@@ -230,10 +200,12 @@ file).
 
 ## Verification
 
-A headless Chromium smoke test lives at `scripts/verify-browser.mjs`.
-It boots the dev / preview build, polls `window.__turbowasm` (set by
-`__exposeForBrowserVerify` in the player) and asserts the
-`_twWasm*` host hooks are wired correctly. The captured logs land in
+A headless Chromium smoke test lives at `scripts/verify-browser.mjs`
+and `scripts/chrome-devtools-mcp-verify.mjs`. They boot the dev / preview
+build, poll `window.__turbowasm` (set by `__exposeForBrowserVerify` in
+the player) and assert the surviving WASM-SIMD host hooks are wired
+correctly (and that the retired Phase 2 / 3 / Stage 2 hooks are NOT
+present on the renderer). The captured logs land in
 `./logs/browser-verify-*.log` and a screenshot in
 `./logs/browser-verify-home.png`.
 
@@ -242,6 +214,12 @@ npm run build
 npm run preview &        # serves dist/ on port 4173
 node scripts/verify-browser.mjs --url http://localhost:4173
 ```
+
+A separate harness (`scripts/verify-turbowarp-equivalent.mjs`) opens
+two browser contexts (one with `performanceMode: 'auto'`, one with
+`'legacy-only'`) and compares the rendered canvas pixels at the
+ImageData level. This guards the DoD parity contract — see
+`test/e2e/turbowarp-equivalent.test.ts` for the Vitest entry point.
 
 ## License
 
@@ -262,7 +240,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+along with this program.  If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 ```
 
 This project contains modified code from:

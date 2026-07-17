@@ -1,44 +1,33 @@
 import type { RuntimeCapabilities } from './capabilities';
-import {
-  wasmIsTouchingColor,
-  wasmIsTouchingDrawables,
-  isWasmCollisionReady,
-} from './wasm-collision-client';
+import { wasmIsTouchingColor, wasmIsTouchingDrawables, isWasmCollisionReady } from './wasm-collision-client';
 import type { RendererLike } from './wasm-collision-client';
-import {
-  gpuIsTouchingColor,
-  gpuIsTouchingDrawables,
-  isGpuCollisionReady,
-} from './gpu-collision';
-import {
-  twWasmDrawSprites,
-  isGpuBatchRendererReady,
-} from './gpu-batch-renderer';
 import type { PerformanceMode } from '@/types/settings';
 
 /**
- * Public-facing description of the WebGPU instanced renderer. Set by
- * {@link initGpuBatchRenderer} on app startup, cleared on dispose. The
- * Settings dialog consults this for the diagnostic surfaces (e.g. showing
- * which backend served the last frame in `!dump`).
+ * Public-facing description of the TurboWasm acceleration layer's
+ * renderer hooks. The Settings dialog consults this for the diagnostic
+ * surfaces (e.g. showing which backend served the last frame in
+ * `!dump`).
+ *
+ * Phase 2 (WebGPU compute) and Phase 3 (WebGPU instanced renderer)
+ * were removed along with their UI selectors in commit `Plan: remove
+ * stub WebGPU / SVG acceleration`. The runtime is now a single-tier
+ * hook around the WASM SIMD collision client — no GPU compute path is
+ * consulted, no instanced draw hook is installed.
  */
-export interface GpuBatchRendererSummary {
-  /** Skin batch count currently allocated. */
-  skinBatches: number;
-  /** Total drawables rendered through the GPU batch in the most recent frame. */
-  lastDrawables: number;
-  /** Frame count since initialisation; useful for the per-frame cost log. */
-  frameCount: number;
+export interface TurboWasmHookSummary {
+  /** Backend the renderer is currently bound to (js / wasm / none). */
+  backend: 'wasm' | 'js' | 'none';
 }
 
 export interface ApplyTurboWasmArgs {
   enabled: boolean;
   caps: RuntimeCapabilities;
   /**
-   * User-selected backend mode. Decides the order in which the JS-side
-   * hook consults the WebGPU and WASM SIMD paths. `'legacy-only'` clears
-   * every TurboWasm hook on the renderer so the runtime falls through to
-   * the original scratch-render path with zero behavioural change.
+   * User-selected backend mode. Decides whether the WASM SIMD hook is
+   * installed. `'legacy-only'` clears the TurboWasm hook on the renderer
+   * so the runtime falls through to the original scratch-render path
+   * with zero behavioural change.
    */
   performanceMode: PerformanceMode;
 }
@@ -59,76 +48,42 @@ type TurboWasmColorCallback = (
 interface RendererWithHooks {
   _twWasmIsTouchingDrawables?: TurboWasmCallback | null;
   _twWasmIsTouchingColor?: TurboWasmColorCallback | null;
-  _twWasmDrawSprites?: ((renderer: unknown, drawables: readonly number[]) => boolean) | null;
 }
 
 /**
- * Decide which JS-side path is consulted first for `isTouchingDrawables`.
+ * Decide whether the WASM SIMD hook should be installed on the
+ * renderer.
  *
- * Priority is derived from `performanceMode`:
- *  - `'legacy-only'` returns `'none'` so the renderer falls through to its
- *    unmodified JS path.
- *  - `'force-wasm'` returns `'wasm'` and ignores WebGPU availability.
- *  - `'force-webgpu'` returns `'gpu'` when WebGPU is ready; otherwise it
- *    falls back to `'wasm'`, then `'none'`.
- *  - `'auto'` returns `'gpu'` when ready, else `'wasm'`, else `'none'`.
+ *  - `'legacy-only'` returns `'none'` so the renderer falls through to
+ *    its unmodified JS path.
+ *  - `'force-wasm'` returns `'wasm'` when WASM SIMD has initialised.
+ *  - `'auto'` returns `'wasm'` when WASM SIMD has initialised,
+ *    otherwise `'none'` (the JS path).
  *
- * The function is the single source of truth used by both the drawables
- * and the color hook constructors so the two endpoints stay in sync.
+ * Previously this function consulted a WebGPU compute tier first
+ * (`'gpu'` → `'wasm'` → `'none'`). The WebGPU tier was retired (it
+ * always returned `null` from the JS-side hook) so the selector now
+ * has only two outcomes.
  */
-export function selectBackendTier(
-  args: ApplyTurboWasmArgs,
-  gpuReady: boolean,
-  wasmReady: boolean,
-): 'gpu' | 'wasm' | 'none' {
+export function selectBackendTier(args: ApplyTurboWasmArgs, wasmReady: boolean): 'wasm' | 'none' {
   if (!args.enabled) return 'none';
   if (args.performanceMode === 'legacy-only') return 'none';
-  if (args.performanceMode === 'force-wasm') {
-    return wasmReady ? 'wasm' : 'none';
-  }
-  if (args.performanceMode === 'force-webgpu') {
-    if (gpuReady) return 'gpu';
-    if (wasmReady) return 'wasm';
-    return 'none';
-  }
-  // 'auto'
-  if (gpuReady) return 'gpu';
-  if (wasmReady) return 'wasm';
-  return 'none';
+  return wasmReady ? 'wasm' : 'none';
 }
 
 function patchRenderer(renderer: RendererWithHooks, args: ApplyTurboWasmArgs): void {
   const wasmReady = args.caps.wasmSimd && isWasmCollisionReady();
-  const gpuReady = args.caps.webgpu && isGpuCollisionReady();
-  const tier = selectBackendTier(args, gpuReady, wasmReady);
+  const tier = selectBackendTier(args, wasmReady);
   if (tier === 'none') {
     renderer._twWasmIsTouchingDrawables = null;
     renderer._twWasmIsTouchingColor = null;
-    renderer._twWasmDrawSprites = null;
     return;
   }
-  if (tier === 'gpu') {
-    renderer._twWasmIsTouchingDrawables = (rd, drawableID, candidateIDs) =>
-      gpuIsTouchingDrawables(rd, drawableID, candidateIDs);
-    renderer._twWasmIsTouchingColor = (rd, drawableID, color3b, mask3b) =>
-      gpuIsTouchingColor(rd, drawableID, color3b, mask3b);
-  } else {
-    // 'wasm'
-    renderer._twWasmIsTouchingDrawables = (rd, drawableID, candidateIDs) =>
-      wasmIsTouchingDrawables(rd, drawableID, candidateIDs);
-    renderer._twWasmIsTouchingColor = (rd, drawableID, color3b, mask3b) =>
-      wasmIsTouchingColor(rd, drawableID, color3b, mask3b);
-  }
-  // Phase 3: the WebGPU instanced renderer is independent of the
-  // collision-detection tier. When it is ready and the mode is not
-  // legacy-only, attach the sprite-batch hook so `_drawThese` consults
-  // the host pipeline for the `ShaderManager.DRAW_MODE.default` path.
-  const drawBatchReady = isGpuBatchRendererReady();
-  if (drawBatchReady && args.performanceMode !== 'legacy-only') {
-    renderer._twWasmDrawSprites = (rd, drawables) => twWasmDrawSprites(rd, drawables);
-  } else {
-    renderer._twWasmDrawSprites = null;
-  }
+  // 'wasm'
+  renderer._twWasmIsTouchingDrawables = (rd, drawableID, candidateIDs) =>
+    wasmIsTouchingDrawables(rd, drawableID, candidateIDs);
+  renderer._twWasmIsTouchingColor = (rd, drawableID, color3b, mask3b) =>
+    wasmIsTouchingColor(rd, drawableID, color3b, mask3b);
 }
 
 export interface ScaffoldingLike {
@@ -151,5 +106,4 @@ export function removeTurboWasmAcceleration(scaffolding: ScaffoldingLike | null 
   if (!renderer) return;
   renderer._twWasmIsTouchingDrawables = null;
   renderer._twWasmIsTouchingColor = null;
-  renderer._twWasmDrawSprites = null;
 }

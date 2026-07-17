@@ -7,8 +7,11 @@
  *
  *   - The page mounts without any `act()` warnings, React errors, or
  *     unhandled rejections.
- *   - The `_twWasm*` host hooks are installed on the Scaffolding
- *     renderer (Phase 2 / 3 / 4 wiring is live in the UMD).
+ *   - The `_twWasm*` WASM-SIMD host hooks are installed on the
+ *     Scaffolding renderer when WASM SIMD is available. The retired
+ *     Phase 2 / Phase 3 / Stage 2 hooks (`_twWasmGpuTouchingStart`,
+ *     `_twWasmGpuTouchingFin`, `_twWasmDrawSprites`,
+ *     `_twWasmRasterSvgCostume`) must NOT be present.
  *   - Loading a fixture SB3 (test/.test-fixtures/repro.sb3) triggers a
  *     `[player] loadProject` log line and no `Failed to construct
  *     'ImageData'` DOMException.
@@ -82,13 +85,17 @@ async function main() {
       drawables: r?._allDrawables?.length ?? 0,
       hasWasmHook: typeof r?._twWasmIsTouchingDrawables === 'function',
       hasWasmColorHook: typeof r?._twWasmIsTouchingColor === 'function',
-      hasGpuHook: typeof r?._twWasmGpuTouchingStart === 'function',
+      // Retired hooks — must remain absent. Pinning them here catches
+      // a regression where a stale UMD is shipped with the
+      // svg-acceleration / WebGPU compute / instanced renderer hooks
+      // still installed.
+      hasGpuStartHook: typeof r?._twWasmGpuTouchingStart === 'function',
       hasGpuFinHook: typeof r?._twWasmGpuTouchingFin === 'function',
       hasDrawBatchHook: typeof r?._twWasmDrawSprites === 'function',
-      hasSvgHook: !!r?._twWasmRasterSvgCostume,
+      hasSvgHostHook: !!r?._twWasmSvgAcceleration,
+      hasResvgRasterHook: !!r?._twWasmRasterSvgCostume,
     };
   });
-
   log('hooks', JSON.stringify(hooks, null, 2));
 
   // ---- Settings dialog: open + flip PerformanceMode ----
@@ -106,11 +113,13 @@ async function main() {
 
   // Drive the store: write `legacy-only` to localStorage and reload to
   // simulate the user choosing legacy-only in the Settings dialog.
+  // The persisted version is the current STORAGE_VERSION (6); the
+  // persistence layer downgrades any stale `force-webgpu` on read.
   await page.evaluate(() => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
-    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 3 };
+    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 6 };
     parsed.state.performanceMode = 'legacy-only';
-    parsed.version = 3;
+    parsed.version = 6;
     localStorage.setItem('tw-viewer:settings:v1', JSON.stringify(parsed));
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -123,9 +132,6 @@ async function main() {
       performanceMode: tw.performanceMode,
       hasWasmHook: typeof r?._twWasmIsTouchingDrawables === 'function',
       hasWasmColorHook: typeof r?._twWasmIsTouchingColor === 'function',
-      hasGpuHook: typeof r?._twWasmGpuTouchingStart === 'function',
-      hasDrawBatchHook: typeof r?._twWasmDrawSprites === 'function',
-      hasSvgHook: !!r?._twWasmRasterSvgCostume,
     };
   });
   log('settings-after-legacy-only', JSON.stringify(legacyAfter, null, 2));
@@ -133,10 +139,6 @@ async function main() {
   // ---- Debug-command round trip ----
   // `!reset-performance` debug command should reset to 'auto'.
   await page.evaluate(() => {
-    // We can't easily simulate the keystroke-based debug command path;
-    // instead, flip the store directly via the React hook the settings
-    // dialog uses (the `setPerformanceMode` action). We invoke it
-    // through `__turbowasm` so the change reaches the runtime.
     const win = window;
     if (!win.__turbowasm) return;
   });
@@ -144,9 +146,9 @@ async function main() {
   // available. Most reliably we drive the store via localStorage + reload.
   await page.evaluate(() => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
-    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 3 };
+    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 6 };
     parsed.state.performanceMode = 'auto';
-    parsed.version = 3;
+    parsed.version = 6;
     localStorage.setItem('tw-viewer:settings:v1', JSON.stringify(parsed));
   });
   await page.reload({ waitUntil: 'domcontentloaded' });

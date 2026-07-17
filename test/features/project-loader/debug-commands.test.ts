@@ -21,7 +21,6 @@ function resetStore(): void {
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [],
     performanceMode: 'auto',
-    svgAccelerationMode: 'off',
   });
 }
 
@@ -135,20 +134,23 @@ describe('executeDebugCommand — resets', () => {
     expect(result.message).toMatch(/Performance mode reset to auto/);
   });
 
-  it('!reset-svg sets svg acceleration back to off (Stage 1 baseline)', () => {
-    useSettingsStore.getState().setSvgAccelerationMode('mip-chain');
-    expect(useSettingsStore.getState().svgAccelerationMode).toBe('mip-chain');
+  it('!reset-svg is no longer a recognised command', () => {
+    // `!reset-svg` was retired along with the SVG Acceleration dropdown
+    // (Stage 2 of the original TurboWasm Acceleration plan). It now
+    // surfaces as an unknown command so users with a stale autocomplete
+    // muscle-memory get a helpful message instead of a silent no-op.
     const result = executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-svg`);
-    expect(useSettingsStore.getState().svgAccelerationMode).toBe('off');
-    expect(result.message).toMatch(/SVG acceleration mode reset to off/);
+    expect(result.severity).toBe('warn');
+    expect(result.message).toMatch(/Unknown debug command/);
   });
 
-  it('!reset-advanced also resets performance mode and svg acceleration', () => {
+  it('!reset-advanced also resets performance mode (no svg acceleration to reset)', () => {
     useSettingsStore.getState().setPerformanceMode('legacy-only');
-    useSettingsStore.getState().setSvgAccelerationMode('cache-only');
     executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-advanced`);
     expect(useSettingsStore.getState().performanceMode).toBe('auto');
-    expect(useSettingsStore.getState().svgAccelerationMode).toBe('off');
+    // The svg acceleration mirror no longer exists; verify the store
+    // shape reflects the v6 schema.
+    expect('svgAccelerationMode' in useSettingsStore.getState()).toBe(false);
   });
 
   it('!clear-extensions clears the allow-list but leaves advanced alone', () => {
@@ -238,10 +240,11 @@ describe('executeDebugCommand — dump', () => {
         theme: 'system',
         volume: 100,
         performanceMode: 'auto',
-        svgAccelerationMode: 'off',
       });
       expect(payload.advanced).toBeDefined();
       expect(payload.allowedExtensionUrls).toEqual([]);
+      // The retired svgAccelerationMode field must not appear in the dump.
+      expect('svgAccelerationMode' in payload).toBe(false);
     } finally {
       spy.mockRestore();
     }

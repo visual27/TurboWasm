@@ -26,7 +26,6 @@ function resetStore(): void {
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [],
     performanceMode: 'auto',
-    svgAccelerationMode: 'off',
     userExplicitFps: null,
   });
 }
@@ -43,9 +42,9 @@ describe('useSettingsStore — basic', () => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
     expect(raw).toBeTruthy();
     expect(JSON.parse(raw as string).state.theme).toBe('dark');
-    // The persisted payload is tagged with the v5 schema so future
+    // The persisted payload is tagged with the v6 schema so future
     // schema bumps can read it back correctly.
-    expect(JSON.parse(raw as string).version).toBe(5);
+    expect(JSON.parse(raw as string).version).toBe(6);
   });
 
   it('clamps volume on setVolume', () => {
@@ -141,22 +140,16 @@ describe('useSettingsStore — basic', () => {
     expect(parsed.state.defaultAdvanced.extensionSandboxMode).toBe('iframe');
   });
 
-  it('patchAdvanced preserves svgAccelerationMode (other-section field)', () => {
-    useSettingsStore.getState().setSvgAccelerationMode('cache-only');
-    useSettingsStore.getState().patchAdvanced({ fps: 60 });
-    const s = useSettingsStore.getState();
-    expect(s.svgAccelerationMode).toBe('cache-only');
-    expect(s.advanced.fps).toBe(60);
-  });
-
-  it('resetAdvanced restores advanced to defaults and forces svgAccelerationMode seed to "off"', () => {
-    useSettingsStore.getState().setSvgAccelerationMode('mip-chain');
+  it('resetAdvanced restores advanced to defaults', () => {
     useSettingsStore.getState().resetAdvanced();
-    // resetAdvanced replaces `advanced` with `defaultAdvanced` clone, but
-    // it does not touch the top-level svgAccelerationMode mirror (which
-    // is the active runtime value the user selected). The default-advanced
-    // mirror should be back to 'off' though.
-    expect(useSettingsStore.getState().defaultAdvanced.svgAccelerationMode).toBe('off');
+    // resetAdvanced replaces `advanced` with `defaultAdvanced` clone.
+    // The previously-tracked svgAccelerationMode field was retired in
+    // v6 along with the WebGPU compute / instanced renderer / SVG
+    // acceleration layers; verify the runtime advanced is back at the
+    // saved defaults and the type no longer carries the field.
+    const s = useSettingsStore.getState();
+    expect(s.advanced.fps).toBe(DEFAULT_ADVANCED_SETTINGS.fps);
+    expect('svgAccelerationMode' in s.advanced).toBe(false);
   });
 
   it('resetAdvanced restores defaults from defaultAdvanced and forces disableCompiler off', () => {
@@ -209,46 +202,19 @@ describe('useSettingsStore — performanceMode', () => {
       version: number;
     };
     expect(parsed.state.performanceMode).toBe('force-wasm');
-    // The persisted payload is tagged with the v5 schema so future
+    // The persisted payload is tagged with the v6 schema so future
     // schema bumps can read it back correctly.
-    expect(parsed.version).toBe(5);
+    expect(parsed.version).toBe(6);
   });
 
-  it('setPerformanceMode accepts all four valid modes', () => {
-    for (const mode of ['auto', 'force-wasm', 'force-webgpu', 'legacy-only'] as const) {
+  it('setPerformanceMode accepts the three current modes', () => {
+    // `force-webgpu` was retired in v6 along with the WebGPU compute
+    // tier; the store-side setter still type-checks against the
+    // narrowed `PerformanceMode` union, so only the three current
+    // modes round-trip.
+    for (const mode of ['auto', 'force-wasm', 'legacy-only'] as const) {
       useSettingsStore.getState().setPerformanceMode(mode);
       expect(useSettingsStore.getState().performanceMode).toBe(mode);
-    }
-  });
-});
-
-describe('useSettingsStore — svgAccelerationMode', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    resetStore();
-  });
-
-  it('defaults to "off" on a fresh store', () => {
-    expect(useSettingsStore.getState().svgAccelerationMode).toBe('off');
-  });
-
-  it('setSvgAccelerationMode updates the field and persists immediately', () => {
-    useSettingsStore.getState().setSvgAccelerationMode('cache-only');
-    expect(useSettingsStore.getState().svgAccelerationMode).toBe('cache-only');
-    const raw = localStorage.getItem('tw-viewer:settings:v1');
-    expect(raw).toBeTruthy();
-    const parsed = JSON.parse(raw as string) as {
-      state: { svgAccelerationMode: string };
-      version: number;
-    };
-    expect(parsed.state.svgAccelerationMode).toBe('cache-only');
-    expect(parsed.version).toBe(5);
-  });
-
-  it('setSvgAccelerationMode accepts every valid mode', () => {
-    for (const mode of ['off', 'cache-only', 'mip-chain', 'resvg-visual-equivalence'] as const) {
-      useSettingsStore.getState().setSvgAccelerationMode(mode);
-      expect(useSettingsStore.getState().svgAccelerationMode).toBe(mode);
     }
   });
 });
@@ -382,7 +348,6 @@ describe('useSettingsStore.toggleMute (smart restore)', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
       performanceMode: 'auto',
-      svgAccelerationMode: 'off',
       userExplicitFps: null,
     });
   });
@@ -603,7 +568,7 @@ describe('useSettingsStore.cycleFpsShortcut', () => {
       version: number;
     };
     expect(parsed.state.userExplicitFps).toBe(60);
-    expect(parsed.version).toBe(5);
+    expect(parsed.version).toBe(6);
   });
 
 it('patchAdvanced with a non-30 fps updates the latch even when advanced.fps matches defaultAdvanced.fps', () => {

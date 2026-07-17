@@ -1,29 +1,19 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 
 /**
- * DoD tests for the 3-tier collision-detection fallback chain.
+ * DoD tests for the WASM-SIMD ↔ JS collision-detection fallback.
  *
- * The spec requires that WebGPU, WASM SIMD and the JS path all return
- * the same boolean for the same input. Because the WebGPU path is
- * gated behind a feature detect and the full compute pipeline is staged
- * for a later rollout, this test pins the *contract* rather than the
- * pixel-perfect parity: each tier returns a known-answer for a known
- * fixture, and the routing logic dispatches the request to the right
- * tier based on `performanceMode` + capability flags.
+ * Phase 2 (WebGPU compute) was retired when the runtime stub never
+ * progressed past `requestAdapter()` probing, so the tier chain is now
+ * two-way: WASM SIMD when available, otherwise the original JS path.
+ * `legacy-only` clears every hook (Definition of Done parity mode).
  */
 
 const fakeWasmReady = { value: true };
-const fakeGpuReady = { value: false };
 const wasmDrawables = vi.fn(
   (_a?: unknown, _b?: unknown, _c?: unknown): boolean | null => false,
 );
 const wasmColor = vi.fn(
-  (_a?: unknown, _b?: unknown, _c?: unknown, _d?: unknown): boolean | null => false,
-);
-const gpuDrawables = vi.fn(
-  (_a?: unknown, _b?: unknown, _c?: unknown): boolean | null => false,
-);
-const gpuColor = vi.fn(
   (_a?: unknown, _b?: unknown, _c?: unknown, _d?: unknown): boolean | null => false,
 );
 
@@ -42,29 +32,6 @@ vi.mock('@/runtime/tw-wasm/wasm-collision-client', () => ({
   },
 }));
 
-vi.mock('@/runtime/tw-wasm/gpu-collision', () => ({
-  initGpuCollision: () => {
-    fakeGpuReady.value = true;
-    return Promise.resolve(true);
-  },
-  disposeGpuCollision: () => {
-    fakeGpuReady.value = false;
-  },
-  isGpuCollisionReady: () => fakeGpuReady.value,
-  gpuIsTouchingDrawables: (rd: unknown, id: number, cand: readonly number[]) =>
-    gpuDrawables(rd, id, cand),
-  gpuIsTouchingColor: (rd: unknown, id: number, c: unknown, m: unknown) =>
-    gpuColor(rd, id, c, m),
-}));
-
-// gpu-batch-renderer must also be mocked because applyTurboWasmAcceleration
-// now imports `twWasmDrawSprites` from it.
-vi.mock('@/runtime/tw-wasm/gpu-batch-renderer', () => ({
-  twWasmDrawSprites: () => false,
-  isGpuBatchRendererReady: () => false,
-  disposeGpuBatchRenderer: () => undefined,
-}));
-
 import {
   applyTurboWasmAcceleration,
   selectBackendTier,
@@ -81,148 +48,89 @@ function makeScaffolding(): { renderer: RendererStub } {
   return { renderer: {} };
 }
 
-describe('three-tier collision fallback (DoD parity)', () => {
+describe('WASM-SIMD ↔ JS collision fallback (DoD parity)', () => {
   beforeEach(() => {
     fakeWasmReady.value = true;
-    fakeGpuReady.value = false;
     wasmDrawables.mockClear();
     wasmColor.mockClear();
-    gpuDrawables.mockClear();
-    gpuColor.mockClear();
     wasmDrawables.mockImplementation(() => false);
     wasmColor.mockImplementation(() => false);
-    gpuDrawables.mockImplementation(() => false);
-    gpuColor.mockImplementation(() => false);
   });
 
-  it('legacy-only: every tier is bypassed; hooks stay null', () => {
-    fakeGpuReady.value = true;
+  it('legacy-only: hooks stay null', () => {
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
+      caps: { wasmSimd: true },
       performanceMode: 'legacy-only',
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
   });
 
-  it('force-wasm ignores WebGPU even when ready', () => {
-    fakeGpuReady.value = true;
+  it('auto mode installs the WASM hook when SIMD is supported', () => {
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
+      caps: { wasmSimd: true },
+      performanceMode: 'auto',
+    });
+    (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(sc, 0, []);
+    expect(wasmDrawables).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto mode does not install the hook when WASM is not ready', () => {
+    fakeWasmReady.value = false;
+    const sc = makeScaffolding();
+    applyTurboWasmAcceleration(sc, {
+      enabled: true,
+      caps: { wasmSimd: true },
+      performanceMode: 'auto',
+    });
+    expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
+  });
+
+  it('force-wasm installs the hook when WASM is ready', () => {
+    const sc = makeScaffolding();
+    applyTurboWasmAcceleration(sc, {
+      enabled: true,
+      caps: { wasmSimd: true },
       performanceMode: 'force-wasm',
     });
-    (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(
-      sc,
-      0,
-      [],
-    );
-    expect(gpuDrawables).not.toHaveBeenCalled();
+    (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(sc, 0, []);
     expect(wasmDrawables).toHaveBeenCalledTimes(1);
   });
 
-  it('force-webgpu consults the GPU tier first', () => {
-    fakeGpuReady.value = true;
+  it('force-wasm falls through to no hook when WASM is not ready', () => {
+    fakeWasmReady.value = false;
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
-      performanceMode: 'force-webgpu',
+      caps: { wasmSimd: true },
+      performanceMode: 'force-wasm',
     });
-    (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(
-      sc,
-      0,
-      [],
-    );
-    expect(gpuDrawables).toHaveBeenCalledTimes(1);
-    expect(wasmDrawables).not.toHaveBeenCalled();
+    expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
   });
 
-  it('force-webgpu falls through to WASM when GPU is unavailable', () => {
-    fakeGpuReady.value = false;
-    fakeWasmReady.value = true;
-    const sc = makeScaffolding();
-    applyTurboWasmAcceleration(sc, {
-      enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
-      performanceMode: 'force-webgpu',
-    });
-    (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(
-      sc,
-      0,
-      [],
-    );
-    expect(gpuDrawables).not.toHaveBeenCalled();
-    expect(wasmDrawables).toHaveBeenCalledTimes(1);
-  });
-
-  it('auto mode picks the highest available tier', () => {
-    fakeGpuReady.value = true;
-    fakeWasmReady.value = true;
-    const sc = makeScaffolding();
-    applyTurboWasmAcceleration(sc, {
-      enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
-      performanceMode: 'auto',
-    });
-    (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(
-      sc,
-      0,
-      [],
-    );
-    expect(gpuDrawables).toHaveBeenCalledTimes(1);
-    expect(wasmDrawables).not.toHaveBeenCalled();
-  });
-
-  it('auto mode falls through to WASM when GPU is not ready', () => {
-    fakeGpuReady.value = false;
-    fakeWasmReady.value = true;
-    const sc = makeScaffolding();
-    applyTurboWasmAcceleration(sc, {
-      enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
-      performanceMode: 'auto',
-    });
-    (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(
-      sc,
-      0,
-      [],
-    );
-    expect(gpuDrawables).not.toHaveBeenCalled();
-    expect(wasmDrawables).toHaveBeenCalledTimes(1);
-  });
-
-  it('every tier returns null when their respective backing is not ready', () => {
-    // This pins the parity contract: with all tiers disabled, every hook
-    // returns null. The scratch-render vendored fork sees null and falls
-    // through to the unmodified JS path. Any future regression that
-    // makes a tier return a non-null value without its backing would
-    // break this test.
-    fakeGpuReady.value = false;
+  it('hooks stay null when WASM backing is not ready in auto mode', () => {
     fakeWasmReady.value = false;
     wasmDrawables.mockImplementation(() => null);
     wasmColor.mockImplementation(() => null);
-    gpuDrawables.mockImplementation(() => null);
-    gpuColor.mockImplementation(() => null);
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
+      caps: { wasmSimd: true },
       performanceMode: 'auto',
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
-    expect(sc.renderer._twWasmDrawSprites).toBeNull();
   });
 
   it('removeTurboWasmAcceleration clears both hooks', () => {
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: false },
+      caps: { wasmSimd: true },
       performanceMode: 'auto',
     });
     removeTurboWasmAcceleration(sc);
@@ -231,73 +139,50 @@ describe('three-tier collision fallback (DoD parity)', () => {
   });
 });
 
-describe('selectBackendTier (3-tier fallback chain)', () => {
+describe('selectBackendTier (WASM ↔ JS fallback)', () => {
   it('legacy-only always returns none regardless of capability flags', () => {
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'legacy-only' },
-        true,
+        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'legacy-only' },
         true,
       ),
     ).toBe('none');
   });
 
-  it('auto order: GPU > WASM > none', () => {
+  it('auto order: wasm when ready, none otherwise', () => {
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'auto' },
-        true,
-        true,
-      ),
-    ).toBe('gpu');
-    expect(
-      selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'auto' },
-        false,
+        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'auto' },
         true,
       ),
     ).toBe('wasm');
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'auto' },
-        false,
+        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'auto' },
         false,
       ),
     ).toBe('none');
   });
 
-  it('force-wasm skips the GPU tier', () => {
+  it('force-wasm follows readiness', () => {
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'force-wasm' },
-        true,
+        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'force-wasm' },
         true,
       ),
     ).toBe('wasm');
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'force-wasm' },
-        true,
+        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'force-wasm' },
         false,
       ),
     ).toBe('none');
-  });
-
-  it('force-webgpu skips the auto GPU-only-on-success preference', () => {
-    expect(
-      selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'force-webgpu' },
-        true,
-        true,
-      ),
-    ).toBe('gpu');
   });
 
   it('disabled shortcut always returns none', () => {
     expect(
       selectBackendTier(
-        { enabled: false, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'auto' },
-        true,
+        { enabled: false, caps: { wasmSimd: true }, performanceMode: 'auto' },
         true,
       ),
     ).toBe('none');

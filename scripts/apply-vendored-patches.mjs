@@ -13,7 +13,10 @@
  *      number` DOMException that aborts loadProject() when a custom extension
  *      drives the stage size to 0 during load. The wasm-collision patch
  *      installs optional TurboWasm SIMD hooks in `isTouchingColor` and
- *      `isTouchingDrawables`.
+ *      `isTouchingDrawables` (the WebGPU compute + instanced renderer + SVG
+ *      acceleration hooks were retired when the corresponding UI selectors
+ *      were removed — see `STORAGE_VERSION` bump to 6 in
+ *      `src/utils/constants.ts`).
  *
  *   2. The `patches/vendored/*` patches are applied to the vendored
  *      scaffolding / scratch-vm sources via `git apply` inside

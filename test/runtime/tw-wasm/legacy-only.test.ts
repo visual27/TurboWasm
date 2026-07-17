@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 
 /**
  * DoD test for the legacy-only Performance Mode.
@@ -7,33 +7,39 @@ import { describe, expect, it, beforeEach } from 'vitest';
  * pixel-identical to the unmodified scratch-render. We can't verify
  * pixel-identity in unit tests, but we can verify that the renderer
  * hooks are cleared and that no tier is consulted.
+ *
+ * Phase 2 (WebGPU compute) and Phase 3 (WebGPU instanced renderer)
+ * were retired along with their UI selectors; this file used to mock
+ * the `gpu-collision` and `gpu-batch-renderer` modules to exercise
+ * the legacy-only dispatch logic. With those modules removed, the
+ * tests now verify the same DoD parity contract against the surviving
+ * WASM hook surface only.
  */
+
+const fakeWasmReady = { value: false };
+
+vi.mock('@/runtime/tw-wasm/wasm-collision-client', () => ({
+  initWasmCollision: () => {
+    fakeWasmReady.value = true;
+    return Promise.resolve({ memory: new WebAssembly.Memory({ initial: 1 }) });
+  },
+  isWasmCollisionReady: () => fakeWasmReady.value,
+  wasmIsTouchingDrawables: () => null,
+  wasmIsTouchingColor: () => null,
+  resetWasmCollisionForTesting: () => {
+    fakeWasmReady.value = false;
+  },
+}));
 
 import {
   applyTurboWasmAcceleration,
   removeTurboWasmAcceleration,
   selectBackendTier,
 } from '@/runtime/tw-wasm/applyTurboWasmAcceleration';
-import {
-  isWasmCollisionReady,
-  resetWasmCollisionForTesting,
-} from '@/runtime/tw-wasm/wasm-collision-client';
-import {
-  isGpuCollisionReady,
-  resetGpuCollisionForTesting,
-  setGpuCollisionReadyForTesting,
-} from '@/runtime/tw-wasm/gpu-collision';
-import {
-  isGpuBatchRendererReady,
-  resetGpuBatchRendererForTesting,
-} from '@/runtime/tw-wasm/gpu-batch-renderer';
 
 interface RendererStub {
   _twWasmIsTouchingDrawables?: ((...args: unknown[]) => unknown) | null;
   _twWasmIsTouchingColor?: ((...args: unknown[]) => unknown) | null;
-  _twWasmDrawSprites?: ((...args: unknown[]) => unknown) | null;
-  _twWasmGpuTouchingStart?: ((...args: unknown[]) => unknown) | null;
-  _twWasmGpuTouchingFin?: ((...args: unknown[]) => unknown) | null;
 }
 
 function makeScaffolding(): { renderer: RendererStub } {
@@ -42,95 +48,58 @@ function makeScaffolding(): { renderer: RendererStub } {
 
 describe('legacy-only mode (DoD parity)', () => {
   beforeEach(() => {
-    resetWasmCollisionForTesting();
-    resetGpuCollisionForTesting();
-    resetGpuBatchRendererForTesting();
+    fakeWasmReady.value = false;
   });
 
   it('selectBackendTier returns none regardless of capability flags', () => {
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true, webgpu: true }, performanceMode: 'legacy-only' },
-        true,
+        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'legacy-only' },
         true,
       ),
     ).toBe('none');
   });
 
-  it('hooks stay null in legacy-only mode even when both backings are ready', async () => {
-    // Simulate both backings being ready without invoking the real
-    // fetch-based init (which fails in jsdom). We force the gate on
-    // via the test knob and the stub `isWasmCollisionReady` would also
-    // need to flip — that's a contract violation, but for legacy-only
-    // we just need to verify the dispatch logic clears the hooks.
-    setGpuCollisionReadyForTesting(true);
-    expect(isGpuCollisionReady()).toBe(true);
-    expect(isGpuBatchRendererReady()).toBe(false);
-
+  it('hooks stay null in legacy-only mode even when WASM is ready', () => {
+    fakeWasmReady.value = true;
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
+      caps: { wasmSimd: true },
       performanceMode: 'legacy-only',
     });
-    // legacy-only → tier is 'none' regardless of readiness → hooks null
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
-    expect(sc.renderer._twWasmDrawSprites).toBeNull();
   });
 
   it('removeTurboWasmAcceleration clears every hook even in legacy-only', () => {
+    fakeWasmReady.value = true;
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
+      caps: { wasmSimd: true },
       performanceMode: 'legacy-only',
     });
     removeTurboWasmAcceleration(sc);
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
-    expect(sc.renderer._twWasmDrawSprites).toBeNull();
   });
 
   it('switching from auto → legacy-only clears the hooks', () => {
-    // The auto tier depends on which backings are ready at the time
-    // `applyTurboWasmAcceleration` runs. We force the WebGPU backing
-    // on so the auto tier selects 'gpu', then flip to legacy-only
-    // and verify everything clears.
-    setGpuCollisionReadyForTesting(true);
+    fakeWasmReady.value = true;
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
+      caps: { wasmSimd: true },
       performanceMode: 'auto',
     });
-    // With WebGPU ready, the auto tier installs the gpu hook.
     expect(typeof sc.renderer._twWasmIsTouchingDrawables).toBe('function');
     applyTurboWasmAcceleration(sc, {
       enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
+      caps: { wasmSimd: true },
       performanceMode: 'legacy-only',
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
-    expect(sc.renderer._twWasmDrawSprites).toBeNull();
-  });
-
-  it('legacy-only mode does not call initWasmCollision even when WASM SIMD is supported', async () => {
-    // Sanity: the legacy-only path is purely "no acceleration" — even
-    // when WASM SIMD is supported, the host should not waste cycles
-    // initialising the module. We verify the dispatch result is the
-    // same null-state regardless of capability flags.
-    expect(isWasmCollisionReady()).toBe(false);
-    setGpuCollisionReadyForTesting(true);
-    const sc = makeScaffolding();
-    applyTurboWasmAcceleration(sc, {
-      enabled: true,
-      caps: { wasmSimd: true, webgpu: true },
-      performanceMode: 'legacy-only',
-    });
-    expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
-    expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
-    expect(sc.renderer._twWasmDrawSprites).toBeNull();
   });
 });

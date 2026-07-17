@@ -5,75 +5,29 @@ export type ScaffoldingResizeMode = 'preserve-ratio' | 'dynamic-resize' | 'stret
 /**
  * Selects which collision-detection / rendering backend the runtime prefers.
  *
- *  - `'auto'`:         WebGPU when supported, then WASM SIMD, then the
- *                      original JavaScript path. The default for new users.
+ *  - `'auto'`:         WASM SIMD when supported, otherwise the original
+ *                      JavaScript path. The default for new users.
+ *                      Probes WebGPU at startup so a future re-introduction
+ *                      of the GPU compute tier is a one-line change.
  *  - `'force-wasm'`:   WASM SIMD is always used when it initialised
- *                      successfully; never falls through to WebGPU. Falls
- *                      back to the JavaScript path when WASM SIMD is
- *                      unavailable.
- *  - `'force-webgpu'`: WebGPU when supported. Falls through to WASM SIMD,
- *                      then JavaScript, when WebGPU is unavailable. Useful
- *                      for benchmarking the GPU pipeline on a known-good
- *                      machine.
+ *                      successfully; falls back to the JavaScript path when
+ *                      WASM SIMD is unavailable.
  *  - `'legacy-only'`:  All TurboWasm hooks are cleared; the runtime behaves
  *                      identically to the unmodified scratch-render. This
  *                      satisfies the Definition of Done parity requirement
  *                      (legacy output must be byte-identical to the
  *                      upstream renderer).
- */
-export type PerformanceMode = 'auto' | 'force-wasm' | 'force-webgpu' | 'legacy-only';
-
-export const PERFORMANCE_MODES: readonly PerformanceMode[] = [
-  'auto',
-  'force-wasm',
-  'force-webgpu',
-  'legacy-only',
-] as const;
-
-/**
- * Selects the SVG rendering acceleration strategy for the vendored
- * scratch-render. Stage 2 of the TurboWasm Acceleration plan. Default is
- * `off` so the runtime stays bit-identical with the TurboWarp native
- * `drawImage(this._svgImage, 0, 0)` path (Stage 1 baseline).
  *
- *  - `'off'`:      Stage 1 baseline. No TurboWasm SVG hooks are installed,
- *                  so SVGSkin falls through to the upstream `drawImage`
- *                  path exactly as shipped by TurboWarp. Pixel-identical
- *                  output to the unmodified renderer. Recommended default
- *                  for users who care about exact TurboWarp reproduction.
- *  - `'cache-only'`: Reuse the browser's decoded `ImageBitmap` for the
- *                  same SVG across `setSVG` calls. Cuts the browser
- *                  SVG-parse cost when the same costume is reloaded (e.g.
- *                  costume switching, project reload). Still uses
- *                  `drawImage` for the final rasterisation so the
- *                  pixel output is bit-identical to `'off'`.
- *  - `'mip-chain'`: Pre-decode multiple MIP scales (0.25x / 0.5x / 1x /
- *                  2x / 4x) and offload large SVG decode to a Web Worker
- *                  via `OffscreenCanvas` when available. Falls back to
- *                  the main thread on Safari FP (no OffscreenCanvas).
- *                  Pixel output is bit-identical to `'off'` because the
- *                  MIP rasterisation still uses the browser's native
- *                  decoder.
- *  - `'resvg-visual-equivalence'`: Reserved for a future Stage. When
- *                  implemented, will opt into a `resvg-wasm` SVG raster
- *                  path that targets PSNR ≥ 40 dB / SSIM ≥ 0.99 against
- *                  the browser-native path. The setting is exposed in the
- *                  schema for forward-compatibility but the UI does not
- *                  surface it and the runtime treats it as `'off'` until
- *                  a later commit wires the resvg hook.
+ * The previous `'force-webgpu'` value was removed when the WebGPU compute
+ * tier (Phase 2) was retired: the JS-side hook was never wired beyond
+ * `requestAdapter()` probing and always returned `null`, so a "Force WebGPU"
+ * option would have silently fallen through to WASM SIMD / JS. The
+ * persisted migration in `src/lib/persistence.ts` downgrades any v5
+ * payload with `performanceMode === 'force-webgpu'` to `'auto'`.
  */
-export type SvgAccelerationMode =
-  | 'off'
-  | 'cache-only'
-  | 'mip-chain'
-  | 'resvg-visual-equivalence';
+export type PerformanceMode = 'auto' | 'force-wasm' | 'legacy-only';
 
-export const SVG_ACCELERATION_MODES: readonly SvgAccelerationMode[] = [
-  'off',
-  'cache-only',
-  'mip-chain',
-  'resvg-visual-equivalence',
-] as const;
+export const PERFORMANCE_MODES: readonly PerformanceMode[] = ['auto', 'force-wasm', 'legacy-only'] as const;
 
 /**
  * Sandbox mode for custom extensions loaded from a project.
@@ -135,20 +89,6 @@ export interface AdvancedSettings {
    * so the user cannot accidentally lock themselves into the legacy path.
    */
   turboWasmAccelerationEnabled: boolean;
-  /**
-   * SVG rendering acceleration strategy (Stage 2 of the TurboWasm
-   * Acceleration plan). The default is `off` so the runtime stays
-   * pixel-identical to the TurboWarp native `drawImage(this._svgImage)`
-   * path. `cache-only` / `mip-chain` are opt-in speedups that preserve
-   * bit-identity; `resvg-visual-equivalence` is reserved for a future
-   * Stage and treated as `off` until the resvg hook is wired.
-   *
-   * Persists across reloads via the settings store. `saveAdvancedAsDefault()`
-   * preserves the user's choice (unlike `turboWasmAccelerationEnabled`
-   * which is always forced to `true`) because the field is a
-   * pre-computed preference, not a "broken state" safety toggle.
-   */
-  svgAccelerationMode: SvgAccelerationMode;
 }
 
 /**
@@ -200,13 +140,6 @@ export interface SettingsStoreShape {
   defaultAdvanced: AdvancedSettings;
   allowedExtensionUrls: string[];
   performanceMode: PerformanceMode;
-  /**
-   * Top-level mirror of `advanced.svgAccelerationMode` so the runtime
-   * can read the active mode without traversing the `advanced` shape.
-   * Kept in sync via `useSettingsStore.setSvgAccelerationMode` and the
-   * v3 → v4 migration in `src/lib/persistence.ts`.
-   */
-  svgAccelerationMode: SvgAccelerationMode;
   /**
    * Most recent non-30 fps the user explicitly chose (via the Settings
    * dialog NumberField, "Set as default", or Alt+Flag from a non-30

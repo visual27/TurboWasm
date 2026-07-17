@@ -14,7 +14,6 @@ describe('SettingsDialog — layout', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-      svgAccelerationMode: 'off',
     });
   });
 
@@ -66,57 +65,41 @@ describe('SettingsDialog — layout', () => {
 
   it('renders the Others section with Volume and Disable Compiler (no TurboWasm items)', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    // SettingsSection adds data-testid to its <h3> heading. Use the
-    // heading to scope, then climb to its parent <section> region so
-    // `within(...)` searches the section's children (rows).
     const othersSection = screen
       .getByTestId('settings-section-others')
       .closest('section') as HTMLElement;
     expect(within(othersSection).getByText('Volume')).toBeInTheDocument();
     expect(within(othersSection).getByText('Disable Compiler')).toBeInTheDocument();
-    // TurboWasm items have moved to their own section.
     expect(within(othersSection).queryByText('TurboWasm Acceleration')).toBeNull();
     expect(within(othersSection).queryByText('Performance Mode')).toBeNull();
-    expect(within(othersSection).queryByText('SVG Acceleration')).toBeNull();
   });
 
-  it('renders the TurboWasm section with TurboWasm Acceleration, Performance Mode, and SVG Acceleration', () => {
+  it('does NOT render the retired SVG Acceleration dropdown', () => {
+    // SVG acceleration (Stage 2) was removed along with the WebGPU
+    // compute / instanced renderer tiers. The dialog must not surface
+    // a non-functional dropdown.
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(screen.queryByLabelText('SVG acceleration mode')).toBeNull();
+    expect(screen.queryByText('SVG Acceleration')).toBeNull();
+    expect(screen.queryByRole('option', { name: /Cache only/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /MIP chain/i })).toBeNull();
+  });
+
+  it('renders the TurboWasm section with TurboWasm Acceleration and Performance Mode', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const turboSection = screen
       .getByTestId('settings-section-turbowasm')
       .closest('section') as HTMLElement;
     expect(within(turboSection).getByText('TurboWasm Acceleration')).toBeInTheDocument();
     expect(within(turboSection).getByText('Performance Mode')).toBeInTheDocument();
-    expect(within(turboSection).getByText('SVG Acceleration')).toBeInTheDocument();
   });
 
-  it('renders the Performance Mode dropdown in the TurboWasm section', () => {
+  it('Performance Mode dropdown exposes only auto / force-wasm / legacy-only', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const select = screen.getByLabelText('Performance mode');
-    expect(select).toBeInTheDocument();
-    const turboSection = screen
-      .getByTestId('settings-section-turbowasm')
-      .closest('section') as HTMLElement;
-    expect(within(turboSection).getByLabelText('Performance mode')).toBe(select);
-  });
-
-  it('renders the SVG Acceleration dropdown in the TurboWasm section', () => {
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    expect(screen.getByText('SVG Acceleration')).toBeInTheDocument();
-    const select = screen.getByLabelText('SVG acceleration mode');
-    expect(select).toBeInTheDocument();
-    const turboSection = screen
-      .getByTestId('settings-section-turbowasm')
-      .closest('section') as HTMLElement;
-    expect(within(turboSection).getByLabelText('SVG acceleration mode')).toBe(select);
-  });
-
-  it('SVG Acceleration select reflects the current store value', () => {
-    useSettingsStore.getState().setSvgAccelerationMode('cache-only');
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const trigger = screen.getByLabelText('SVG acceleration mode');
-    // The trigger shows the option label, not the raw value.
-    expect(trigger).toHaveTextContent(/Cache only/i);
+    const trigger = screen.getByLabelText('Performance mode');
+    expect(trigger).toHaveTextContent(/Auto/i);
+    // The retired `force-webgpu` value must not be selectable.
+    expect(screen.queryByRole('option', { name: /Force WebGPU/i })).toBeNull();
   });
 
   it('does NOT render an Extensions tab', () => {
@@ -153,10 +136,8 @@ describe('SettingsDialog — layout', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     await user.click(screen.getByTestId('settings-set-default'));
     const s = useSettingsStore.getState();
-    // Runtime advanced keeps the in-session edits.
     expect(s.advanced.fps).toBe(60);
     expect(s.advanced.disableCompiler).toBe(true);
-    // defaultAdvanced is the runtime snapshot with disableCompiler forced off.
     expect(s.defaultAdvanced.fps).toBe(60);
     expect(s.defaultAdvanced.stageWidth).toBe(800);
     expect(s.defaultAdvanced.turboMode).toBe(true);
@@ -185,7 +166,6 @@ describe('SettingsDialog — TurboWasm Acceleration toggle', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-    svgAccelerationMode: 'off',
     });
   });
 
@@ -225,54 +205,18 @@ describe('SettingsDialog — TurboWasm dropdowns inside a Dialog', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
       performanceMode: 'auto',
-      svgAccelerationMode: 'off',
     });
   });
 
-  // Radix Dialog locks the page by applying `pointer-events: none` on
-  // <body> while the dialog is open. The SelectField inside this dialog
-  // is rendered through Radix Popover's portal, which lands directly
-  // under <body>. Without an explicit opt-in, every portal'd descendant
-  // — wrapper, content root, listbox, options — inherits the body style
-  // and the dropdown *renders* but no option can be clicked. The fix
-  // lives in src/components/ui/popover.tsx (forces `pointer-events:
-  // auto` on the Radix content root). These tests catch a regression of
-  // that fix from the user perspective.
-
   it('Radix Dialog locks the body with pointer-events: none (the precondition this section guards)', () => {
-    // The original bug surfaced as: opening the dropdown rendered the
-    // listbox, but no option was clickable. Root cause: Radix Dialog
-    // applies `pointer-events: none` inline on <body> while the dialog
-    // is open, and `pointer-events` is *inherited* (CSS UI 4), so the
-    // portal'd Popover Content (and every option inside it) inherited
-    // `none`. The fix lives in src/components/ui/popover.tsx — it
-    // forces `pointer-events: auto` on the Radix Popover Content root.
-    //
-    // We pin the *precondition* here: while the dialog is open, the
-    // body really does carry `pointer-events: none`. Combined with the
-    // popover.tsx contract below and the manual browser smoke, this is
-    // enough to guard the user-visible regression.
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     expect(document.body.style.pointerEvents).toBe('none');
   });
 
   it('Popover Content applies pointer-events: auto (regression for dropdown clicks in any wrapping Dialog)', async () => {
-    // Direct regression test for the user-reported bug. Even though we
-    // cannot easily click through Radix Dialog → Popover in jsdom (the
-    // Dialog's outside-pointer-event latch reads `getBoundingClientRect`,
-    // which jsdom returns as zeros and confuses the dialog's
-    // inside/outside classification), we *can* assert that whenever a
-    // SelectField's popover content is mounted in any DOM tree, the
-    // Radix Popover Content root carries `pointer-events: auto`. That
-    // is what neutralises the inherited body `pointer-events: none`
-    // applied by Radix Dialog.
     const { Popover, PopoverContent, PopoverTrigger } = await import(
       '@/components/ui/popover'
     );
-    // Render an isolated PopoverContent (no surrounding Dialog) so jsdom
-    // mounts its portal normally. We then inspect the resulting Radix
-    // Popover Content root to verify the className + style contract that
-    // protects every SelectField in the real app.
     const Wrapper = (): React.JSX.Element => (
       <Popover open>
         <PopoverTrigger aria-label="probe trigger">trigger</PopoverTrigger>
@@ -281,20 +225,11 @@ describe('SettingsDialog — TurboWasm dropdowns inside a Dialog', () => {
     );
     render(<Wrapper />);
     const content = await screen.findByLabelText('probe content');
-    // The fix is in two layers: a Tailwind `pointer-events-auto` class
-    // (which compiles to `pointer-events: auto`) and an inline style of
-    // the same property. Both must remain so that future refactors
-    // cannot silently drop the override.
     expect(content.className).toMatch(/pointer-events-auto/);
     expect(content.getAttribute('style') ?? '').toMatch(/pointer-events:\s*auto/);
   });
 
-  it('SelectField option click propagates value to the consumer (the canonical dropdown semantic)', async () => {
-    // Mounting SelectField inside a Radix Dialog makes the click path
-    // awkward in jsdom (see precondition test above), so we exercise it
-    // here without the surrounding dialog. End-to-end behaviour is
-    // covered by the manual browser smoke; in jsdom we pin the
-    // lower-level contract: clicking an option calls `onChange(opt)`.
+  it('SelectField option click propagates value to the consumer', async () => {
     const { SelectField } = await import('@/components/ui/select');
     const onChange = vi.fn<(v: 'auto' | 'force-wasm') => void>();
     const user = userEvent.setup();
@@ -325,13 +260,8 @@ describe('SettingsDialog — NumberField commit semantics', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-    svgAccelerationMode: 'off',
     });
   });
-
-  // The NumberField is now a controlled draft that only commits on blur or
-  // Enter. These tests pin that contract so future changes (e.g. wiring up
-  // a controlled form library) cannot regress it.
 
   it('does not write to the store while the user is still typing in FPS', async () => {
     const user = userEvent.setup();
@@ -339,8 +269,6 @@ describe('SettingsDialog — NumberField commit semantics', () => {
     const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
     fpsInput.focus();
     await user.keyboard('{Backspace}');
-    // The input is now empty, but we haven't blurred or pressed Enter, so
-    // the store must NOT have been updated with a partial value.
     expect(useSettingsStore.getState().advanced.fps).toBe(30);
     expect(fpsInput.value).toBe('');
   });
@@ -381,8 +309,6 @@ describe('SettingsDialog — NumberField commit semantics', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
     fpsInput.focus();
-    // 1500 is well above FPS_MAX (1000). The NumberField must clamp on
-    // commit so the runtime never sees an out-of-range framerate.
     await user.keyboard('{Backspace}1500');
     await user.keyboard('{Enter}');
     expect(useSettingsStore.getState().advanced.fps).toBe(FPS_MAX);
@@ -426,10 +352,6 @@ describe('SettingsDialog — NumberField commit semantics', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const widthInput = screen.getByLabelText('Stage width') as HTMLInputElement;
     widthInput.focus();
-    // `user.clear()` empties the field in one shot so we don't have to
-    // count how many `{Backspace}` presses we need for the default "480"
-    // value. The alternative (`{Backspace}800`) would have left "488" in
-    // the input.
     await user.clear(widthInput);
     await user.keyboard('800');
     await user.keyboard('{Tab}');
@@ -457,15 +379,31 @@ describe('SettingsDialog — NumberField commit semantics', () => {
   });
 });
 
-/**
- * The dialog is a passive mirror of `useSettingsStore.advanced`. The
- * project loader calls `applyRuntimeOverrides` after parsing the
- * `// _twconfig_` comment so the dialog reflects the runtime values
- * the VM is using for the currently-loaded project (and not the
- * user's saved defaults). Regression coverage for the original bug
- * where the dialog stayed pinned at the saved defaults even after
- * a project with overrides had been loaded.
- */
+describe('SettingsDialog — Disable Compiler description mentions "Set as default" override', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+    });
+  });
+
+  it('hints the toggle is session-only ("Set as default" re-enables)', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    // The description below the "Disable Compiler" row tells the user
+    // that "Set as default" will always re-enable the compiler. This
+    // guards the docs/UI contract described in AGENTS.md.
+    const othersSection = screen
+      .getByTestId('settings-section-others')
+      .closest('section') as HTMLElement;
+    const description = within(othersSection).getByText(/Set as default/i);
+    expect(description).toBeInTheDocument();
+  });
+});
+
 describe('SettingsDialog — twconfig overrides propagation', () => {
   beforeEach(() => {
     useSettingsStore.setState({
@@ -475,15 +413,10 @@ describe('SettingsDialog — twconfig overrides propagation', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-    svgAccelerationMode: 'off',
     });
   });
 
   it('reflects runtime overrides applied after the dialog is mounted', async () => {
-    // User opens the dialog first (with no project loaded), then drops
-    // a project that ships a // _twconfig_ comment. The dialog must
-    // update to mirror the merged value, not stay pinned at the saved
-    // defaults.
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const fpsInput = screen.getByLabelText('FPS') as HTMLInputElement;
     const widthInput = screen.getByLabelText('Stage width') as HTMLInputElement;
@@ -502,11 +435,6 @@ describe('SettingsDialog — twconfig overrides propagation', () => {
   });
 
   it('snaps back to saved defaults when a project without twconfig is loaded', async () => {
-    // User has saved non-default defaults (fps: 60, stageWidth: 800).
-    // After loading a project with overrides { fps: 90 }, the dialog
-    // shows fps=90. Loading a second project that ships NO twconfig
-    // must snap the dialog back to the saved defaults (fps=60), not
-    // stay pinned at the previous project's fps=90.
     useSettingsStore.getState().patchAdvanced({ fps: 60, stageWidth: 800 });
     useSettingsStore.getState().saveAdvancedAsDefault();
 
@@ -519,7 +447,6 @@ describe('SettingsDialog — twconfig overrides propagation', () => {
     expect(fpsInput.value).toBe('90');
 
     await act(async () => {
-      // No twconfig → empty overrides → snap back to saved defaults.
       useSettingsStore.getState().applyRuntimeOverrides({});
     });
     expect(useSettingsStore.getState().advanced.fps).toBe(60);

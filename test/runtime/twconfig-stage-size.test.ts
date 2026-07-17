@@ -81,7 +81,6 @@ beforeEach(() => {
     defaultAdvanced: makeAdvanced(),
     allowedExtensionUrls: [],
     performanceMode: 'auto',
-    svgAccelerationMode: 'off',
   });
 });
 

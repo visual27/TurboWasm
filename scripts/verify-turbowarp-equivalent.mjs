@@ -3,11 +3,12 @@
  * Verify that the rendered sprite output is *bit-identical* between the
  * default PerformanceMode and `legacy-only`.
  *
- * After Stage 1 of the TurboWasm Acceleration plan, Phase 4 (resvg-wasm)
- * is removed. The remaining rendering path is identical to the upstream
- * TurboWarp Scaffolding `drawImage(this._svgImage, ...)` flow regardless
- * of which PerformanceMode is selected, so the canvas pixels produced by
- * the two modes must match exactly.
+ * Phase 4 (resvg-wasm) was removed in v5; Phase 2 (WebGPU compute) and
+ * Phase 3 (WebGPU instanced renderer) were retired in v6 along with
+ * their UI selectors. The remaining rendering path is identical to the
+ * upstream TurboWarp Scaffolding `drawImage(this._svgImage, ...)` flow
+ * regardless of which PerformanceMode is selected, so the canvas pixels
+ * produced by the two modes must match exactly.
  *
  * Mechanism:
  *   1. Spin up `vite preview` in the background (Windows: `taskkill /f /t`
@@ -118,12 +119,12 @@ async function captureForMode(browser, mode, fixturePath) {
       const existingRaw = localStorage.getItem(key);
       let parsed;
       try {
-        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 3 };
+        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 6 };
       } catch {
-        parsed = { state: {}, version: 3 };
+        parsed = { state: {}, version: 6 };
       }
       parsed.state.performanceMode = mode;
-      parsed.version = 3;
+      parsed.version = 6;
       localStorage.setItem(key, JSON.stringify(parsed));
     },
     { key: SETTINGS_KEY, mode },

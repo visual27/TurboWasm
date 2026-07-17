@@ -27,23 +27,8 @@ import {
   applyTurboWasmAcceleration,
   removeTurboWasmAcceleration,
 } from '@/runtime/tw-wasm/applyTurboWasmAcceleration';
-import {
-  detectCapabilities,
-  type RuntimeCapabilities,
-} from '@/runtime/tw-wasm/capabilities';
+import { detectCapabilities, type RuntimeCapabilities } from '@/runtime/tw-wasm/capabilities';
 import { initWasmCollision } from '@/runtime/tw-wasm/wasm-collision-client';
-import {
-  initGpuCollision,
-  disposeGpuCollision,
-} from '@/runtime/tw-wasm/gpu-collision';
-import {
-  initGpuBatchRenderer,
-  disposeGpuBatchRenderer,
-} from '@/runtime/tw-wasm/gpu-batch-renderer';
-import {
-  applySvgAcceleration,
-} from '@/runtime/tw-wasm/svg-acceleration/applySvgAcceleration';
-import type { SvgAccelerationMode } from '@/types/settings';
 
 let attachedContainer: HTMLElement | null = null;
 let attachedScaffolding: ScaffoldingInstance | null = null;
@@ -193,8 +178,6 @@ export function __resetTurboWasmForTesting(): void {
   if (attachedScaffolding) {
     removeTurboWasmAcceleration(attachedScaffolding);
   }
-  disposeGpuCollision();
-  disposeGpuBatchRenderer();
 }
 
 /**
@@ -621,41 +604,18 @@ async function initScaffolding(
   // load we silently fall back to the JS path — no toasts, no modal, just
   // a one-time info entry the user can inspect via the error log.
   if (!runtimeCapabilities) {
-    runtimeCapabilities = await detectCapabilities().catch(() => ({
-      wasmSimd: false,
-      webgpu: false,
-    }));
+    runtimeCapabilities = await detectCapabilities().catch(() => ({ wasmSimd: false }));
   }
-  // TurboWasm acceleration: detect capabilities + initialise each backend
-  // (WASM SIMD, WebGPU, instanced batch renderer) in parallel with the
-  // renderer setup so the renderer hooks can be installed the moment we
-  // have a renderer reference. Failures silently fall back to the next
-  // lower tier — no toasts, no modals.
   const performanceMode = useSettingsStore.getState().performanceMode;
   const wantsAcceleration =
     advanced.turboWasmAccelerationEnabled && performanceMode !== 'legacy-only';
   if (wantsAcceleration && runtimeCapabilities.wasmSimd) {
     await initWasmCollision();
   }
-  if (wantsAcceleration && runtimeCapabilities.webgpu) {
-    await initGpuCollision().catch(() => false);
-    await initGpuBatchRenderer({
-      container,
-      caps: runtimeCapabilities,
-      performanceMode,
-    }).catch(() => false);
-  }
   applyTurboWasmAcceleration(attachedScaffolding, {
     enabled: advanced.turboWasmAccelerationEnabled,
     caps: runtimeCapabilities,
     performanceMode,
-  });
-  // Stage 2 SVG acceleration: install the host on initial startup so
-  // the SVGSkin patch hook is in place from the first frame. When
-  // `mode === 'off'` (the default), the host is null and the patch
-  // falls through to the Stage 1 TurboWarp-native `drawImage` path.
-  applySvgAcceleration(attachedScaffolding, {
-    mode: advanced.svgAccelerationMode,
   });
   attachedScaffolding.appendTo(container);
   return attachedScaffolding;
@@ -684,7 +644,6 @@ function getCurrentAdvanced(): AdvancedSettings {
     stageHeight: 360,
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
-    svgAccelerationMode: 'off',
   };
 }
 
@@ -703,7 +662,6 @@ function defaultAdvanced(): AdvancedSettings {
     stageHeight: 360,
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
-    svgAccelerationMode: 'off',
   };
 }
 
@@ -769,7 +727,6 @@ export function applySettings(
   advanced: AdvancedSettings,
   performanceMode: import('@/types/settings').PerformanceMode = useSettingsStore.getState().performanceMode,
   prevPerformanceMode: import('@/types/settings').PerformanceMode = performanceMode,
-  prevSvgAccelerationMode: SvgAccelerationMode = useSettingsStore.getState().svgAccelerationMode,
 ): void {
   if (!attachedScaffolding || !currentAdvanced) return;
   const previous = currentAdvanced;
@@ -800,22 +757,10 @@ export function applySettings(
     if (wantsAcceleration && runtimeCapabilities.wasmSimd) {
       void initWasmCollision();
     }
-    if (wantsAcceleration && runtimeCapabilities.webgpu) {
-      void initGpuCollision().catch(() => false);
-    }
     applyTurboWasmAcceleration(attachedScaffolding, {
       enabled: advanced.turboWasmAccelerationEnabled,
       caps: runtimeCapabilities,
       performanceMode,
-    });
-  }
-  // Stage 2 SVG acceleration: re-apply the host only when the mode
-  // actually changes. Mirroring the performanceMode guard above,
-  // toggling unrelated settings (fps, stage size, etc.) must not
-  // disturb the host.
-  if (prevSvgAccelerationMode !== advanced.svgAccelerationMode) {
-    applySvgAcceleration(attachedScaffolding, {
-      mode: advanced.svgAccelerationMode,
     });
   }
   // [tw-stage-size] explicit relayout after applySettings. The Scaffolding's

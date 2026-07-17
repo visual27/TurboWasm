@@ -15,7 +15,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { SelectField } from '@/components/ui/select';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger } from '@/utils/format';
-import type { AdvancedSettings, PerformanceMode, SvgAccelerationMode } from '@/types/settings';
+import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
 import { Button } from '@/components/ui/button';
 import { FPS_MAX, FPS_MIN } from '@/utils/constants';
 
@@ -24,6 +24,13 @@ import { FPS_MAX, FPS_MIN } from '@/utils/constants';
  * Kept here (next to the Settings dialog) rather than next to the type
  * because they are presentation strings and the type file is loaded by
  * tests / persistence code that has no opinion on UI copy.
+ *
+ * NOTE: The WebGPU compute tier was removed from the runtime (Phase 2
+ * was never wired beyond `requestAdapter()` probing and always returned
+ * `null` from the JS-side hook). `force-webgpu` is therefore no longer
+ * a selectable option — only WASM SIMD and the parity mode remain as
+ * explicit overrides. `auto` still probes WebGPU availability so a
+ * future re-introduction of the GPU path is a one-line change.
  */
 const PERFORMANCE_MODE_OPTIONS: ReadonlyArray<{
   value: PerformanceMode;
@@ -33,12 +40,7 @@ const PERFORMANCE_MODE_OPTIONS: ReadonlyArray<{
   {
     value: 'auto',
     label: 'Auto',
-    description: 'WebGPU → WASM SIMD → JavaScript',
-  },
-  {
-    value: 'force-webgpu',
-    label: 'Force WebGPU',
-    description: 'WebGPU only; falls back to WASM SIMD, then JavaScript',
+    description: 'WASM SIMD when available, otherwise the original JavaScript path.',
   },
   {
     value: 'force-wasm',
@@ -49,34 +51,6 @@ const PERFORMANCE_MODE_OPTIONS: ReadonlyArray<{
     value: 'legacy-only',
     label: 'Legacy only',
     description: 'Identical to unmodified scratch-render (parity mode)',
-  },
-];
-
-/**
- * UI-visible SVG acceleration modes. The 4th value
- * (`'resvg-visual-equivalence'`) is reserved for a future Stage and is
- * intentionally NOT surfaced — the Settings dialog only presents the
- * three modes the runtime can actually use.
- */
-const SVG_ACCELERATION_MODE_OPTIONS: ReadonlyArray<{
-  value: SvgAccelerationMode;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: 'off',
-    label: 'Off',
-    description: 'Bit-identical to TurboWarp native (Stage 1 baseline).',
-  },
-  {
-    value: 'cache-only',
-    label: 'Cache only',
-    description: 'Reuses the browser-decoded ImageBitmap across setSVG calls.',
-  },
-  {
-    value: 'mip-chain',
-    label: 'MIP chain',
-    description: 'Pre-decodes multiple scales; offloads to a Web Worker when available.',
   },
 ];
 
@@ -421,15 +395,9 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
 }: RuntimeSectionProps): React.JSX.Element {
   const performanceMode = useSettingsStore((s) => s.performanceMode);
   const setPerformanceMode = useSettingsStore((s) => s.setPerformanceMode);
-  const svgAccelerationMode = useSettingsStore((s) => s.svgAccelerationMode);
-  const setSvgAccelerationMode = useSettingsStore((s) => s.setSvgAccelerationMode);
   const onPerformanceModeChange = React.useCallback(
     (mode: PerformanceMode) => setPerformanceMode(mode),
     [setPerformanceMode],
-  );
-  const onSvgAccelerationModeChange = React.useCallback(
-    (mode: SvgAccelerationMode) => setSvgAccelerationMode(mode),
-    [setSvgAccelerationMode],
   );
   return (
     <SettingsSection id="turbowasm" title="TurboWasm">
@@ -448,7 +416,7 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
       <FieldRow
         id="performance-mode"
         label="Performance Mode"
-        description="Selects the rendering / collision-detection backend. 'auto' picks the best available (WebGPU → WASM SIMD → JS). 'force-webgpu' / 'force-wasm' skip the higher tier when it fails to initialise. 'legacy-only' disables all TurboWasm hooks so the runtime behaves identically to unmodified scratch-render."
+        description="Selects the collision-detection backend. 'auto' uses WASM SIMD when available and falls back to the JS path otherwise. 'force-wasm' pins the runtime to WASM SIMD (still falls back to JS when SIMD is unavailable). 'legacy-only' disables all TurboWasm hooks so the runtime behaves identically to unmodified scratch-render."
       >
         <SelectField<PerformanceMode>
           id="performance-mode"
@@ -456,19 +424,6 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
           onChange={onPerformanceModeChange}
           options={PERFORMANCE_MODE_OPTIONS}
           ariaLabel="Performance mode"
-        />
-      </FieldRow>
-      <FieldRow
-        id="svg-acceleration-mode"
-        label="SVG Acceleration"
-        description="How the renderer prepares SVG textures. 'Off' uses TurboWarp native decoding bit-identically (Stage 1 baseline). 'Cache only' reuses the browser-decoded ImageBitmap across setSVG calls. 'MIP chain' pre-decodes multiple scales and offloads large SVGs to a Web Worker when available (falls back to main thread on Safari FP). All three modes are pixel-equivalent to 'Off'."
-      >
-        <SelectField<SvgAccelerationMode>
-          id="svg-acceleration-mode"
-          value={svgAccelerationMode}
-          onChange={onSvgAccelerationModeChange}
-          options={SVG_ACCELERATION_MODE_OPTIONS}
-          ariaLabel="SVG acceleration mode"
         />
       </FieldRow>
     </SettingsSection>
@@ -523,7 +478,7 @@ const OthersSection = React.memo(function OthersSection({
       <FieldRow
         id="disable-compiler"
         label="Disable Compiler"
-        description="Force the VM to interpret scripts (slower but more compatible)."
+        description="Force the VM to interpret scripts (slower but more compatible). 'Set as default' always re-enables the compiler, so this toggle is session-only."
       >
         <SwitchField
           id="disable-compiler"

@@ -1,4 +1,4 @@
-import type { AdvancedSettings, PerformanceMode, SvgAccelerationMode } from '@/types/settings';
+import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
 
 export const APP_NAME = 'TurboWasm Viewer';
 
@@ -16,7 +16,6 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   stageHeight: 360,
   extensionSandboxMode: 'worker',
   turboWasmAccelerationEnabled: true,
-  svgAccelerationMode: 'off',
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
@@ -42,9 +41,15 @@ export const STORAGE_KEYS = {
 // TurboWasm Acceleration plan). Bumped to 5 when the top-level
 // `userExplicitFps` field was added to remember the user's most recent
 // non-30 fps across toggles and reloads (drives the Alt+Flag FPS
-// shortcut's round-trip behavior). Older payloads are read and migrated
-// on the fly — see `src/lib/persistence.ts`.
-export const STORAGE_VERSION = 5;
+// shortcut's round-trip behavior). Bumped to 6 when the
+// `svgAccelerationMode` field and its top-level mirror were retired
+// along with the WebGPU compute tier (Phase 2) and the WebGPU instanced
+// renderer (Phase 3) — both were never wired beyond feature detection.
+// v5 → v6 migration downgrades any `performanceMode: 'force-webgpu'`
+// payload to `'auto'` so a user who had pinned WebGPU before the
+// removal does not silently end up on a no-op path. Older payloads are
+// read and migrated on the fly — see `src/lib/persistence.ts`.
+export const STORAGE_VERSION = 6;
 
 /**
  * Default value for `performanceMode` when no user preference has been
@@ -52,15 +57,6 @@ export const STORAGE_VERSION = 5;
  * runtime pick the best backend per environment.
  */
 export const DEFAULT_PERFORMANCE_MODE: PerformanceMode = 'auto';
-
-/**
- * Default value for `svgAccelerationMode` when no user preference has
- * been persisted yet (or when the legacy v3 → v4 migration runs). `off`
- * keeps the runtime on the Stage 1 TurboWarp-native SVG path so a user
- * upgrading their saved settings picks up the recommended default with
- * zero visual change.
- */
-export const DEFAULT_SVG_ACCELERATION_MODE: SvgAccelerationMode = 'off';
 
 export const ENV = {
   githubRepoUrl:

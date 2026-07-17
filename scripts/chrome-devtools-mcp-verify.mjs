@@ -1,9 +1,11 @@
 /**
  * Comprehensive real-browser verification harness for the TurboWasm
- * Viewer — covers Phase A (PerformanceMode) / Phase B (resvg-wasm) /
- * Phase C (WebGPU compute) / Phase D (WebGPU instanced renderer) and
- * the common foundation. Drives a real headless Chromium via
- * `playwright` (functionally equivalent to `chrome-devtools-mcp`).
+ * Viewer — covers the surviving WASM-SIMD ↔ JS fallback chain and
+ * the localStorage migration contract. Phase 2 (WebGPU compute),
+ * Phase 3 (WebGPU instanced renderer), and the Stage 2 SVG
+ * acceleration host were retired in v6 along with their UI selectors;
+ * this harness no longer references them and asserts the renderer
+ * carries only the surviving hooks.
  *
  * Run with: `node scripts/chrome-devtools-mcp-verify.mjs --url http://localhost:4173/`.
  *
@@ -61,10 +63,15 @@ async function readHooks(page) {
       hasScaffolding: typeof tw.scaffolding === 'object' && tw.scaffolding !== null,
       hasWasmHook: typeof r._twWasmIsTouchingDrawables === 'function',
       hasWasmColorHook: typeof r._twWasmIsTouchingColor === 'function',
-      hasGpuHook: typeof r._twWasmGpuTouchingStart === 'function',
+      // Retired hooks — must remain absent. Pinning them here catches
+      // a regression where a stale UMD is shipped with the
+      // svg-acceleration / WebGPU compute / instanced renderer hooks
+      // still installed.
+      hasGpuStartHook: typeof r._twWasmGpuTouchingStart === 'function',
       hasGpuFinHook: typeof r._twWasmGpuTouchingFin === 'function',
       hasDrawBatchHook: typeof r._twWasmDrawSprites === 'function',
-      hasSvgHook: !!r._twWasmRasterSvgCostume,
+      hasSvgHostHook: !!r._twWasmSvgAcceleration,
+      hasResvgRasterHook: !!r._twWasmRasterSvgCostume,
       drawables: r._allDrawables?.length ?? 0,
     };
   });
@@ -312,11 +319,13 @@ async function main() {
     jsonLog('B2-perf-mode-options', perfDropdownOptions);
     recordResult(
       'B.perf_mode_options_count',
-      Array.isArray(perfDropdownOptions) && perfDropdownOptions.length === 4,
+      Array.isArray(perfDropdownOptions) && perfDropdownOptions.length === 3,
       perfDropdownOptions,
     );
-    // Verify option labels match the spec
-    const expectedLabels = ['Auto', 'Force WebGPU', 'Force WASM SIMD', 'Legacy only'];
+    // Verify option labels match the spec. `force-webgpu` was retired
+    // in v6; the dropdown now exposes only Auto / Force WASM SIMD /
+    // Legacy only.
+    const expectedLabels = ['Auto', 'Force WASM SIMD', 'Legacy only'];
     const hasAllLabels = expectedLabels.every((lbl) =>
       perfDropdownOptions.some((o) => o.text.includes(lbl)),
     );
@@ -339,7 +348,6 @@ async function main() {
   // Take screenshots for each mode
   const snapLegacy = await setModeAndReload(page, 'legacy-only');
   const snapForceWasm = await setModeAndReload(page, 'force-wasm');
-  const snapForceWebgpu = await setModeAndReload(page, 'force-webgpu');
   const snapAuto = await setModeAndReload(page, 'auto');
 
   // Screenshot per mode (some may not reload the project; do it explicitly)
@@ -372,7 +380,6 @@ async function main() {
   // (Already have snaps from setModeAndReload above; replace with project-loaded ones)
   const snapLegacyLoaded = await screenshotMode('legacy-only');
   const snapForceWasmLoaded = await screenshotMode('force-wasm');
-  const snapForceWebgpuLoaded = await screenshotMode('force-webgpu');
   const snapAutoLoaded = await screenshotMode('auto');
 
   // Use the loaded snaps for the assertions
@@ -380,26 +387,21 @@ async function main() {
     snapLegacyLoaded.performanceMode === 'legacy-only' &&
     snapLegacyLoaded.hasWasmHook === false &&
     snapLegacyLoaded.hasWasmColorHook === false &&
-    snapLegacyLoaded.hasGpuHook === false &&
+    snapLegacyLoaded.hasGpuStartHook === false &&
     snapLegacyLoaded.hasDrawBatchHook === false &&
-    snapLegacyLoaded.hasSvgHook === false;
+    snapLegacyLoaded.hasSvgHostHook === false &&
+    snapLegacyLoaded.hasResvgRasterHook === false;
   recordResult('C.legacy_only_all_hooks_detached', legacyAllDetached, snapLegacyLoaded);
 
   const autoMatchesCaps =
     snapAutoLoaded.performanceMode === 'auto' &&
-    snapAutoLoaded.hasWasmHook === Boolean(snapAutoLoaded.capabilities?.wasmSimd) &&
-    snapAutoLoaded.hasGpuHook === Boolean(snapAutoLoaded.capabilities?.webgpu && false);
+    snapAutoLoaded.hasWasmHook === Boolean(snapAutoLoaded.capabilities?.wasmSimd);
   recordResult('C.auto_mode_matches_capabilities', autoMatchesCaps, snapAutoLoaded);
 
   recordResult(
     'C.force_wasm_mode_does_not_throw',
     snapForceWasmLoaded.performanceMode === 'force-wasm' && typeof snapForceWasmLoaded.hasWasmHook === 'boolean',
     snapForceWasmLoaded,
-  );
-  recordResult(
-    'C.force_webgpu_mode_does_not_throw',
-    snapForceWebgpuLoaded.performanceMode === 'force-webgpu' && typeof snapForceWebgpuLoaded.hasGpuHook === 'boolean',
-    snapForceWebgpuLoaded,
   );
 
   // ----- D. __turbowasm exposed value shape -----
@@ -605,12 +607,13 @@ async function main() {
   );
   recordResult('H.scaffolding_loaded', jsRequests.some((r) => r.url.includes('scaffolding') && r.status === 200), { jsRequests });
 
-  // ----- I. Visual regression (4 modes) -----
+  // ----- I. Visual regression (3 modes) -----
+  // `force-webgpu` was retired in v6; the three surviving modes each get
+  // a screenshot under logs/.
   const screenshots = [
     'chrome-devtools-home-auto.png',
     'chrome-devtools-home-legacy-only.png',
     'chrome-devtools-home-force-wasm.png',
-    'chrome-devtools-home-force-webgpu.png',
   ];
   const shots = screenshots.map((s) => ({
     file: s,

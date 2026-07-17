@@ -1,7 +1,14 @@
 /**
- * End-to-end regression test for the Stage 1 (Phase 4 removal) invariant:
- * sprite rendering output must be bit-identical between the default
- * PerformanceMode and `legacy-only`.
+ * End-to-end regression test for the surviving performance-pipeline
+ * invariant: sprite rendering output must be bit-identical between the
+ * default PerformanceMode and `legacy-only`.
+ *
+ * Phase 4 (resvg-wasm) was removed in v5; Phase 2 (WebGPU compute) and
+ * Phase 3 (WebGPU instanced renderer) were retired in v6 along with
+ * their UI selectors. The remaining rendering path is identical to
+ * the upstream TurboWarp Scaffolding `drawImage(this._svgImage, ...)`
+ * flow regardless of which PerformanceMode is selected, so the canvas
+ * pixels produced by the two modes must match exactly.
  *
  * This test shells out to `scripts/verify-turbowarp-equivalent.mjs`
  * which spins up `vite preview` + Playwright Chromium and compares

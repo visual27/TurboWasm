@@ -5,19 +5,13 @@ import type {
   PerformanceMode,
   SettingsStoreSerialized,
   SettingsStoreShape,
-  SvgAccelerationMode,
   Theme,
 } from '@/types/settings';
-import {
-  PERFORMANCE_MODES,
-  SVG_ACCELERATION_MODES,
-  ALLOWED_EXTENSION_URLS_MAX,
-} from '@/types/settings';
+import { PERFORMANCE_MODES, ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
   DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_ALLOWED_EXTENSION_URLS,
   DEFAULT_PERFORMANCE_MODE,
-  DEFAULT_SVG_ACCELERATION_MODE,
 } from '@/utils/constants';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume } from '@/utils/format';
 
@@ -76,10 +70,6 @@ function isPerformanceMode(v: unknown): v is PerformanceMode {
   return typeof v === 'string' && (PERFORMANCE_MODES as readonly string[]).includes(v);
 }
 
-function isSvgAccelerationMode(v: unknown): v is SvgAccelerationMode {
-  return typeof v === 'string' && (SVG_ACCELERATION_MODES as readonly string[]).includes(v);
-}
-
 /**
  * Parse an arbitrary object into a sanitized AdvancedSettings. Used for both
  * the runtime `advanced` and the saved `defaultAdvanced`.
@@ -120,9 +110,6 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
       typeof r.turboWasmAccelerationEnabled === 'boolean'
         ? r.turboWasmAccelerationEnabled
         : base.turboWasmAccelerationEnabled,
-    svgAccelerationMode: isSvgAccelerationMode(r.svgAccelerationMode)
-      ? r.svgAccelerationMode
-      : base.svgAccelerationMode,
   };
 }
 
@@ -151,7 +138,6 @@ function emptyShape(): SettingsStoreShape {
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
     performanceMode: DEFAULT_PERFORMANCE_MODE,
-    svgAccelerationMode: DEFAULT_SVG_ACCELERATION_MODE,
     // No user history yet; the Alt+Flag shortcut falls back to
     // defaultAdvanced.fps (when !== 30) or 60.
     userExplicitFps: null,
@@ -165,10 +151,30 @@ function emptyShape(): SettingsStoreShape {
  * (the user's most recent runtime intent). Returns `null` when both are
  * 30 (no user preference).
  */
-function deriveUserExplicitFps(advanced: AdvancedSettings, defaultAdvanced: AdvancedSettings): number | null {
+function deriveUserExplicitFps(
+  advanced: AdvancedSettings,
+  defaultAdvanced: AdvancedSettings,
+): number | null {
   if (advanced.fps !== 30) return advanced.fps;
   if (defaultAdvanced.fps !== 30) return defaultAdvanced.fps;
   return null;
+}
+
+/**
+ * v5 → v6 migration helper: `'force-webgpu'` was retired when the WebGPU
+ * compute tier (Phase 2) was removed (the JS-side hook always returned
+ * `null`). A user who had pinned WebGPU before the removal would silently
+ * end up on the `'none'` (JS) tier otherwise. Downgrading to `'auto'`
+ * keeps WASM SIMD as the highest tier consulted, which matches the
+ * pre-removal behaviour for users who never relied on the GPU path.
+ *
+ * The comparison uses `(mode as string)` because the post-v6
+ * `PerformanceMode` union does not include `'force-webgpu'`; the
+ * migration check still needs to recognise the legacy value in v5
+ * payloads that reached storage before this commit.
+ */
+function migratePerformanceMode(mode: PerformanceMode): PerformanceMode {
+  return (mode as string) === 'force-webgpu' ? DEFAULT_PERFORMANCE_MODE : mode;
 }
 
 export function readSettings(): SettingsStoreShape {
@@ -180,12 +186,13 @@ export function readSettings(): SettingsStoreShape {
 
     // v1 payloads (single `advanced` field) are accepted as long as the
     // payload was at least tagged version 1. v2 payloads use two distinct
-    // fields (`advanced` + `defaultAdvanced`). v3 adds a top-level
-    // `performanceMode`. v4 adds `advanced.svgAccelerationMode` (Stage 2
-    // of the TurboWasm Acceleration plan). v5 adds the top-level
-    // `userExplicitFps` (Alt+Flag FPS shortcut). Anything outside this
-    // range (including untagged / wrong-version / corrupt blobs) resets
-    // to defaults.
+    // fields (`advanced` + `defaultAdvanced`). v3 added a top-level
+    // `performanceMode`. v4 added `advanced.svgAccelerationMode` (later
+    // retired in v6). v5 added the top-level `userExplicitFps`. v6
+    // dropped `svgAccelerationMode` (and its top-level mirror) and the
+    // `'force-webgpu'` performance mode. Anything outside this range
+    // (including untagged / wrong-version / corrupt blobs) resets to
+    // defaults.
     if (
       typeof parsed.version !== 'number' ||
       parsed.version < 1 ||
@@ -202,26 +209,24 @@ export function readSettings(): SettingsStoreShape {
         ? clampVolume(parsed.state.lastNonMuteVolume)
         : volume;
     const allowedExtensionUrls = sanitizeAllowedExtensionUrls(parsed.state?.allowedExtensionUrls);
-    const performanceMode = isPerformanceMode(parsed.state?.performanceMode)
-      ? parsed.state.performanceMode
-      : DEFAULT_PERFORMANCE_MODE;
-    // v3 → v4 migration: `svgAccelerationMode` is a new per-skin field
-    // inside `advanced` and `defaultAdvanced`. Older payloads do not
-    // include it; we seed both with the safe default (`off`) so a user
-    // upgrading from v3 keeps the Stage 1 baseline. Persisted as soon
-    // as the user changes any other setting, but never re-persisted
-    // automatically by this read.
-    const svgAccelerationMode = isSvgAccelerationMode(
-      parsed.state?.svgAccelerationMode ?? parsed.state?.advanced?.svgAccelerationMode,
-    )
-      ? (parsed.state?.svgAccelerationMode ?? parsed.state?.advanced?.svgAccelerationMode)
-      : DEFAULT_SVG_ACCELERATION_MODE;
+    // v5 → v6 migration: `'force-webgpu'` is no longer a valid value
+    // (downgraded to `'auto'`). The `isPerformanceMode` guard rejects the
+    // string entirely, so the explicit downgrade runs *before* the guard.
+    // The cast widens the type comparison to any string so the legacy
+    // value is still recognised even though it's no longer part of the
+    // narrowed `PerformanceMode` union.
+    const rawPerformanceMode: unknown = parsed.state?.performanceMode;
+    const performanceMode =
+      rawPerformanceMode === 'force-webgpu'
+        ? DEFAULT_PERFORMANCE_MODE
+        : isPerformanceMode(rawPerformanceMode)
+          ? rawPerformanceMode
+          : DEFAULT_PERFORMANCE_MODE;
 
     if (parsed.version === 1) {
       // v1 → v2 migration: a single `advanced` field acted as both the
       // runtime and the default. Force `disableCompiler` off so a previously
-      // saved `true` does not silently re-enable the toggle. v3 → v4
-      // fields are seeded via the `defaultAdvanced` spread below.
+      // saved `true` does not silently re-enable the toggle.
       const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
       const defaultAdvanced = { ...advanced, disableCompiler: false };
       return {
@@ -231,27 +236,26 @@ export function readSettings(): SettingsStoreShape {
         advanced,
         defaultAdvanced,
         allowedExtensionUrls,
-        performanceMode,
-        svgAccelerationMode,
+        performanceMode: migratePerformanceMode(performanceMode),
         // v4 → v5 migration: seed `userExplicitFps` from the v1 fields.
         userExplicitFps: deriveUserExplicitFps(advanced, defaultAdvanced),
       };
     }
 
     // v2 / v3 / v4 / v5. v2/v3/v4 share the `advanced` + `defaultAdvanced`
-    // shape; v3 added the top-level `performanceMode`, v4 added
-    // `svgAccelerationMode` (we sanitised it above), v5 added the
-    // top-level `userExplicitFps`. Older payloads without
-    // `svgAccelerationMode` inside `advanced` get the default applied
-    // via `sanitizeAdvanced`'s `base.svgAccelerationMode` branch.
+    // shape; v3 added the top-level `performanceMode`, v5 added the
+    // top-level `userExplicitFps`. `sanitizeAdvanced` drops the now-
+    // retired `svgAccelerationMode` field by ignoring it (the type no
+    // longer includes it).
     const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
     const defaultAdvanced = sanitizeAdvanced(
       parsed.state?.defaultAdvanced ?? parsed.state?.advanced,
       true,
     );
     // v4 → v5 migration: derive userExplicitFps from the v4 fields if
-    // not already present on the payload. A v5 payload must always have
-    // the field (writeSettings emits it), but we sanitise defensively.
+    // not already present on the payload. A v5+ payload must always
+    // have the field (writeSettings emits it), but we sanitise
+    // defensively.
     const userExplicitFps =
       typeof parsed.state?.userExplicitFps === 'number' && parsed.state.userExplicitFps !== 30
         ? clampFps(parsed.state.userExplicitFps)
@@ -263,8 +267,7 @@ export function readSettings(): SettingsStoreShape {
       advanced,
       defaultAdvanced,
       allowedExtensionUrls,
-      performanceMode,
-      svgAccelerationMode,
+      performanceMode: migratePerformanceMode(performanceMode),
       userExplicitFps,
     };
   } catch {
