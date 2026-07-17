@@ -1,0 +1,103 @@
+diff --git a/src/engine/runtime.js b/src/engine/runtime.js
+index 321836a..4f58f6a 100644
+--- a/src/engine/runtime.js
++++ b/src/engine/runtime.js
+@@ -3554,6 +3554,98 @@ class Runtime extends EventEmitter {
+ 
+         return callback().then(onSuccess, onError);
+     }
++
++    // TurboWasm: list / scalar buffer accessors for the GPU compute kernel
++    // pipeline (see gpu-kernel-spec-summary.md §6.1). These are non-
++    // breaking additions: callers without @compute regions simply never
++    // call them. They return a `{data, length, dtype}` triple where data
++    // is a freshly-allocated Float32Array / Int32Array view mirroring the
++    // scratch-vm list, so the GPU side can call syncToHost after the
++    // dispatch. The `dtype` matches the @bind directive's dtype.
++
++    /**
++     * Look up a list by name (case-sensitive, lower-cased before lookup to
++     * match scratch-vm's own convention) and return a typed-array-backed
++     * view of its current contents.
++     * @param {string} name list name.
++     * @return {{data: Float32Array|Int32Array, length: number, dtype: 'f32'|'i32'} | null}
++     */
++    __getListBuffer (name) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
++                    return this.__getListBufferById(varId);
++                }
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Look up a list by id and return a typed-array-backed view.
++     * @param {string} id
++     * @return {{data: Float32Array, length: number, dtype: 'f32'} | null}
++     */
++    __getListBufferById (id) {
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            const v = target.variables[id];
++            if (v && v.type === 'list' && Array.isArray(v.value)) {
++                const data = new Float32Array(v.value.length);
++                for (let i = 0; i < v.value.length; i++) {
++                    data[i] = Number(v.value[i]) || 0;
++                }
++                return {data, length: v.value.length, dtype: 'f32'};
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Read a scalar variable by name (case-sensitive via scratch-vm's lower-case
++     * convention). Returns the numeric value or 0 when missing.
++     * @param {string} name
++     * @return {number}
++     */
++    __getScalarValue (name) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
++                    return Number(v.value) || 0;
++                }
++            }
++        }
++        return 0;
++    }
++
++    /**
++     * Write a scalar variable by name (case-sensitive). Returns true when
++     * the variable was found and updated, false otherwise. Mirrors how the
++     * VM's `setVariableValue` writes to a target.
++     * @param {string} name
++     * @param {number} value
++     * @return {boolean}
++     */
++    __setScalarValue (name, value) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
++                    v.value = Number(value) || 0;
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
+ }
+ 
+ /**

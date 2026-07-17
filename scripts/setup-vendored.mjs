@@ -246,6 +246,25 @@ const scaffoldingPatch = resolve(
   'scaffolding+0.4.0.patch',
 );
 const scratchVmPatch = resolve(root, 'patches', 'vendored', 'scratch-vm.patch');
+// GPU compute kernel pipeline (M2): two extra patches to vendored/scratch-vm.
+// `gpu-kernel-list-binding+0.1.0.patch` adds the four list/scalar accessor
+// APIs (`__getListBuffer`, `__getListBufferById`, `__getScalarValue`,
+// `__setScalarValue`) on `runtime.js`. `gpu-kernel-runtime+0.1.0.patch`
+// adds the per-primitive GPU hook to `scratch3_control.js`. Both are
+// optional — when missing we skip without aborting so older setups that
+// haven't migrated yet still complete.
+const gpuKernelListBindingPatch = resolve(
+  root,
+  'patches',
+  'vendored',
+  'gpu-kernel-list-binding+0.1.0.patch',
+);
+const gpuKernelRuntimePatch = resolve(
+  root,
+  'patches',
+  'vendored',
+  'gpu-kernel-runtime+0.1.0.patch',
+);
 if (!existsSync(scaffoldingPatch)) {
   throw new Error(`Missing patch: ${scaffoldingPatch}`);
 }
@@ -292,6 +311,37 @@ log(`Applying ${scratchVmPatch} to vendored/scratch-vm`);
 // and makes the patch apply cleanly. We keep `--3way` so any genuine
 // non-whitespace conflict still surfaces.
 run('git', ['apply', '--3way', '--ignore-whitespace', scratchVmPatch], { cwd: scratchVmDir });
+
+// GPU compute kernel pipeline (M2): the two extra patches below are
+// optional. When missing the script proceeds without them so a developer
+// who hasn't migrated yet can still bootstrap. The runtime side of
+// `__turboWasmGpuKernelDispatch` (window global) is only installed when
+// the TS pipeline registers kernels, so the absence of these patches is
+// a graceful no-op at runtime.
+if (existsSync(gpuKernelListBindingPatch)) {
+  log(`Applying ${gpuKernelListBindingPatch} (GPU list binding APIs)`);
+  run(
+    'git',
+    ['apply', '--3way', '--ignore-whitespace', gpuKernelListBindingPatch],
+    { cwd: scratchVmDir },
+  );
+} else {
+  log(
+    `GPU list-binding patch not present at ${gpuKernelListBindingPatch}; skipping.`,
+  );
+}
+if (existsSync(gpuKernelRuntimePatch)) {
+  log(`Applying ${gpuKernelRuntimePatch} (GPU kernel runtime hooks)`);
+  run(
+    'git',
+    ['apply', '--3way', '--ignore-whitespace', gpuKernelRuntimePatch],
+    { cwd: scratchVmDir },
+  );
+} else {
+  log(
+    `GPU kernel-runtime patch not present at ${gpuKernelRuntimePatch}; skipping.`,
+  );
+}
 
 // 2. Clone vendored/scaffolding (unpatched; the dep still points at the
 //    upstream github: ref so npm will fetch and hoist scratch-vm + its deps).

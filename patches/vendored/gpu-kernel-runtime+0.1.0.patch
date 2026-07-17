@@ -1,0 +1,67 @@
+diff --git a/src/blocks/scratch3_control.js b/src/blocks/scratch3_control.js
+index ebf1951..97dcb0b 100644
+--- a/src/blocks/scratch3_control.js
++++ b/src/blocks/scratch3_control.js
+@@ -52,6 +52,27 @@ class Scratch3ControlBlocks {
+ 
+     repeat (args, util) {
+         const times = Math.round(Cast.toNumber(args.TIMES));
++        // TurboWasm: optional GPU compute kernel hook (gpu-kernel-spec.md §7.2).
++        // When a kernel has been registered for the block id of this `repeat`
++        // (i.e. an @compute region), the hook short-circuits to the JS path:
++        //   * reads loopCounter, runs the GPU dispatch,
++        //   * writes the kernel result back into the bound buffers,
++        //   * advances loopCounter to skip remaining JS iterations so the
++        //     entire region completes in a single frame.
++        // Returning `false` from the lookup signals "kernel handled it",
++        // in which case we leave the loopCounter alone and yield.
++        const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
++        if (typeof __twGpuBlockId === 'string') {
++            const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
++            if (typeof __twGpuHook === 'function') {
++                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
++                if (__twGpuHandled) {
++                    // Skip the JS path entirely. The kernel ran end-to-end
++                    // and the loopCounter / state is already consistent.
++                    return;
++                }
++            }
++        }
+         // Initialize loop
+         if (typeof util.stackFrame.loopCounter === 'undefined') {
+             util.stackFrame.loopCounter = times;
+@@ -69,6 +90,18 @@ class Scratch3ControlBlocks {
+ 
+     repeatUntil (args, util) {
+         const condition = Cast.toBoolean(args.CONDITION);
++        // TurboWasm: identical hook to `repeat` above. @compute regions may
++        // not start at repeat_until entrances (D1 demote), but the global
++        // hook stays installed for code symmetry. The hook short-circuits
++        // when this block id is registered.
++        const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
++        if (typeof __twGpuBlockId === 'string') {
++            const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
++            if (typeof __twGpuHook === 'function') {
++                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
++                if (__twGpuHandled) return;
++            }
++        }
+         // If the condition is false (repeat UNTIL), start the branch.
+         if (!condition) {
+             util.startBranch(1, true);
+@@ -77,6 +110,15 @@ class Scratch3ControlBlocks {
+ 
+     repeatWhile (args, util) {
+         const condition = Cast.toBoolean(args.CONDITION);
++        // TurboWasm: GPU hook. See `repeat` for semantics.
++        const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
++        if (typeof __twGpuBlockId === 'string') {
++            const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
++            if (typeof __twGpuHook === 'function') {
++                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
++                if (__twGpuHandled) return;
++            }
++        }
+         // If the condition is true (repeat WHILE), start the branch.
+         if (condition) {
+             util.startBranch(1, true);
