@@ -207,7 +207,7 @@ describe('wgsl-emitter', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
-  it('clamps dimensions and total workgroup invocations deterministically', () => {
+it('clamps dimensions and total workgroup invocations deterministically', () => {
     expect(
       clampWorkgroupSize(
         { x: 512, y: 8, z: 4 },
@@ -219,6 +219,105 @@ describe('wgsl-emitter', () => {
         },
       ),
     ).toEqual({ x: 256, y: 1, z: 1 });
+  });
+
+  describe('clampWorkgroupSize: device limit interaction (C-2 / §19.2 #10)', () => {
+    /**
+     * The clamp pass slices Y (and then Z) so that x*y*z stays at or
+     * below `maxComputeInvocationsPerWorkgroup`. Two boundary cases:
+     *
+     *   1. A 3-D shape at exactly the limit → preserved.
+     *   2. A 3-D shape one over the limit → Y or Z is halved to fit.
+     *
+     * `clampDimension` always floors against the running
+     * `remainingAfter*` budget, so the deterministic output depends on
+     * the order of the dim clamps (X, then Y, then Z).
+     */
+    it('keeps a 3D shape at the invocation limit (boundary)', () => {
+      // 16 * 16 * 4 = 1024, equal to the cap. The clamp pass should
+      // leave the dimensions alone.
+      expect(
+        clampWorkgroupSize(
+          { x: 16, y: 16, z: 4 },
+          {
+            maxComputeWorkgroupSizeX: 256,
+            maxComputeWorkgroupSizeY: 256,
+            maxComputeWorkgroupSizeZ: 64,
+            maxComputeInvocationsPerWorkgroup: 1024,
+          },
+        ),
+      ).toEqual({ x: 16, y: 16, z: 4 });
+    });
+
+    it('shrinks the smallest dimension to fit x*y*z = limit', () => {
+      // Requested {32, 32, 4}. With cap=2048:
+      //   x clamped to 32 (within x-limit 256 and budget 2048)
+      //   y clamped to 32 (within y-limit 256 and budget 64 = 2048/32)
+      //   z clamped to 2  (within z-limit 64 and budget 2 = 64/32)
+      // Final 32 * 32 * 2 = 2048, exactly at the cap. The Z dimension
+      // absorbs the last factor because it is the smallest; the clamp
+      // is deterministic per the X→Y→Z ordering in clampWorkgroupSize.
+      expect(
+        clampWorkgroupSize(
+          { x: 32, y: 32, z: 4 },
+          {
+            maxComputeWorkgroupSizeX: 256,
+            maxComputeWorkgroupSizeY: 256,
+            maxComputeWorkgroupSizeZ: 64,
+            maxComputeInvocationsPerWorkgroup: 2048,
+          },
+        ),
+      ).toEqual({ x: 32, y: 32, z: 2 });
+    });
+  });
+
+  describe('quoted names (§Phase E)', () => {
+    it('emits the storage binding with internalName for @bind "my list"(0)', () => {
+      const { input } = makeVerdict('@compute\n@bind "my list"(0) rw f32', []);
+      const result = emitRegion(input);
+      // Storage declaration uses the hashed internalName, NOT the
+      // quoted surface name (which is not a valid WGSL identifier).
+      expect(result.wgsl).toMatch(
+        /@group\(0\)\s+@binding\(0\)\s+var<storage, read_write>\s+__tw_[0-9a-f]{8}: array<f32>/,
+      );
+      expect(result.wgsl).not.toMatch(/my list/);
+    });
+
+    it('emits the length field in ScratchUniforms with internalName suffix', () => {
+      const { input } = makeVerdict('@compute\n@bind "my list"(0) rw f32', []);
+      const result = emitRegion(input);
+      expect(result.wgsl).toMatch(/__tw_[0-9a-f]{8}_length: u32/);
+    });
+
+    it('does not regress unquoted binding names (backwards compat)', () => {
+      const { input } = makeVerdict('@compute\n@bind tmp0(0) rw f32', []);
+      const result = emitRegion(input);
+      // Unquoted names go through safeIdentifier + reserved-keyword
+      // rename; `tmp0` is a valid WGSL identifier and is unchanged.
+      expect(result.wgsl).toMatch(
+        /@group\(0\)\s+@binding\(0\)\s+var<storage, read_write>\s+tmp0: array<f32>/,
+      );
+    });
+
+    it('two quoted bindings on slots 0 and 1 do not collide', () => {
+      const { input } = makeVerdict(
+        '@compute\n@bind "my list"(0) rw f32\n@bind "scratch pad"(1) ro f32',
+        [],
+      );
+      const result = emitRegion(input);
+      const matches = result.wgsl.match(/var<storage, [^>]+>\s+__tw_[0-9a-f]{8}: array<f32>/g);
+      expect(matches).toHaveLength(2);
+    });
+
+    it('@map with quoted name emits the let binding under internalName', () => {
+      const { input } = makeVerdict(
+        '@compute\n@map "idx with space" <- 0',
+        ['idx with space'],
+      );
+      const result = emitRegion(input);
+      expect(result.wgsl).toMatch(/let __tw_[0-9a-f]{8}: f32 = 0;/);
+      expect(result.wgsl).not.toMatch(/let "idx with space"/);
+    });
   });
 
   it('plumbs workgroupLimits into clampWorkgroupSize', () => {

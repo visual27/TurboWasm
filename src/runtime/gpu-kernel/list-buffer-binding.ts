@@ -87,8 +87,15 @@ export const GPU_BUFFER_USAGE_COPY_SRC = 0x0001;
 export const BYTES_PER_ELEMENT: Readonly<Record<ListBufferDtype, number>> = {
   f32: 4,
   i32: 4,
-  // `byte` is host-side Uint8Array but storage is array<u32>; one u32
-  // per byte. See the module doc comment.
+  // `byte` dtype is a 2-stage representation: host-side Uint8Array
+  // (1 byte) ↔ WGSL `array<u32>` (4 byte). The physical GPU buffer is
+  // one u32 per byte, holding the byte value in the low 8 bits. The
+  // packing/unpacking conversion lives in `packBytesToU32` (`:443`)
+  // and the inverse in `syncToHost`; logical 1-byte reads/writes are
+  // re-established by `scratch_list_read_u32` and
+  // `scratch_list_write_u32` in `scratch-compat.ts`. See the module
+  // doc comment for the broader design rationale (§19.2 #11
+  // resolved).
   byte: 4,
 };
 
