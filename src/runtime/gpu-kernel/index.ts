@@ -10,7 +10,17 @@
 export * from './types';
 export { parseComputeComment } from './comment-parser';
 export { extractRegions, getBlockOrUndefined } from './region-extractor';
-export { classifyBlockSubset } from './block-subset';
+export { buildBlockSubsetVerdict, classifyBlockSubset } from './block-subset';
+export type { BuildBlockSubsetVerdictInput } from './block-subset';
+export {
+  collectIterationAdvancePatterns,
+  extractNumericLiteral,
+  extractVariableName,
+} from './iteration-advance-pattern';
+export { collectIndirectAccessPatterns } from './indirect-access-pattern';
+export { validateBoundBlockIds } from './bound-block-validator';
+export { mergePatterns } from './pattern-merger';
+export type { PatternMergerResult, PatternMergerOptions } from './pattern-merger';
 export { analyzeAxes } from './axis-analysis';
 export { analyzeCascade } from './cascade-analysis';
 export {

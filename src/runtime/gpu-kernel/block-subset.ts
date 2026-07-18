@@ -37,9 +37,14 @@ import {
   type Diagnostic,
   type ExtractedRegion,
   type ParsedComment,
+  type ParsedDirective,
   type ParsedProject,
   type RawBlock,
 } from './types';
+import { collectIterationAdvancePatterns } from './iteration-advance-pattern';
+import { collectIndirectAccessPatterns } from './indirect-access-pattern';
+import { validateBoundBlockIds } from './bound-block-validator';
+import { mergePatterns } from './pattern-merger';
 
 const GPU_UNSAFE_OPCODES: ReadonlySet<string> = new Set([
   // Loops not allowed inside a region.
@@ -120,21 +125,115 @@ export interface ClassifyBlockSubsetInput {
 /**
  * Pure D1 verdict. `valid: false` means the region falls back to the JS
  * path (cascade into M5).
+ *
+ * Phase 1: 既存 API は後方互換のため維持。`effectivePatterns` は空配列
+ * (= `[]`) を返す。`buildBlockSubsetVerdict` 経由でのみ pattern 抽出が
+ * 走る。
  */
 export function classifyBlockSubset(
   input: ClassifyBlockSubsetInput,
 ): BlockSubsetVerdict {
+  return classifyD1Only(input);
+}
+
+/**
+ * Phase 1: D1 verdict + pattern 抽出 (`effectivePatterns`) を一度に行う
+ * orchestrator。`region-verdict-pipeline.ts:buildRegionVerdicts` から呼ばれる
+ * 正規エントリ。
+ */
+export interface BuildBlockSubsetVerdictInput {
+  region: ExtractedRegion;
+  project: ParsedProject;
+  comments: Record<string, ParsedComment>;
+  parsedDirectives: readonly ParsedDirective[];
+}
+
+export function buildBlockSubsetVerdict(
+  input: BuildBlockSubsetVerdictInput,
+): BlockSubsetVerdict {
+  const { region, project, comments, parsedDirectives } = input;
+  const base = classifyD1Only({ region, project, comments });
+  if (!base.valid) {
+    return { ...base, effectivePatterns: [] };
+  }
+
+  const blockMap = collectAllBlocks(project);
+  const iterResult = collectIterationAdvancePatterns(
+    blockMap,
+    region.bodyBlockIds,
+    parsedDirectives,
+  );
+  const indirectResult = collectIndirectAccessPatterns(
+    blockMap,
+    region.bodyBlockIds,
+    parsedDirectives,
+  );
+  const validationDiagnostics = validateBoundBlockIds(parsedDirectives, region.bodyBlockIds);
+
+  const merged = mergePatterns(iterResult.patterns, indirectResult.patterns, base);
+
+  return {
+    ...base,
+    effectivePatterns: merged.effective,
+    diagnostics: [
+      ...base.diagnostics,
+      ...iterResult.diagnostics,
+      ...indirectResult.diagnostics,
+      ...validationDiagnostics,
+      ...merged.diagnostics,
+    ],
+  };
+}
+
+/**
+ * Internal: D1 demote 判定のみ。`buildBlockSubsetVerdict` と
+ * `classifyBlockSubset` (後方互換) から呼ばれる pure helper。
+ */
+function classifyD1Only(input: ClassifyBlockSubsetInput): BlockSubsetVerdict {
   const { region, project } = input;
   const diagnostics: Diagnostic[] = [];
 
-  // Build a flat list of blocks reachable inside the body. region.bodyBlockIds
-  // already covers the entry substack via `next`. We additionally walk
-  // `inputs.SUBSTACK / SUBSTACK2 / CONDITION` of nested control blocks
-  // (control_if / nested control_repeat) because `region-extractor`
-  // only walked the entry substack.
+  const bodyBlocks = collectReachableBlocks(project, region.bodyBlockIds);
+
+  for (const block of bodyBlocks) {
+    if (GPU_UNSAFE_OPCODES.has(block.opcode)) {
+      const diag: Diagnostic = {
+        severity: 'warn',
+        code: 'd1.region_demoted',
+        message: `region '${region.regionId}' contains unsupported opcode '${block.opcode}' (D1 demote, falling back to JS)`,
+        regionId: region.regionId,
+        blockId: region.blockId,
+      };
+      return { valid: false, demoteReason: 'd1', diagnostics: [diag], effectivePatterns: [] };
+    }
+  }
+
+  for (const block of bodyBlocks) {
+    if (block.opcode !== 'control_repeat') continue;
+    const subId = readSubstackId(block);
+    if (!subId) continue;
+    const inner = findBlock(project, subId);
+    if (!inner) continue;
+    const innerComment = findCommentByBlockId(input.comments, inner.id);
+    if (innerComment && innerComment.text.trim().startsWith('@compute')) {
+      const diag: Diagnostic = {
+        severity: 'warn',
+        code: 'd1.region_demoted',
+        message: `region '${region.regionId}' contains a nested @compute region (D1 demote, falling back to JS)`,
+        regionId: region.regionId,
+        blockId: region.blockId,
+      };
+      return { valid: false, demoteReason: 'd1', diagnostics: [diag], effectivePatterns: [] };
+    }
+  }
+
+  return { valid: true, diagnostics, effectivePatterns: [] };
+}
+
+function collectReachableBlocks(project: ParsedProject, bodyBlockIds: readonly string[]): RawBlock[] {
   const bodyBlocks: RawBlock[] = [];
   const visited = new Set<string>();
-  const queue: string[] = [...region.bodyBlockIds];
+  const queue: string[] = [...bodyBlockIds];
   while (queue.length > 0) {
     const id = queue.shift();
     if (id === undefined || visited.has(id)) continue;
@@ -155,42 +254,17 @@ export function classifyBlockSubset(
       }
     }
   }
+  return bodyBlocks;
+}
 
-  for (const block of bodyBlocks) {
-    if (GPU_UNSAFE_OPCODES.has(block.opcode)) {
-      const diag: Diagnostic = {
-        severity: 'warn',
-        code: 'd1.region_demoted',
-        message: `region '${region.regionId}' contains unsupported opcode '${block.opcode}' (D1 demote, falling back to JS)`,
-        regionId: region.regionId,
-        blockId: region.blockId,
-      };
-      return { valid: false, demoteReason: 'd1', diagnostics: [diag] };
+function collectAllBlocks(project: ParsedProject): Record<string, RawBlock> {
+  const out: Record<string, RawBlock> = {};
+  for (const target of project.targets) {
+    for (const [id, block] of Object.entries(target.blocks)) {
+      if (block) out[id] = block;
     }
   }
-
-  // Nested @compute region detection: any inner `control_repeat` whose
-  // first-substack block carries an `@compute` comment.
-  for (const block of bodyBlocks) {
-    if (block.opcode !== 'control_repeat') continue;
-    const subId = readSubstackId(block);
-    if (!subId) continue;
-    const inner = findBlock(project, subId);
-    if (!inner) continue;
-    const innerComment = findCommentByBlockId(input.comments, inner.id);
-    if (innerComment && innerComment.text.trim().startsWith('@compute')) {
-      const diag: Diagnostic = {
-        severity: 'warn',
-        code: 'd1.region_demoted',
-        message: `region '${region.regionId}' contains a nested @compute region (D1 demote, falling back to JS)`,
-        regionId: region.regionId,
-        blockId: region.blockId,
-      };
-      return { valid: false, demoteReason: 'd1', diagnostics: [diag] };
-    }
-  }
-
-  return { valid: true, diagnostics };
+  return out;
 }
 
 function findBlock(project: ParsedProject, id: string): RawBlock | undefined {

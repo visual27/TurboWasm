@@ -329,13 +329,96 @@ export interface ExtractedRegion {
 }
 
 /**
+ * Phase 1 (nested-parallelization-02-phase1 §3.1) — auto-detected or
+ * explicit "iteration advance" pattern.
+ *
+ * body 内の `data_changevariableby(<varName>, <delta>)` block を pattern
+ * 化したもの。`<varName>` は `@repeat Rx:axis = ...` の Rx か `@bind <var>`
+ * に bind されている scratch 変数。
+ *
+ * `source`:
+ *   - 'explicit': user provided `boundBlockId` in `@repeat` / `@map`
+ *   - 'auto-detected': parser heuristic (Phase 1)
+ *
+ * `delta` は `data_changevariableby` の第 2 引数から抽出した数値。
+ * `1 | -1` は本仕様書で頻出する二値で、`number` はフォールバック。
+ */
+export interface IterationAdvancePattern {
+  kind: 'iteration-advance';
+  /** bound variable name (e.g. 'idx1', 'idx0', 'aabb_idx0'). */
+  varName: string;
+  /** increment value (typically 1). */
+  delta: 1 | -1 | number;
+  /** scratch block id (in body). */
+  blockId: string;
+  /** where this pattern came from. */
+  source: 'explicit' | 'auto-detected';
+  /** if explicit: the bound directive line/column. */
+  directive?: {
+    kind: 'repeat' | 'map';
+    name: string;
+    line: number;
+    column: number;
+  };
+}
+
+/**
+ * Phase 1 (nested-parallelization-02-phase1 §3.2) — auto-detected or
+ * explicit "indirect access" pattern.
+ *
+ * body 内の `data_itemoflist(LIST=L, INDEX=Rx)` (= read) を pattern 化
+ * したもの。`data_replaceitemoflist` (= write) は actual parallel work
+ * なので skip-set には入れず、本 helper の対象外。`access === 'read'`
+ * 固定。
+ *
+ * `source`:
+ *   - 'explicit': user provided `boundBlockId` in `@map` directive
+ *   - 'auto-detected': parser heuristic (Phase 1)
+ */
+export interface IndirectAccessPattern {
+  kind: 'indirect-access';
+  /** scratch list name (e.g. 'buff_r', 'aabb_w'). */
+  scratchListName: string;
+  /** index expression (WGSL-side). e.g. 'idx1' (= Rx + base). */
+  indexExpr: string;
+  /** scratch-vm opcode. Phase 1: `data_itemoflist` 固定。 */
+  opcode: 'data_itemoflist' | 'data_replaceitemoflist';
+  /** scratch block id (in body). */
+  blockId: string;
+  /** whether this is a read or write access. Phase 1: `'read'` 固定。 */
+  access: 'read' | 'write';
+  source: 'explicit' | 'auto-detected';
+  directive?: {
+    kind: 'map';
+    name: string;
+    line: number;
+    column: number;
+  };
+}
+
+/**
+ * Phase 1 — emitter が skip-set として扱うパターン union。
+ * `effectivePatterns` にはこの union のいずれかが入る。
+ */
+export type EffectivePattern =
+  | { kind: 'iteration-advance'; pattern: IterationAdvancePattern }
+  | { kind: 'indirect-access'; pattern: IndirectAccessPattern };
+
+/**
  * Verdict of the D1 axis analysis on a region: `valid: false` with
  * `demoteReason: 'd1'` means the whole region falls back to JS.
+ *
+ * `effectivePatterns` (Phase 1) は emitter の skip-set となるパターン
+ * 集合。`buildBlockSubsetVerdict` 経由でのみ populate され、既存
+ * `classifyBlockSubset` 経路では空配列 (or undefined) を返す。optional
+ * なのは既存 test の `BlockSubsetVerdict` リテラルを破壊しないため。
  */
 export interface BlockSubsetVerdict {
   valid: boolean;
   demoteReason?: DemoteStage;
   diagnostics: Diagnostic[];
+  /** Phase 1: effective patterns (explicit + auto-detected, write を除く). */
+  effectivePatterns?: EffectivePattern[];
 }
 
 /**

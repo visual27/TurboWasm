@@ -221,6 +221,20 @@ function stripVolatile(verdict: RegionVerdict): VolatileStrippedVerdict {
   };
 }
 
+/**
+ * Drop fields that may legitimately differ between two equivalent
+ * RegionVerdicts across runs: diagnostics (free-form text), the cascade
+ * topoOrder (only the cycle-detection matters, not the exact order of
+ * independent nodes).
+ *
+ * §Phase 1 (nested-parallelization-02-phase1 §3.8 + 06-glossary.md §T2):
+ * `boundBlockId` (Phase 0 で導入) は canonical key から除外する volatile
+ * フィールド。明示的に列挙していないのでここに自然に落ちる (= 既存
+ * 動作のまま canonical key 同一性が保たれる)。`auto-detected` 由来の
+ * `effectivePatterns` は `BlockSubsetVerdict.effectivePatterns` 経由で
+ * `RegionVerdict.blockSubset` に格納されるが、`stripVolatile` 側は
+ * `blockSubset` を一切見ないので、これも自然に除外される。
+ */
 function stripDirectiveVolatile(
   d: RegionVerdict['directives'][number],
 ): Record<string, unknown> {
@@ -238,6 +252,8 @@ function stripDirectiveVolatile(
     case 'workgroup_size':
       return { kind: d.kind, x: d.x, y: d.y, z: d.z };
     case 'repeat':
+      // Note: `boundBlockId` (Phase 0) は意図的に含めない。scratch block
+      // の id が変わっても canonical key は不変。
       return {
         kind: d.kind,
         name: d.name,
@@ -246,6 +262,7 @@ function stripDirectiveVolatile(
         max: d.max,
       };
     case 'map':
+      // Note: `boundBlockId` (Phase 0) は意図的に含めない。
       return { kind: d.kind, var: d.var, formula: d.formula };
     default:
       return { kind: (d as { kind: string }).kind };

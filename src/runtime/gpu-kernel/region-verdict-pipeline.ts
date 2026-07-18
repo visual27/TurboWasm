@@ -16,7 +16,7 @@
 import {
   extractRegions,
 } from './region-extractor';
-import { classifyBlockSubset } from './block-subset';
+import { buildBlockSubsetVerdict } from './block-subset';
 import { parseComputeComment } from './comment-parser';
 import { analyzeAxes } from './axis-analysis';
 import { analyzeCascade } from './cascade-analysis';
@@ -57,11 +57,15 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): {
     if (!comment) continue;
     // 1. parse the comment text into directives.
     const parsed = parseComputeComment(comment, region.regionId);
-    // 2. D1: block subset verdict.
-    const blockSubset = classifyBlockSubset({
+    // 2. D1 + Phase 1 pattern extraction: `buildBlockSubsetVerdict` is
+    // the canonical entry that combines the D1 verdict with the
+    // auto-detected `effectivePatterns` (= skip-set for the WGSL emitter
+    // in Phase 2). §Phase 1 (nested-parallelization-02-phase1 §3.7).
+    const blockSubset = buildBlockSubsetVerdict({
       region,
       project: input.parsedProject,
       comments: input.parsedProject.comments,
+      parsedDirectives: parsed.directives,
     });
     // 3. D2: per-axis verdict.
     const axesResult = analyzeAxes(region, parsed.directives, input.parsedProject);

@@ -5,7 +5,12 @@ import {
   canonicalKeyOf,
   KernelRegistry,
 } from '@/runtime/gpu-kernel/kernel-registry';
-import type { BindDirective, RegionVerdict } from '@/runtime/gpu-kernel/types';
+import type {
+  BindDirective,
+  MapDirective,
+  RegionVerdict,
+  RepeatDirective,
+} from '@/runtime/gpu-kernel/types';
 
 function makeVerdict(
   regionId: string,
@@ -32,6 +37,54 @@ function bind(name: string, slot: number, readOnly: boolean): BindDirective {
     slot,
     readOnly,
     dtype: 'f32',
+    line: 0,
+    column: 0,
+  };
+}
+
+function repeatWithBound(name: string, boundBlockId: string): RepeatDirective {
+  return {
+    kind: 'repeat',
+    name,
+    axis: 'global_x',
+    formula: 'N',
+    blockId: 'r0',
+    boundBlockId,
+    line: 0,
+    column: 0,
+  };
+}
+
+function repeatWithoutBound(name: string): RepeatDirective {
+  return {
+    kind: 'repeat',
+    name,
+    axis: 'global_x',
+    formula: 'N',
+    blockId: 'r0',
+    line: 0,
+    column: 0,
+  };
+}
+
+function mapWithBound(varName: string, boundBlockId: string): MapDirective {
+  return {
+    kind: 'map',
+    var: varName,
+    formula: 'R0',
+    blockId: 'r0',
+    boundBlockId,
+    line: 0,
+    column: 0,
+  };
+}
+
+function mapWithoutBound(varName: string): MapDirective {
+  return {
+    kind: 'map',
+    var: varName,
+    formula: 'R0',
+    blockId: 'r0',
     line: 0,
     column: 0,
   };
@@ -150,5 +203,23 @@ describe('KernelRegistry', () => {
     );
     const deps = analyzeRegionDependencies([k1, k2]);
     expect(deps.size).toBe(0);
+  });
+
+  it('canonical key ignores boundBlockId on @repeat (Phase 1)', () => {
+    const vWith = makeVerdict('region:r1:b1', 'b1', [repeatWithBound('Rx', 'scratch_block_A')]);
+    const vWithout = makeVerdict('region:r1:b1', 'b1', [repeatWithoutBound('Rx')]);
+    expect(canonicalKeyOf(vWith)).toBe(canonicalKeyOf(vWithout));
+
+    const vDifferentId = makeVerdict('region:r1:b1', 'b1', [repeatWithBound('Rx', 'scratch_block_B')]);
+    expect(canonicalKeyOf(vWith)).toBe(canonicalKeyOf(vDifferentId));
+  });
+
+  it('canonical key ignores boundBlockId on @map (Phase 1)', () => {
+    const vWith = makeVerdict('region:r1:b1', 'b1', [mapWithBound('idx1', 'scratch_block_A')]);
+    const vWithout = makeVerdict('region:r1:b1', 'b1', [mapWithoutBound('idx1')]);
+    expect(canonicalKeyOf(vWith)).toBe(canonicalKeyOf(vWithout));
+
+    const vDifferentId = makeVerdict('region:r1:b1', 'b1', [mapWithBound('idx1', 'scratch_block_B')]);
+    expect(canonicalKeyOf(vWith)).toBe(canonicalKeyOf(vDifferentId));
   });
 });
