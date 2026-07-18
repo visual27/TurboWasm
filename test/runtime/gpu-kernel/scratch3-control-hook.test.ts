@@ -297,3 +297,70 @@ describe('dispatchKernel return-value shape (direct)', () => {
     expect(hookWouldFallThrough).toBe(true);
   });
 });
+
+describe('dispatch hook throw safety (§19.5 #33)', () => {
+  /**
+   * §19.5 #33: the vendored scratch-vm control hook must not propagate
+   * synchronous throws (which would freeze the VM primitive) or async
+   * rejections (which would crash the sequencer via unhandled rejection).
+   * Both paths must fall through to the JS body. The test pins this from
+   * the source-inspection angle — `git apply --recount` regenerates the
+   * hunk headers from the actual context, so a hand-written patch that
+   * accidentally drops the try/catch wrapper would fail this check.
+   */
+  it('synchronous hook throw is caught by try/catch and falls through', () => {
+    const src = readRepoFile(VENDORED_CONTROL);
+    expect(src, 'vendored scratch3_control.js missing — run npm run setup first').not.toBe('');
+    // Each of the three hook sites (`repeat`, `repeatUntil`,
+    // `repeatWhile`) must wrap the synchronous dispatch call in
+    // try/catch and assign a false-y `__twGpuResult` on error.
+    const guardCount = countOccurrences(src, /try\s*\{\s*__twGpuResult\s*=\s*__twGpuHook\s*\(/);
+    expect(guardCount).toBeGreaterThanOrEqual(3);
+    const catchCount = countOccurrences(src, /catch\s*\(__twGpuErr\s*\)/);
+    expect(catchCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('async hook rejection is caught by `.then(fulfilled, rejected)` and falls through', () => {
+    const src = readRepoFile(VENDORED_CONTROL);
+    expect(src).not.toBe('');
+    // Each hook site must use the 2-argument form of `.then` to handle
+    // rejected promises. A bare `.then(fulfilled).catch(rejected)` is
+    // rejected because (a) `Promise.resolve(__twGpuResult)` first absorbs
+    // any thenable-throws, and (b) `.then().catch()` conflates the
+    // handled-boolean path with rejection-handling.
+    const onRejectedCount = countOccurrences(
+      src,
+      /Promise\.resolve\(__twGpuResult\)\.then\(\s*function\s*\(handled\)[\s\S]*?,\s*function\s*\(__twGpuErr\s*\)/,
+    );
+    expect(onRejectedCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('Promise.resolve wraps the dispatcher result so a thenable-throwing hook is also safe', () => {
+    const src = readRepoFile(VENDORED_CONTROL);
+    // `Promise.resolve(__twGpuResult).then(...)` ensures that even if
+    // `__twGpuResult.then` itself throws (not just the awaited promise),
+    // the rejection is caught and routed to the JS body.
+    const wrapCount = countOccurrences(src, /Promise\.resolve\(__twGpuResult\)\.then/);
+    expect(wrapCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('patch file carries the throw safety contract (round-trip regeneration safety)', () => {
+    const patch = readRepoFile(PATCH_FILE);
+    expect(patch).toContain('try');
+    expect(patch).toContain('catch (__twGpuErr)');
+    expect(patch).toContain('Promise.resolve(__twGpuResult)');
+    // The `.then(_, rejected)` form must appear in all three hook sites
+    // in the patch (one per repeat/repeatUntil/repeatWhile).
+    const rejectedCount = countOccurrences(patch, /function\s*\(__twGpuErr\s*\)/);
+    expect(rejectedCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('console.error logs both sync throw and async rejection paths', () => {
+    const src = readRepoFile(VENDORED_CONTROL);
+    // The throw-safety design uses `console.error` (not the error log
+    // store — vendored space cannot reach it). The two distinct log
+    // messages let a future debugger tell which path failed.
+    expect(src).toContain("'[gpu-kernel] dispatcher hook threw:'");
+    expect(src).toContain("'[gpu-kernel] dispatcher hook rejected:'");
+  });
+});

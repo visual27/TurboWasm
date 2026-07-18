@@ -1,9 +1,8 @@
-diff --git a/src/blocks/scratch3_control.js b/src/blocks/scratch3_control.js
-index 97dcb0b..0a362f1 100644
+===================================================================
 --- a/src/blocks/scratch3_control.js
 +++ b/src/blocks/scratch3_control.js
-@@ -54,21 +54,43 @@ class Scratch3ControlBlocks {
-          const times = Math.round(Cast.toNumber(args.TIMES));
+@@ -54,23 +54,80 @@
+         const times = Math.round(Cast.toNumber(args.TIMES));
          // TurboWasm: optional GPU compute kernel hook (gpu-kernel-spec.md §7.2).
          // When a kernel has been registered for the block id of this `repeat`
 -        // (i.e. an @compute region), the hook short-circuits to the JS path:
@@ -26,6 +25,10 @@ index 97dcb0b..0a362f1 100644
 +        // than just `handled` — a `{ ok:false, demoted:true }` object is
 +        // truthy, so a bare `if (handled) skip-body` would silently drop
 +        // the JS body on D4 demote.
++        // Throw safety (§19.5 #33): wrap the synchronous call in
++        // try/catch and surface rejections via `.then(fulfilled,
++        // rejected)` so a buggy dispatcher cannot freeze the VM
++        // primitive. Both paths fall through to the JS body on error.
          const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
          if (typeof __twGpuBlockId === 'string') {
              const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
@@ -34,7 +37,15 @@ index 97dcb0b..0a362f1 100644
 -                if (__twGpuHandled) {
 -                    // Skip the JS path entirely. The kernel ran end-to-end
 -                    // and the loopCounter / state is already consistent.
-+                const __twGpuResult = __twGpuHook(__twGpuBlockId);
++                let __twGpuResult;
++                try {
++                    __twGpuResult = __twGpuHook(__twGpuBlockId);
++                } catch (__twGpuErr) {
++                    if (typeof console !== 'undefined' && console.error) {
++                        console.error('[gpu-kernel] dispatcher hook threw:', __twGpuErr);
++                    }
++                    __twGpuResult = false;
++                }
 +                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
 +                    // Async dispatch — yield the thread so the Promise
 +                    // can resolve. On resolution we run the JS path
@@ -42,7 +53,7 @@ index 97dcb0b..0a362f1 100644
 +                    if (util && typeof util.yield === 'function') {
 +                        util.yield();
 +                    }
-+                    __twGpuResult.then(function (handled) {
++                    Promise.resolve(__twGpuResult).then(function (handled) {
 +                        // D4-safe judgment: only treat as handled when the
 +                        // dispatcher explicitly says so. `null`/`undefined`/
 +                        // `false` and any failure shape all fall through
@@ -58,18 +69,31 @@ index 97dcb0b..0a362f1 100644
 +                                util.startBranch(1, true);
 +                            }
 +                        }
++                    }, function (__twGpuErr) {
++                        if (typeof console !== 'undefined' && console.error) {
++                            console.error('[gpu-kernel] dispatcher hook rejected:', __twGpuErr);
++                        }
++                        if (typeof util.stackFrame.loopCounter === 'undefined') {
++                            util.stackFrame.loopCounter = times;
++                        }
++                        util.stackFrame.loopCounter--;
++                        if (util.stackFrame.loopCounter >= 0) {
++                            util.startBranch(1, true);
++                        }
 +                    });
-+                    return;
-+                }
+                     return;
+                 }
 +                // Sync return path. Boolean false → fall through; any
 +                // other truthy non-`{ok:true,demoted:false}` shape is
 +                // conservatively also a fall-through.
 +                if (__twGpuResult === true) {
-                     return;
-                 }
++                    return;
++                }
              }
-@@ -90,16 +112,23 @@ class Scratch3ControlBlocks {
-
+         }
+         // Initialize loop
+@@ -90,16 +147,37 @@
+ 
      repeatUntil (args, util) {
          const condition = Cast.toBoolean(args.CONDITION);
 -        // TurboWasm: identical hook to `repeat` above. @compute regions may
@@ -77,20 +101,34 @@ index 97dcb0b..0a362f1 100644
 -        // hook stays installed for code symmetry. The hook short-circuits
 -        // when this block id is registered.
 +        // TurboWasm: identical hook to `repeat` above. See `repeat` for
-+        // the sync/async dispatch contract.
++        // the sync/async dispatch contract. Throw safety (§19.5 #33):
++        // sync call wrapped in try/catch; async path uses `.then(_, rejected)`.
          const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
          if (typeof __twGpuBlockId === 'string') {
              const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
              if (typeof __twGpuHook === 'function') {
 -                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
 -                if (__twGpuHandled) return;
-+                const __twGpuResult = __twGpuHook(__twGpuBlockId);
++                let __twGpuResult;
++                try {
++                    __twGpuResult = __twGpuHook(__twGpuBlockId);
++                } catch (__twGpuErr) {
++                    if (typeof console !== 'undefined' && console.error) {
++                        console.error('[gpu-kernel] dispatcher hook threw:', __twGpuErr);
++                    }
++                    __twGpuResult = false;
++                }
 +                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
 +                    if (util && typeof util.yield === 'function') util.yield();
-+                    __twGpuResult.then(function (handled) {
++                    Promise.resolve(__twGpuResult).then(function (handled) {
 +                        if (!handled || !handled.ok || handled.demoted) {
 +                            if (!condition) util.startBranch(1, true);
 +                        }
++                    }, function (__twGpuErr) {
++                        if (typeof console !== 'undefined' && console.error) {
++                            console.error('[gpu-kernel] dispatcher hook rejected:', __twGpuErr);
++                        }
++                        if (!condition) util.startBranch(1, true);
 +                    });
 +                    return;
 +                }
@@ -98,25 +136,40 @@ index 97dcb0b..0a362f1 100644
              }
          }
          // If the condition is false (repeat UNTIL), start the branch.
-@@ -110,13 +139,22 @@ class Scratch3ControlBlocks {
-
+@@ -110,13 +188,37 @@
+ 
      repeatWhile (args, util) {
          const condition = Cast.toBoolean(args.CONDITION);
 -        // TurboWasm: GPU hook. See `repeat` for semantics.
 +        // TurboWasm: GPU hook. See `repeat` for sync/async semantics.
++        // Throw safety (§19.5 #33): sync call wrapped in try/catch;
++        // async path uses `.then(_, rejected)`.
          const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
          if (typeof __twGpuBlockId === 'string') {
              const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
              if (typeof __twGpuHook === 'function') {
 -                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
 -                if (__twGpuHandled) return;
-+                const __twGpuResult = __twGpuHook(__twGpuBlockId);
++                let __twGpuResult;
++                try {
++                    __twGpuResult = __twGpuHook(__twGpuBlockId);
++                } catch (__twGpuErr) {
++                    if (typeof console !== 'undefined' && console.error) {
++                        console.error('[gpu-kernel] dispatcher hook threw:', __twGpuErr);
++                    }
++                    __twGpuResult = false;
++                }
 +                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
 +                    if (util && typeof util.yield === 'function') util.yield();
-+                    __twGpuResult.then(function (handled) {
++                    Promise.resolve(__twGpuResult).then(function (handled) {
 +                        if (!handled || !handled.ok || handled.demoted) {
 +                            if (condition) util.startBranch(1, true);
 +                        }
++                    }, function (__twGpuErr) {
++                        if (typeof console !== 'undefined' && console.error) {
++                            console.error('[gpu-kernel] dispatcher hook rejected:', __twGpuErr);
++                        }
++                        if (condition) util.startBranch(1, true);
 +                    });
 +                    return;
 +                }
@@ -124,3 +177,131 @@ index 97dcb0b..0a362f1 100644
              }
          }
          // If the condition is true (repeat WHILE), start the branch.
+@@ -124,6 +226,125 @@
+             util.startBranch(1, true);
+         }
+     }
++
++    forEach (args, util) {
++        const variable = util.target.lookupOrCreateVariable(
++            args.VARIABLE.id, args.VARIABLE.name);
++
++        if (typeof util.stackFrame.index === 'undefined') {
++            util.stackFrame.index = 0;
++        }
++
++        if (util.stackFrame.index < Number(args.VALUE)) {
++            util.stackFrame.index++;
++            variable.value = util.stackFrame.index;
++            util.startBranch(1, true);
++        }
++    }
++
++    waitUntil (args, util) {
++        const condition = Cast.toBoolean(args.CONDITION);
++        if (!condition) {
++            util.yield();
++        }
++    }
++
++    forever (args, util) {
++        util.startBranch(1, true);
++    }
++
++    wait (args, util) {
++        if (util.stackTimerNeedsInit()) {
++            const duration = Math.max(0, 1000 * Cast.toNumber(args.DURATION));
++
++            util.startStackTimer(duration);
++            this.runtime.requestRedraw();
++            util.yield();
++        } else if (!util.stackTimerFinished()) {
++            util.yield();
++        }
++    }
++
++    if (args, util) {
++        const condition = Cast.toBoolean(args.CONDITION);
++        if (condition) {
++            util.startBranch(1, false);
++        }
++    }
++
++    ifElse (args, util) {
++        const condition = Cast.toBoolean(args.CONDITION);
++        if (condition) {
++            util.startBranch(1, false);
++        } else {
++            util.startBranch(2, false);
++        }
++    }
++
++    stop (args, util) {
++        const option = args.STOP_OPTION;
++        if (option === 'all') {
++            util.stopAll();
++        } else if (option === 'other scripts in sprite' ||
++            option === 'other scripts in stage') {
++            util.stopOtherTargetThreads();
++        } else if (option === 'this script') {
++            util.stopThisScript();
++        }
++    }
++
++    createClone (args, util) {
++        this._createClone(Cast.toString(args.CLONE_OPTION), util.target);
++    }
++    _createClone (cloneOption, target) { // used by compiler
++        // Set clone target
++        let cloneTarget;
++        if (cloneOption === '_myself_') {
++            cloneTarget = target;
++        } else {
++            cloneTarget = this.runtime.getSpriteTargetByName(cloneOption);
++        }
++
++        // If clone target is not found, return
++        if (!cloneTarget) return;
++
++        // Create clone
++        const newClone = cloneTarget.makeClone();
++        if (newClone) {
++            this.runtime.addTarget(newClone);
++
++            // Place behind the original target.
++            newClone.goBehindOther(cloneTarget);
++        }
++    }
++
++    deleteClone (args, util) {
++        if (util.target.isOriginal) return;
++        this.runtime.disposeTarget(util.target);
++        this.runtime.stopForTarget(util.target);
++    }
++
++    getCounter () {
++        return this._counter;
++    }
++
++    clearCounter () {
++        this._counter = 0;
++    }
++
++    incrCounter () {
++        this._counter++;
++    }
++
++    allAtOnce (args, util) {
++        // Since the "all at once" block is implemented for compatiblity with
++        // Scratch 2.0 projects, it behaves the same way it did in 2.0, which
++        // is to simply run the contained script (like "if 1 = 1").
++        // (In early versions of Scratch 2.0, it would work the same way as
++        // "run without screen refresh" custom blocks do now, but this was
++        // removed before the release of 2.0.)
++        util.startBranch(1, false);
++    }
+ }
+ 
+-module.exports = Scratch3ControlBlocks;
+\ No newline at end of file
++module.exports = Scratch3ControlBlocks;
