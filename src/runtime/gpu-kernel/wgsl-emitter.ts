@@ -534,7 +534,11 @@ function emitFormula(
   context: EmitterContext,
 ): string {
   validateFormula(rawFormula, directive, context);
-  let formula = renameFormulaIdentifiers(rawFormula, context.renameTable);
+  let formula = renameFormulaIdentifiers(
+    rawFormula,
+    context.renameTable,
+    context.bindingRenameTable,
+  );
   if (formula.includes('//')) {
     formula = substituteBinaryOperator(formula, '//', (left, right) => `floor(${left} / ${right})`);
     context.diagnostics.push({
@@ -637,8 +641,21 @@ function validateFormula(
 function renameFormulaIdentifiers(
   formula: string,
   renameTable: Readonly<Record<string, string>>,
+  bindingRenames?: Readonly<Record<string, string>>,
 ): string {
+  // Binding renames take priority over @map renames. Storage bindings
+  // surface as `@bind <name>` declarations in the WGSL output, and any
+  // formula that references the bound list — directly or transitively
+  // via `data_itemoflist`'s `LIST` field — would otherwise be emitted
+  // with the original (potentially reserved) WGSL keyword. Without
+  // binding rewrite, `@bind let(0) rw f32` followed by a `@map idx <- 0`
+  // that references `let` would emit `let <hashed>: array<f32>` as the
+  // storage variable but the formula would still emit `let` verbatim,
+  // shadowing the WGSL keyword inside the function body.
   return formula.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (identifier) => {
+    if (bindingRenames && bindingRenames[identifier] !== undefined) {
+      return bindingRenames[identifier];
+    }
     return renameTable[identifier] ?? identifier;
   });
 }

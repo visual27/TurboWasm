@@ -130,6 +130,49 @@ describe('wgsl-emitter', () => {
     expect(collisionDiags).toHaveLength(2);
   });
 
+  // §19.2 #16 (C-8): formula identifiers must be rewritten when the
+  // bound name collides with a reserved WGSL keyword. Previously
+  // `renameFormulaIdentifiers` only consulted `renameTable`; binding
+  // renames happened to flow through there, but the priority was
+  // implicit. Phase E (quoted `@bind` names) will derive `internalName`
+  // independently of `renameTable`, so the binding rename path must
+  // be explicit.
+  it('formula referencing a renamed @bind name rewrites to the hashed WGSL name (C-8)', () => {
+    const { input } = makeVerdict(
+      '@compute\n@bind let(0) rw f32\n@map idx <- let',
+      ['idx'],
+    );
+    const result = emitRegion(input);
+    // The binding is renamed to `__tw_<hash>` because `let` is a WGSL
+    // keyword. The formula `let` must also use the hashed name; an
+    // unrewritten `let` would shadow the WGSL keyword in the function
+    // body. Storage declarations use `var<storage,...>` (not `let`),
+    // so the verification pattern is on the storage declaration plus
+    // the rewritten formula.
+    expect(result.wgsl).toMatch(/var<storage, read_write> __tw_[0-9a-f]{8}: array<f32>/);
+    expect(result.wgsl).toMatch(/let idx: f32 = __tw_[0-9a-f]{8};/);
+    expect(result.wgsl).not.toMatch(/let let/);
+  });
+
+  it('binding rename takes priority over @map rename when both would rewrite an identifier (C-8)', () => {
+    // The two rename passes can both target the same source name when
+    // a user names their `@bind` and `@map` after the same identifier
+    // (or when a Phase E `internalName` derivation also produces a
+    // collision). The binding rewrite must win so the formula
+    // resolves to the storage variable, not a `@map` let-binding.
+    const { input } = makeVerdict(
+      '@compute\n@bind let(0) rw f32\n@map let <- 0',
+      ['let'],
+    );
+    const result = emitRegion(input);
+    // `let` is renamed via `bindingRenames` (binding path) and ends
+    // up in `renameTable` from the same source; the formula `0` has
+    // nothing to rewrite, but the let-binding declaration must use the
+    // hashed storage name, not the WGSL keyword `let`.
+    expect(result.wgsl).toMatch(/let __tw_[0-9a-f]{8}: f32 = 0;/);
+    expect(result.wgsl).not.toMatch(/^.*let let:.*$/m);
+  });
+
   it('renames kernel parameter names so user `@map gid` does not shadow them', () => {
     const { input } = makeVerdict(
       '@compute\n@repeat R0:global_x = N\n@map gid <- 0\n@map lid <- 1\n@map wid <- 2',
