@@ -1,4 +1,4 @@
-# TurboWasm Viewer
+# TurboWasm
 
 A minimal, statically-deployed **SB3 viewer** built on top of [TurboWarp Scaffolding](https://github.com/TurboWarp/scaffolding). The runtime is accelerated by a WASM-SIMD collision-detection pipeline (`TurboWasm Acceleration`) with a 2-way WASM-SIMD ↔ JavaScript fallback chain. Each tier degrades gracefully on environments that do not support it.
 
