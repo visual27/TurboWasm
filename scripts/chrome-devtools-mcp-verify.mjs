@@ -622,13 +622,19 @@ async function main() {
     }));
   jsonLog('H1-wasm-requests', wasmRequests);
   jsonLog('H2-js-requests', jsRequests);
-  const hasResvgWasm = wasmRequests.some(
+  // Phase 4 (resvg-wasm) was retired in v6 along with the SVG
+  // rasterization host hook. SVG costume drawing now routes through
+  // TurboWarp Scaffolding's native `drawImage(this._svgImage, 0, 0)`.
+  // Pin the negative so a regression that re-introduces
+  // `@resvg/resvg-wasm` in package.json, or ships a stale UMD
+  // bundled with the old `_twWasmRasterSvgCostume` host, surfaces here.
+  const resvgWasmDetected = wasmRequests.some(
     (r) => r.url.includes('index_bg') && r.status === 200 && /wasm/i.test(r.contentType ?? ''),
   );
   const hasCollisionWasm = wasmRequests.some(
     (r) => r.url.includes('tw_viewer_wasm_collision_bg') && r.status === 200 && /wasm/i.test(r.contentType ?? ''),
   );
-  recordResult('H.resvg_wasm_loaded', hasResvgWasm, { hasResvgWasm, wasmRequests });
+  recordResult('H.resvg_wasm_not_loaded', !resvgWasmDetected, { resvgWasmDetected, wasmRequests });
   // Collision wasm is only loaded when WASM SIMD is supported. In
   // headless Chromium without SIMD this is expected to be absent. The
   // assertion is conditional on the runtime capability so a missing
