@@ -11,7 +11,7 @@ import {
 } from '@/runtime/player';
 import { relayoutScaffolding, setScaffoldingResizeMode } from '@/lib/scaffolding';
 import { useProjectStore } from '@/stores/useProjectStore';
-import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
+import type { AdvancedSettings } from '@/types/settings';
 import { cn } from '@/lib/utils';
 
 export interface StageViewProps {
@@ -96,12 +96,12 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
   useEffect(() => {
     const apply = (
       next: AdvancedSettings,
-      performanceMode: PerformanceMode,
-      prevPerformanceMode: PerformanceMode,
+      enableWasm: boolean,
+      prevEnableWasm: boolean,
     ): void => {
       if (!initializedRef.current) return;
       try {
-        applySettings(next, performanceMode, prevPerformanceMode);
+        applySettings(next, enableWasm, prevEnableWasm);
         // Re-publish the diagnostic accessor after every settings change
         // so a browser-verifier observing `window.__turbowasm` sees the
         // post-apply hooks (Phase 2/3/4 hook reattachment path).
@@ -112,19 +112,16 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
       }
     };
     const unsub = useSettingsStore.subscribe((state, prev) => {
-      if (
-        state.advanced !== prev.advanced ||
-        state.performanceMode !== prev.performanceMode
-      ) {
+      if (state.advanced !== prev.advanced || state.enableWasm !== prev.enableWasm) {
         // eslint-disable-next-line no-console
         console.log(
-          `[tw-stage-size] StageView store subscribe: prev=${prev.advanced.stageWidth}x${prev.advanced.stageHeight} next=${state.advanced.stageWidth}x${state.advanced.stageHeight} performanceModeSame=${state.performanceMode === prev.performanceMode}`,
+          `[tw-stage-size] StageView store subscribe: prev=${prev.advanced.stageWidth}x${prev.advanced.stageHeight} next=${state.advanced.stageWidth}x${state.advanced.stageHeight} enableWasmSame=${state.enableWasm === prev.enableWasm}`,
         );
-        apply(state.advanced, state.performanceMode, prev.performanceMode);
+        apply(state.advanced, state.enableWasm, prev.enableWasm);
       }
     });
     const initial = useSettingsStore.getState();
-    apply(initial.advanced, initial.performanceMode, initial.performanceMode);
+    apply(initial.advanced, initial.enableWasm, initial.enableWasm);
     return unsub;
   }, []);
 

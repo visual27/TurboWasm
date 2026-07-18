@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
@@ -14,6 +14,7 @@ describe('SettingsDialog — layout', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+      enableWasm: true,
     });
   });
 
@@ -72,6 +73,7 @@ describe('SettingsDialog — layout', () => {
     expect(within(othersSection).getByText('Disable Compiler')).toBeInTheDocument();
     expect(within(othersSection).queryByText('TurboWasm Acceleration')).toBeNull();
     expect(within(othersSection).queryByText('Performance Mode')).toBeNull();
+    expect(within(othersSection).queryByText('Enable WASM')).toBeNull();
   });
 
   it('does NOT render the retired SVG Acceleration dropdown', () => {
@@ -85,21 +87,46 @@ describe('SettingsDialog — layout', () => {
     expect(screen.queryByRole('option', { name: /MIP chain/i })).toBeNull();
   });
 
-  it('renders the TurboWasm section with TurboWasm Acceleration and Performance Mode', () => {
+  it('does NOT render the retired Performance Mode dropdown', () => {
+    // The Performance Mode dropdown was collapsed into a single
+    // `Enable WASM` toggle in v8 (the three-way 'auto' / 'force-wasm'
+    // / 'legacy-only' union was reduced to a single boolean). The
+    // dialog must not surface the retired selector.
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(screen.queryByText('Performance Mode')).toBeNull();
+    expect(screen.queryByLabelText('Performance mode')).toBeNull();
+  });
+
+  it('renders the TurboWasm section with TurboWasm Acceleration, Enable WebGPU, and Enable WASM', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const turboSection = screen
       .getByTestId('settings-section-turbowasm')
       .closest('section') as HTMLElement;
     expect(within(turboSection).getByText('TurboWasm Acceleration')).toBeInTheDocument();
-    expect(within(turboSection).getByText('Performance Mode')).toBeInTheDocument();
+    expect(within(turboSection).getByText('Enable WebGPU')).toBeInTheDocument();
+    expect(within(turboSection).getByText('Enable WASM')).toBeInTheDocument();
   });
 
-  it('Performance Mode dropdown exposes only auto / force-wasm / legacy-only', () => {
+  it('does NOT render the retired GPU Kernels row', () => {
+    // The GPU Kernels row was renamed to `Enable WebGPU` in v8 so the
+    // user-facing label matches the field name. The old label must not
+    // appear in the dialog anymore.
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const trigger = screen.getByLabelText('Performance mode');
-    expect(trigger).toHaveTextContent(/Auto/i);
-    // The retired `force-webgpu` value must not be selectable.
-    expect(screen.queryByRole('option', { name: /Force WebGPU/i })).toBeNull();
+    expect(screen.queryByText('GPU Kernels')).toBeNull();
+  });
+
+  it('places the Enable WASM toggle immediately below Enable WebGPU', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const turboSection = screen
+      .getByTestId('settings-section-turbowasm')
+      .closest('section') as HTMLElement;
+    // Compare the DOM order of the labels inside the TurboWasm
+    // section. The Enable WASM toggle must come AFTER Enable WebGPU.
+    const labels = Array.from(turboSection.querySelectorAll('label')).map((el) => el.textContent ?? '');
+    const webgpuIdx = labels.findIndex((l) => l === 'Enable WebGPU');
+    const wasmIdx = labels.findIndex((l) => l === 'Enable WASM');
+    expect(webgpuIdx).toBeGreaterThanOrEqual(0);
+    expect(wasmIdx).toBeGreaterThan(webgpuIdx);
   });
 
   it('does NOT render an Extensions tab', () => {
@@ -166,6 +193,7 @@ describe('SettingsDialog — TurboWasm Acceleration toggle', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
+      enableWasm: true,
     });
   });
 
@@ -195,7 +223,7 @@ describe('SettingsDialog — TurboWasm Acceleration toggle', () => {
   });
 });
 
-describe('SettingsDialog — TurboWasm dropdowns inside a Dialog', () => {
+describe('SettingsDialog — Enable WASM toggle', () => {
   beforeEach(() => {
     useSettingsStore.setState({
       theme: 'system',
@@ -204,50 +232,62 @@ describe('SettingsDialog — TurboWasm dropdowns inside a Dialog', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-      performanceMode: 'auto',
+      enableWasm: true,
     });
   });
 
-  it('Radix Dialog locks the body with pointer-events: none (the precondition this section guards)', () => {
+  it('defaults the toggle to ON', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    expect(document.body.style.pointerEvents).toBe('none');
+    const toggle = screen.getByLabelText('Enable WASM toggle') as HTMLButtonElement;
+    expect(toggle.getAttribute('data-state')).toBe('checked');
+    expect(useSettingsStore.getState().enableWasm).toBe(true);
   });
 
-  it('Popover Content applies pointer-events: auto (regression for dropdown clicks in any wrapping Dialog)', async () => {
-    const { Popover, PopoverContent, PopoverTrigger } = await import(
-      '@/components/ui/popover'
-    );
-    const Wrapper = (): React.JSX.Element => (
-      <Popover open>
-        <PopoverTrigger aria-label="probe trigger">trigger</PopoverTrigger>
-        <PopoverContent aria-label="probe content">content</PopoverContent>
-      </Popover>
-    );
-    render(<Wrapper />);
-    const content = await screen.findByLabelText('probe content');
-    expect(content.className).toMatch(/pointer-events-auto/);
-    expect(content.getAttribute('style') ?? '').toMatch(/pointer-events:\s*auto/);
-  });
-
-  it('SelectField option click propagates value to the consumer', async () => {
-    const { SelectField } = await import('@/components/ui/select');
-    const onChange = vi.fn<(v: 'auto' | 'force-wasm') => void>();
+  it('flips the toggle OFF and propagates to the store', async () => {
     const user = userEvent.setup();
-    render(
-      <SelectField<'auto' | 'force-wasm'>
-        id="probe-select"
-        ariaLabel="probe select"
-        value="auto"
-        onChange={onChange}
-        options={[
-          { value: 'auto', label: 'Auto', description: 'auto description' },
-          { value: 'force-wasm', label: 'Force WASM', description: 'wasm description' },
-        ]}
-      />,
-    );
-    await user.click(screen.getByLabelText('probe select'));
-    await user.click(screen.getByRole('option', { name: /Force WASM/i }));
-    expect(onChange).toHaveBeenCalledWith('force-wasm');
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText('Enable WASM toggle');
+    await user.click(toggle);
+    expect(useSettingsStore.getState().enableWasm).toBe(false);
+  });
+});
+
+describe('SettingsDialog — Enable WebGPU toggle (renamed from GPU Kernels)', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+      enableWasm: true,
+    });
+  });
+
+  it('defaults the toggle to ON', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText('Enable WebGPU toggle') as HTMLButtonElement;
+    expect(toggle.getAttribute('data-state')).toBe('checked');
+    expect(useSettingsStore.getState().advanced.enableWebgpu).toBe(true);
+  });
+
+  it('flips the toggle OFF and propagates to the store', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText('Enable WebGPU toggle');
+    await user.click(toggle);
+    expect(useSettingsStore.getState().advanced.enableWebgpu).toBe(false);
+  });
+
+  it('forces defaultAdvanced.enableWebgpu to true on "Set as default"', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().patchAdvanced({ enableWebgpu: false });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-set-default'));
+    const s = useSettingsStore.getState();
+    expect(s.advanced.enableWebgpu).toBe(false);
+    expect(s.defaultAdvanced.enableWebgpu).toBe(true);
   });
 });
 

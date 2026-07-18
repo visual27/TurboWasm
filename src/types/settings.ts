@@ -3,33 +3,6 @@ export type Theme = 'system' | 'dark' | 'light';
 export type ScaffoldingResizeMode = 'preserve-ratio' | 'dynamic-resize' | 'stretch';
 
 /**
- * Selects which collision-detection / rendering backend the runtime prefers.
- *
- *  - `'auto'`:         WASM SIMD when supported, otherwise the original
- *                      JavaScript path. The default for new users.
- *                      Probes WebGPU at startup so a future re-introduction
- *                      of the GPU compute tier is a one-line change.
- *  - `'force-wasm'`:   WASM SIMD is always used when it initialised
- *                      successfully; falls back to the JavaScript path when
- *                      WASM SIMD is unavailable.
- *  - `'legacy-only'`:  All TurboWasm hooks are cleared; the runtime behaves
- *                      identically to the unmodified scratch-render. This
- *                      satisfies the Definition of Done parity requirement
- *                      (legacy output must be byte-identical to the
- *                      upstream renderer).
- *
- * The previous `'force-webgpu'` value was removed when the WebGPU compute
- * tier (Phase 2) was retired: the JS-side hook was never wired beyond
- * `requestAdapter()` probing and always returned `null`, so a "Force WebGPU"
- * option would have silently fallen through to WASM SIMD / JS. The
- * persisted migration in `src/lib/persistence.ts` downgrades any v5
- * payload with `performanceMode === 'force-webgpu'` to `'auto'`.
- */
-export type PerformanceMode = 'auto' | 'force-wasm' | 'legacy-only';
-
-export const PERFORMANCE_MODES: readonly PerformanceMode[] = ['auto', 'force-wasm', 'legacy-only'] as const;
-
-/**
  * Sandbox mode for custom extensions loaded from a project.
  *
  *  - 'worker':      run inside a Web Worker. Most isolated; same as
@@ -105,13 +78,15 @@ export interface AdvancedSettings {
    * pipelines are created and the VM hook short-circuits straight to the
    * JS path.
    *
-   * Ignored when `performanceMode === 'legacy-only'` (the existing
-   * `selectBackendTier` early-return makes the GPU code path unreachable).
    * `saveAdvancedAsDefault()` forces this back to `true` for the same
    * reason as `turboWasmAccelerationEnabled`: the user cannot lock
    * themselves off the GPU path.
+   *
+   * Renamed from `enableGpuKernels` in v8 alongside the Performance Mode
+   * simplification (the old dropdown was reduced to a single `enableWasm`
+   * toggle, leaving the WebGPU path as a separate, independent switch).
    */
-  enableGpuKernels: boolean;
+  enableWebgpu: boolean;
 }
 
 /**
@@ -144,15 +119,24 @@ export interface UISettings {
    */
   allowedExtensionUrls: string[];
   /**
-   * Backend selection for the TurboWasm acceleration pipeline (Phase 0..3
-   * of the performance spec). Persisted across sessions so the user does
-   * not have to re-pick their preferred backend on every reload.
+   * Whether the WASM-SIMD acceleration hooks are installed on the
+   * renderer. `true` (default): the runtime picks WASM SIMD when
+   * supported and falls back to the JS path otherwise (the previous
+   * `performanceMode: 'auto'` behaviour). `false`: every TurboWasm hook
+   * is cleared so the runtime behaves identically to unmodified
+   * scratch-render (the previous `performanceMode: 'legacy-only'`
+   * DoD parity mode).
    *
-   * `legacy-only` is intentionally persisted: power users may want to
-   * compare against the unmodified scratch-render without losing that
-   * choice to a "Set as default" reset.
+   * Replaces the v3..v7 `performanceMode: 'auto' | 'force-wasm' |
+   * 'legacy-only'` union. The historical `'force-wasm'` value is
+   * collapsed into `'auto'` because the runtime never differentiated
+   * the two (both install the WASM hook when `wasmReady` is true and
+   * silently fall back to the JS path otherwise — see
+   * `src/runtime/tw-wasm/applyTurboWasmAcceleration.ts:selectBackendTier`).
+   * Persisted across sessions so a power user can lock the parity mode
+   * without losing it on reload.
    */
-  performanceMode: PerformanceMode;
+  enableWasm: boolean;
 }
 
 export interface SettingsStoreShape {
@@ -162,7 +146,7 @@ export interface SettingsStoreShape {
   advanced: AdvancedSettings;
   defaultAdvanced: AdvancedSettings;
   allowedExtensionUrls: string[];
-  performanceMode: PerformanceMode;
+  enableWasm: boolean;
   /**
    * Most recent non-30 fps the user explicitly chose (via the Settings
    * dialog NumberField, "Set as default", or Alt+Flag from a non-30

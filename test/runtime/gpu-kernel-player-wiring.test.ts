@@ -44,9 +44,9 @@ import { DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
  * Scope:
  *   - Source-inspection: pin down the structural wiring of
  *     `bootstrapGpuKernels` in `loadProjectFromArrayBuffer`, plus the
- *     two short-circuits (`enableGpuKernels === false`,
- *     `performanceMode === 'legacy-only'`). These are source-level
- *     guarantees that future refactors cannot silently regress.
+ *     two short-circuits (`enableWebgpu === false`,
+ *     `enableWasm === false`). These are source-level guarantees that
+ *     future refactors cannot silently regress.
  *   - Behavioural: drive the M3 → M5 pipeline end-to-end on a tiny
  *     jszip-built SB3 buffer that carries an `@compute` region. We
  *     verify the region is detected (verdict count > 0) and the
@@ -336,7 +336,7 @@ beforeEach(() => {
     advanced: makeAdvanced(),
     defaultAdvanced: makeAdvanced(),
     allowedExtensionUrls: [],
-    performanceMode: 'auto',
+    enableWasm: true,
   });
 });
 
@@ -376,16 +376,16 @@ describe('player.ts: bootstrapGpuKernels wiring (source-inspection)', () => {
     expect(bootstrapIdx, 'bootstrap must run before loadProject').toBeLessThan(loadProjectIdx);
   });
 
-  it('enableGpuKernels=false short-circuits the bootstrap (logged skip)', () => {
+  it('enableWebgpu=false short-circuits the bootstrap (logged skip)', () => {
     const src = readPlayerSource();
-    // The branch reads currentAdvanced?.enableGpuKernels and logs the
+    // The branch reads currentAdvanced?.enableWebgpu and logs the
     // skip. We assert the literal console message the harness greps for.
-    expect(src).toMatch(/enableGpuKernels\s*=\s*false\s*;\s*skipping\s+@compute/);
+    expect(src).toMatch(/enableWebgpu\s*=\s*false\s*;\s*skipping\s+@compute/);
   });
 
-  it("performanceMode='legacy-only' short-circuits the bootstrap (logged skip)", () => {
+  it('enableWasm=false short-circuits the bootstrap (logged skip)', () => {
     const src = readPlayerSource();
-    expect(src).toMatch(/performanceMode\s*=\s*legacy-only\s*;\s*skipping\s+@compute/);
+    expect(src).toMatch(/enableWasm\s*=\s*false\s*;\s*skipping\s+@compute/);
   });
 
   it("__exposeForBrowserVerify publishes `kernelRegistry` (size/jsOnly/canonicalKeys) under window.__turbowasm", () => {
@@ -441,7 +441,7 @@ describe('gpu-kernel pipeline: end-to-end on a @compute fixture', () => {
         regions: verdicts,
         parsedProject,
         runtimeState: { listLengths: { aabb_w: 1, buff_r: 1 } },
-        performanceMode: 'auto',
+        enableWasm: true,
         enabled: true,
       },
       async () => null,
@@ -454,7 +454,7 @@ describe('gpu-kernel pipeline: end-to-end on a @compute fixture', () => {
     expect(result.pool).toBeInstanceOf(ListBufferPool);
   });
 
-  it('enable=false (Settings dialog toggle) yields an empty registry + null device', async () => {
+  it('enabled=false (Settings dialog toggle) yields an empty registry + null device', async () => {
     const buf = await buildExpoSb3();
     const projectJson = await readProjectJson(buf);
     const parsedProject = toParsedProjectFromJson(projectJson);
@@ -465,7 +465,7 @@ describe('gpu-kernel pipeline: end-to-end on a @compute fixture', () => {
         regions: verdicts,
         parsedProject,
         runtimeState: { listLengths: {} },
-        performanceMode: 'auto',
+        enableWasm: true,
         enabled: false,
       },
       async () => null,
@@ -474,7 +474,7 @@ describe('gpu-kernel pipeline: end-to-end on a @compute fixture', () => {
     expect(result.registry.size()).toBe(0);
   });
 
-  it("performanceMode='legacy-only' yields an empty registry + null device", async () => {
+  it('enableWasm=false yields an empty registry + null device (DoD parity)', async () => {
     const buf = await buildExpoSb3();
     const projectJson = await readProjectJson(buf);
     const parsedProject = toParsedProjectFromJson(projectJson);
@@ -485,7 +485,7 @@ describe('gpu-kernel pipeline: end-to-end on a @compute fixture', () => {
         regions: verdicts,
         parsedProject,
         runtimeState: { listLengths: {} },
-        performanceMode: 'legacy-only',
+        enableWasm: false,
         enabled: true,
       },
       async () => null,

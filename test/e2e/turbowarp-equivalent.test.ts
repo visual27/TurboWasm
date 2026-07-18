@@ -1,18 +1,18 @@
 /**
  * End-to-end regression test for the surviving performance-pipeline
- * invariant: sprite rendering output must be bit-identical between the
- * default PerformanceMode and `legacy-only`.
+ * invariant: sprite rendering output must be bit-identical between
+ * `enableWasm: true` (default) and `enableWasm: false` (parity mode).
  *
  * Phase 4 (resvg-wasm) was removed in v5; Phase 2 (WebGPU compute) and
  * Phase 3 (WebGPU instanced renderer) were retired in v6 along with
  * their UI selectors. The remaining rendering path is identical to
  * the upstream TurboWarp Scaffolding `drawImage(this._svgImage, ...)`
- * flow regardless of which PerformanceMode is selected, so the canvas
- * pixels produced by the two modes must match exactly.
+ * flow regardless of which `enableWasm` value is selected, so the
+ * canvas pixels produced by the two states must match exactly.
  *
  * This test shells out to `scripts/verify-turbowarp-equivalent.mjs`
  * which spins up `vite preview` + Playwright Chromium and compares
- * ImageData captures from both modes. It is gated behind `RUN_E2E=1`
+ * ImageData captures from both states. It is gated behind `RUN_E2E=1`
  * because the harness needs a built `dist/` and a Chromium binary.
  *
  * Run locally with:
@@ -32,7 +32,7 @@ describe('TurboWarp-equivalent sprite rendering', () => {
   const runE2E = process.env.RUN_E2E === '1';
 
   it.skipIf(!runE2E)(
-    'default PerformanceMode and legacy-only produce bit-identical sprite output',
+    'enableWasm=true and enableWasm=false produce bit-identical sprite output',
     () => {
       const result = spawnSync(
         process.platform === 'win32' ? 'node.exe' : 'node',
@@ -51,7 +51,7 @@ describe('TurboWarp-equivalent sprite rendering', () => {
       }
       expect(result.status, 'verify-turbowarp-equivalent.mjs exited non-zero').toBe(0);
       expect(
-        stdout.includes('OK: default and legacy-only rendered bit-identically.'),
+        stdout.includes('OK: enableWasm=true and enableWasm=false rendered bit-identically.'),
         'verify-turbowarp-equivalent.mjs did not report bit-identity',
       ).toBe(true);
     },

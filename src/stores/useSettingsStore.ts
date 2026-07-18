@@ -1,14 +1,9 @@
 import { create } from 'zustand';
-import type {
-  AdvancedSettings,
-  ExtensionSandboxMode,
-  PerformanceMode,
-  Theme,
-} from '@/types/settings';
+import type { AdvancedSettings, ExtensionSandboxMode, Theme } from '@/types/settings';
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
   DEFAULT_ALLOWED_EXTENSION_URLS,
-  DEFAULT_PERFORMANCE_MODE,
+  DEFAULT_ENABLE_WASM,
   VOLUME_MAX,
   VOLUME_MIN,
 } from '@/utils/constants';
@@ -52,13 +47,16 @@ export interface SettingsState {
    * {@link ALLOWED_EXTENSION_URLS_MAX}.
    */
   allowedExtensionUrls: string[];
-/**
-   * Backend selection for the TurboWasm acceleration pipeline. Persisted
-   * (unlike `disableCompiler`) so a power user can pick `legacy-only` for a
-   * parity test and have that choice survive a reload. See
-   * {@link PerformanceMode} for the full set of values.
+  /**
+   * Whether the WASM-SIMD acceleration hooks are installed on the
+   * renderer. `true` (default): the runtime installs the WASM hook when
+   * `wasmReady` and falls back to the JS path otherwise (the previous
+   * `'auto'` behaviour). `false`: every TurboWasm hook is cleared so the
+   * runtime behaves identically to unmodified scratch-render (the
+   * previous `'legacy-only'` DoD parity mode). Persisted across
+   * reloads so a power user can lock the parity mode without losing it.
    */
-  performanceMode: PerformanceMode;
+  enableWasm: boolean;
   /**
    * The user's most recent non-30 FPS — the value that
    * {@link cycleFpsShortcut} should round-trip back to when the runtime
@@ -161,11 +159,13 @@ export interface SettingsState {
    */
   clearAllowedExtensionUrls: () => void;
   /**
-   * Update the backend selection (`auto` / `force-wasm` / `legacy-only`).
-   * Persists immediately so the next reload picks up the same backend
-   * without re-prompting the user.
+   * Toggle the WASM-SIMD acceleration hook. `true` installs the WASM
+   * hook when `wasmReady` (and falls back to the JS path otherwise);
+   * `false` clears every TurboWasm hook so the runtime behaves
+   * identically to unmodified scratch-render. Persists immediately so
+   * a reload right after the toggle picks up the same backend.
    */
-  setPerformanceMode: (mode: PerformanceMode) => void;
+  setEnableWasm: (value: boolean) => void;
 }
 
 const initial = readSettings();
@@ -239,9 +239,9 @@ export function computePreferredFps(
 // High-frequency setters (setVolume, setExtensionSandboxMode) coalesce their
 // disk writes through this microtask + idle debouncer. The latest snapshot
 // wins; intermediate states are skipped. We still flush synchronously on
-// setTheme / saveAdvancedAsDefault / resetAdvanced / toggleMute so the rare
-// but user-meaningful "Settings closed, expect the next page load to keep my
-// choice" expectation is preserved.
+// setTheme / saveAdvancedAsDefault / resetAdvanced / toggleMute / setEnableWasm
+// so the rare but user-meaningful "Settings closed, expect the next page
+// load to keep my choice" expectation is preserved.
 //
 // `patchAdvanced` and `applyRuntimeOverrides` are intentionally NOT
 // debounced here: they only mutate the in-memory runtime `advanced` and
@@ -269,7 +269,7 @@ function schedulePersist(snapshot: SettingsState): void {
           advanced: snap.advanced,
           defaultAdvanced: snap.defaultAdvanced,
           allowedExtensionUrls: snap.allowedExtensionUrls,
-          performanceMode: snap.performanceMode,
+          enableWasm: snap.enableWasm,
           userExplicitFps: snap.userExplicitFps,
         });
       }
@@ -299,7 +299,7 @@ function persistImmediate(state: SettingsState): void {
     advanced: state.advanced,
     defaultAdvanced: state.defaultAdvanced,
     allowedExtensionUrls: state.allowedExtensionUrls,
-    performanceMode: state.performanceMode,
+    enableWasm: state.enableWasm,
     userExplicitFps: state.userExplicitFps,
   });
 }
@@ -314,7 +314,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   advanced: initial.advanced,
   defaultAdvanced: initial.defaultAdvanced,
   allowedExtensionUrls: [...initial.allowedExtensionUrls],
-  performanceMode: initial.performanceMode ?? DEFAULT_PERFORMANCE_MODE,
+  enableWasm: initial.enableWasm ?? DEFAULT_ENABLE_WASM,
   // The persistence layer derives this on read for legacy payloads, so
   // the value here is always either the user's saved choice or a
   // sensible fallback (null = no preference). We accept null because the
@@ -428,14 +428,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // forced off and `turboWasmAccelerationEnabled` is always forced on
     // so a user who disabled acceleration cannot lock themselves into the
     // legacy path via "Set as default". Same applies to
-    // `enableGpuKernels`: turning the GPU pipeline off via "Set as
+    // `enableWebgpu`: turning the GPU pipeline off via "Set as
     // default" would lock the user out of every `@compute` region.
     const { advanced } = get();
     const snapshot: AdvancedSettings = {
       ...advanced,
       disableCompiler: false,
       turboWasmAccelerationEnabled: true,
-      enableGpuKernels: true,
+      enableWebgpu: true,
     };
     // A non-30 runtime FPS at "Set as default" time is also the user's
     // explicit preference — keep the Alt+Flag latched value in sync so
@@ -514,12 +514,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS] });
     persistImmediate(get());
   },
-  setPerformanceMode: (mode) => {
-    // The mode is a user preference that must persist across reloads (a
-    // power user who picks `legacy-only` for a parity test expects that
-    // choice to survive the next page load). Persist immediately so a
-    // reload right after the toggle picks up the same backend.
-    set({ performanceMode: mode });
+  setEnableWasm: (value) => {
+    // The toggle is a user preference that must persist across reloads
+    // (a power user who disables the WASM hooks for a parity test
+    // expects that choice to survive the next page load). Persist
+    // immediately so a reload right after the toggle picks up the same
+    // backend.
+    set({ enableWasm: value });
     persistImmediate(get());
   },
 }));
@@ -540,7 +541,7 @@ export function flushSettingsPersistForTesting(): void {
       advanced: snap.advanced,
       defaultAdvanced: snap.defaultAdvanced,
       allowedExtensionUrls: snap.allowedExtensionUrls,
-      performanceMode: snap.performanceMode,
+      enableWasm: snap.enableWasm,
       userExplicitFps: snap.userExplicitFps,
     });
   }

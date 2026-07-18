@@ -161,7 +161,7 @@ async function runOneLoad(browser, fixturePath) {
     if (!tw) return null;
     const kr = tw.kernelRegistry ?? { size: 0, jsOnly: 0, canonicalKeys: [] };
     return {
-      performanceMode: tw.performanceMode,
+      enableWasm: tw.enableWasm,
       kernelRegistrySize: kr.size,
       kernelRegistryJsOnly: kr.jsOnly,
       kernelRegistryCanonicalKeys: Array.isArray(kr.canonicalKeys)

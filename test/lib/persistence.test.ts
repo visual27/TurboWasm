@@ -31,7 +31,7 @@ describe('persistence', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 60, stageWidth: 800 },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, fps: 30 },
       allowedExtensionUrls: ['https://example.com/a.js'],
-      performanceMode: 'auto',
+      enableWasm: true,
       userExplicitFps: null,
     });
     const settings = readSettings();
@@ -95,7 +95,7 @@ describe('persistence', () => {
       },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-      performanceMode: 'auto',
+      enableWasm: true,
       userExplicitFps: null,
     });
     const settings = readSettings();
@@ -159,12 +159,13 @@ describe('persistence', () => {
     const settings = readSettings();
     expect(settings.theme).toBe('dark');
     // The legacy field is no longer part of the typed shape — verify
-    // the surviving keys are exactly the post-v6 ones (the retired
-    // `svgAccelerationMode` is no longer present).
+    // the surviving keys are exactly the post-v8 ones (the retired
+    // `svgAccelerationMode` and `enableGpuKernels` are no longer
+    // present, replaced by `enableWebgpu`).
     expect(Object.keys(settings.advanced).sort()).toEqual(
       [
         'disableCompiler',
-        'enableGpuKernels',
+        'enableWebgpu',
         'extensionSandboxMode',
         'fps',
         'highQualityPen',
@@ -193,7 +194,7 @@ describe('persistence', () => {
         'https://example.com/a.js',
         '  https://example.com/b.js  ',
       ],
-      performanceMode: 'auto',
+      enableWasm: true,
       userExplicitFps: null,
     });
     const settings = readSettings();
@@ -282,7 +283,7 @@ describe('persistence', () => {
   });
 
   describe('v2 → v3 migration (performanceMode field)', () => {
-    it('seeds performanceMode to "auto" when reading a v2 payload without the field', () => {
+    it('seeds enableWasm to true when reading a v2 payload without the field', () => {
       localStorage.setItem(
         STORAGE_KEYS.settings,
         JSON.stringify({
@@ -297,10 +298,10 @@ describe('persistence', () => {
         }),
       );
       const settings = readSettings();
-      expect(settings.performanceMode).toBe('auto');
+      expect(settings.enableWasm).toBe(true);
     });
 
-    it('round-trips a persisted performanceMode through storage', () => {
+    it('round-trips a persisted enableWasm through storage', () => {
       writeSettings({
         theme: 'system',
         volume: 100,
@@ -308,38 +309,20 @@ describe('persistence', () => {
         advanced: { ...DEFAULT_ADVANCED_SETTINGS },
         defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
         allowedExtensionUrls: [],
-        performanceMode: 'force-wasm',
+        enableWasm: false,
         userExplicitFps: null,
       });
       const settings = readSettings();
-      expect(settings.performanceMode).toBe('force-wasm');
-    });
-
-    it('falls back to "auto" when reading a payload with an unknown performanceMode', () => {
-      localStorage.setItem(
-        STORAGE_KEYS.settings,
-        JSON.stringify({
-          state: {
-            theme: 'system',
-            volume: 100,
-            lastNonMuteVolume: 100,
-            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
-            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
-            performanceMode: 'totally-fake-mode',
-          },
-          version: STORAGE_VERSION,
-        }),
-      );
-      const settings = readSettings();
-      expect(settings.performanceMode).toBe('auto');
+      expect(settings.enableWasm).toBe(false);
     });
   });
 
   describe('v5 → v6 migration (retire force-webgpu + svgAccelerationMode)', () => {
-    it('downgrades force-webgpu to auto on read', () => {
+    it('downgrades force-webgpu performanceMode to enableWasm=true on read', () => {
       // A user had pinned WebGPU before the v6 retirement. The
       // migration must downgrade silently so they end up on the WASM
-      // SIMD path instead of a no-op tier.
+      // SIMD path instead of a no-op tier. The v8 collapse then maps
+      // any non-`legacy-only` value to `enableWasm=true`.
       localStorage.setItem(
         STORAGE_KEYS.settings,
         JSON.stringify({
@@ -355,7 +338,7 @@ describe('persistence', () => {
         }),
       );
       const settings = readSettings();
-      expect(settings.performanceMode).toBe('auto');
+      expect(settings.enableWasm).toBe(true);
     });
 
     it('drops the retired svgAccelerationMode field on read', () => {
@@ -383,6 +366,118 @@ describe('persistence', () => {
       expect('svgAccelerationMode' in settings.defaultAdvanced).toBe(false);
       // The top-level mirror is no longer part of the shape either.
       expect('svgAccelerationMode' in settings).toBe(false);
+    });
+  });
+
+  describe('v7 → v8 migration (collapse performanceMode + rename enableGpuKernels)', () => {
+    it('collapses performanceMode="auto" into enableWasm=true', () => {
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            performanceMode: 'auto',
+          },
+          version: 7,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.enableWasm).toBe(true);
+    });
+
+    it('collapses performanceMode="force-wasm" into enableWasm=true', () => {
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            performanceMode: 'force-wasm',
+          },
+          version: 7,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.enableWasm).toBe(true);
+    });
+
+    it('collapses performanceMode="legacy-only" into enableWasm=false', () => {
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            performanceMode: 'legacy-only',
+          },
+          version: 7,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.enableWasm).toBe(false);
+    });
+
+    it('renames advanced.enableGpuKernels to advanced.enableWebgpu', () => {
+      // v7 payloads do NOT carry `enableWebgpu`; emulate that exactly by
+      // stripping it from the spread so `sanitizeAdvanced` falls back to
+      // the legacy `enableGpuKernels` key for the rename.
+      const v7AdvancedBase = (() => {
+        const { enableWebgpu: _ignored, ...rest } = DEFAULT_ADVANCED_SETTINGS;
+        return rest;
+      })();
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...v7AdvancedBase, enableGpuKernels: false },
+            defaultAdvanced: { ...v7AdvancedBase, enableGpuKernels: false },
+            performanceMode: 'auto',
+          },
+          version: 7,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.advanced.enableWebgpu).toBe(false);
+      expect('enableGpuKernels' in settings.advanced).toBe(false);
+      expect(settings.defaultAdvanced.enableWebgpu).toBe(false);
+    });
+
+    it('prefers an explicit enableWasm over a stale performanceMode when both are present', () => {
+      // Defensive: a malformed payload that carries both the v3..v7
+      // `performanceMode` field and the v8 `enableWasm` field must
+      // honour the new field — the v8 write path always emits
+      // `enableWasm`, so seeing both usually means a hand-crafted
+      // payload or a leftover localStorage entry.
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+            performanceMode: 'legacy-only',
+            enableWasm: true,
+          },
+          version: 8,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.enableWasm).toBe(true);
     });
   });
 });

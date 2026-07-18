@@ -25,7 +25,7 @@ function resetStore(): void {
     advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [],
-    performanceMode: 'auto',
+    enableWasm: true,
     userExplicitFps: null,
   });
 }
@@ -42,9 +42,9 @@ describe('useSettingsStore — basic', () => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
     expect(raw).toBeTruthy();
     expect(JSON.parse(raw as string).state.theme).toBe('dark');
-    // The persisted payload is tagged with the v7 schema so future
+    // The persisted payload is tagged with the v8 schema so future
     // schema bumps can read it back correctly.
-    expect(JSON.parse(raw as string).version).toBe(7);
+    expect(JSON.parse(raw as string).version).toBe(8);
   });
 
   it('clamps volume on setVolume', () => {
@@ -182,40 +182,36 @@ describe('useSettingsStore — basic', () => {
   });
 });
 
-describe('useSettingsStore — performanceMode', () => {
+describe('useSettingsStore — enableWasm', () => {
   beforeEach(() => {
     localStorage.clear();
     resetStore();
   });
 
-  it('defaults to "auto" on a fresh store', () => {
-    expect(useSettingsStore.getState().performanceMode).toBe('auto');
+  it('defaults to true on a fresh store', () => {
+    expect(useSettingsStore.getState().enableWasm).toBe(true);
   });
 
-  it('setPerformanceMode updates the field and persists immediately', () => {
-    useSettingsStore.getState().setPerformanceMode('force-wasm');
-    expect(useSettingsStore.getState().performanceMode).toBe('force-wasm');
+  it('setEnableWasm updates the field and persists immediately', () => {
+    useSettingsStore.getState().setEnableWasm(false);
+    expect(useSettingsStore.getState().enableWasm).toBe(false);
     const raw = localStorage.getItem('tw-viewer:settings:v1');
     expect(raw).toBeTruthy();
     const parsed = JSON.parse(raw as string) as {
-      state: { performanceMode: string };
+      state: { enableWasm: boolean };
       version: number;
     };
-    expect(parsed.state.performanceMode).toBe('force-wasm');
-    // The persisted payload is tagged with the v7 schema so future
+    expect(parsed.state.enableWasm).toBe(false);
+    // The persisted payload is tagged with the v8 schema so future
     // schema bumps can read it back correctly.
-    expect(parsed.version).toBe(7);
+    expect(parsed.version).toBe(8);
   });
 
-  it('setPerformanceMode accepts the three current modes', () => {
-    // `force-webgpu` was retired in v6 along with the WebGPU compute
-    // tier; the store-side setter still type-checks against the
-    // narrowed `PerformanceMode` union, so only the three current
-    // modes round-trip.
-    for (const mode of ['auto', 'force-wasm', 'legacy-only'] as const) {
-      useSettingsStore.getState().setPerformanceMode(mode);
-      expect(useSettingsStore.getState().performanceMode).toBe(mode);
-    }
+  it('setEnableWasm toggles both directions', () => {
+    useSettingsStore.getState().setEnableWasm(false);
+    expect(useSettingsStore.getState().enableWasm).toBe(false);
+    useSettingsStore.getState().setEnableWasm(true);
+    expect(useSettingsStore.getState().enableWasm).toBe(true);
   });
 });
 
@@ -347,7 +343,7 @@ describe('useSettingsStore.toggleMute (smart restore)', () => {
       advanced: { ...DEFAULT_ADVANCED_SETTINGS },
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
-      performanceMode: 'auto',
+      enableWasm: true,
       userExplicitFps: null,
     });
   });
@@ -568,7 +564,7 @@ describe('useSettingsStore.cycleFpsShortcut', () => {
       version: number;
     };
     expect(parsed.state.userExplicitFps).toBe(60);
-    expect(parsed.version).toBe(7);
+    expect(parsed.version).toBe(8);
   });
 
 it('patchAdvanced with a non-30 fps updates the latch even when advanced.fps matches defaultAdvanced.fps', () => {

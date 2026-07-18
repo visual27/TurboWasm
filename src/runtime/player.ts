@@ -589,9 +589,9 @@ function attachedScaffoldingHasVm(scaffolding: ScaffoldingInstance): boolean {
       scaffolding: attachedScaffolding,
       renderer,
       capabilities: runtimeCapabilities,
-      performanceMode: useSettingsStore.getState().performanceMode,
+      enableWasm: useSettingsStore.getState().enableWasm,
       kernelRegistry,
-      enableGpuKernels: currentAdvanced?.enableGpuKernels ?? true,
+      enableWebgpu: currentAdvanced?.enableWebgpu ?? true,
     };
   }
 
@@ -627,16 +627,15 @@ async function initScaffolding(
   if (!runtimeCapabilities) {
     runtimeCapabilities = await detectCapabilities().catch(() => ({ wasmSimd: false }));
   }
-  const performanceMode = useSettingsStore.getState().performanceMode;
-  const wantsAcceleration =
-    advanced.turboWasmAccelerationEnabled && performanceMode !== 'legacy-only';
+  const enableWasm = useSettingsStore.getState().enableWasm;
+  const wantsAcceleration = advanced.turboWasmAccelerationEnabled && enableWasm;
   if (wantsAcceleration && runtimeCapabilities.wasmSimd) {
     await initWasmCollision();
   }
   applyTurboWasmAcceleration(attachedScaffolding, {
     enabled: advanced.turboWasmAccelerationEnabled,
     caps: runtimeCapabilities,
-    performanceMode,
+    enableWasm,
   });
   attachedScaffolding.appendTo(container);
   return attachedScaffolding;
@@ -665,7 +664,7 @@ function getCurrentAdvanced(): AdvancedSettings {
     stageHeight: 360,
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
-    enableGpuKernels: true,
+    enableWebgpu: true,
   };
 }
 
@@ -684,7 +683,7 @@ function defaultAdvanced(): AdvancedSettings {
     stageHeight: 360,
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
-    enableGpuKernels: true,
+    enableWebgpu: true,
   };
 }
 
@@ -748,8 +747,8 @@ export async function ensurePlayerReady(): Promise<ScaffoldingInstance> {
 
 export function applySettings(
   advanced: AdvancedSettings,
-  performanceMode: import('@/types/settings').PerformanceMode = useSettingsStore.getState().performanceMode,
-  prevPerformanceMode: import('@/types/settings').PerformanceMode = performanceMode,
+  enableWasm: boolean = useSettingsStore.getState().enableWasm,
+  prevEnableWasm: boolean = enableWasm,
 ): void {
   if (!attachedScaffolding || !currentAdvanced) return;
   const previous = currentAdvanced;
@@ -773,17 +772,16 @@ export function applySettings(
   if (
     runtimeCapabilities &&
     (previous.turboWasmAccelerationEnabled !== advanced.turboWasmAccelerationEnabled ||
-      prevPerformanceMode !== performanceMode)
+      prevEnableWasm !== enableWasm)
   ) {
-    const wantsAcceleration =
-      advanced.turboWasmAccelerationEnabled && performanceMode !== 'legacy-only';
+    const wantsAcceleration = advanced.turboWasmAccelerationEnabled && enableWasm;
     if (wantsAcceleration && runtimeCapabilities.wasmSimd) {
       void initWasmCollision();
     }
     applyTurboWasmAcceleration(attachedScaffolding, {
       enabled: advanced.turboWasmAccelerationEnabled,
       caps: runtimeCapabilities,
-      performanceMode,
+      enableWasm,
     });
   }
   // [tw-stage-size] explicit relayout after applySettings. The Scaffolding's
@@ -1523,18 +1521,18 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   activeGpuPool = null;
 
   const settings = useSettingsStore.getState();
-  const performanceMode = settings.performanceMode;
-  const enableGpuKernels = currentAdvanced?.enableGpuKernels ?? true;
+  const enableWasm = settings.enableWasm;
+  const enableWebgpu = currentAdvanced?.enableWebgpu ?? true;
 
   // Short-circuit when the user has disabled the path explicitly.
-  if (!enableGpuKernels) {
+  if (!enableWebgpu) {
     // eslint-disable-next-line no-console
-    console.log('[gpu-kernel] enableGpuKernels=false; skipping @compute pre-parse');
+    console.log('[gpu-kernel] enableWebgpu=false; skipping @compute pre-parse');
     return;
   }
-  if (performanceMode === 'legacy-only') {
+  if (!enableWasm) {
     // eslint-disable-next-line no-console
-    console.log('[gpu-kernel] performanceMode=legacy-only; skipping @compute pre-parse');
+    console.log('[gpu-kernel] enableWasm=false; skipping @compute pre-parse');
     return;
   }
 
@@ -1583,7 +1581,7 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
     regions: verdicts,
     parsedProject: parsed,
     runtimeState,
-    performanceMode,
+    enableWasm,
     enabled: true,
   });
   activeGpuRegistry = result.registry;
@@ -1602,7 +1600,7 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
       : (result.device as unknown as Parameters<typeof applyGpuKernels>[0]['device']);
   applyGpuKernels({
     enabled: true,
-    performanceMode,
+    enableWasm,
     registry: result.registry,
     pool: result.pool,
     device: dispatchDevice,

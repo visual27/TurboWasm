@@ -12,47 +12,11 @@ import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { SelectField } from '@/components/ui/select';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger } from '@/utils/format';
-import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
+import type { AdvancedSettings } from '@/types/settings';
 import { Button } from '@/components/ui/button';
 import { FPS_MAX, FPS_MIN } from '@/utils/constants';
-
-/**
- * Human-readable labels + descriptions for the Performance Mode dropdown.
- * Kept here (next to the Settings dialog) rather than next to the type
- * because they are presentation strings and the type file is loaded by
- * tests / persistence code that has no opinion on UI copy.
- *
- * NOTE: The WebGPU compute tier was removed from the runtime (Phase 2
- * was never wired beyond `requestAdapter()` probing and always returned
- * `null` from the JS-side hook). `force-webgpu` is therefore no longer
- * a selectable option — only WASM SIMD and the parity mode remain as
- * explicit overrides. `auto` still probes WebGPU availability so a
- * future re-introduction of the GPU path is a one-line change.
- */
-const PERFORMANCE_MODE_OPTIONS: ReadonlyArray<{
-  value: PerformanceMode;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: 'auto',
-    label: 'Auto',
-    description: 'WASM SIMD when available, otherwise the original JavaScript path.',
-  },
-  {
-    value: 'force-wasm',
-    label: 'Force WASM SIMD',
-    description: 'WASM SIMD only; falls back to JavaScript',
-  },
-  {
-    value: 'legacy-only',
-    label: 'Legacy only',
-    description: 'Identical to unmodified scratch-render (parity mode)',
-  },
-];
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -393,18 +357,14 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
   advanced,
   patch,
 }: RuntimeSectionProps): React.JSX.Element {
-  const performanceMode = useSettingsStore((s) => s.performanceMode);
-  const setPerformanceMode = useSettingsStore((s) => s.setPerformanceMode);
-  const onPerformanceModeChange = React.useCallback(
-    (mode: PerformanceMode) => setPerformanceMode(mode),
-    [setPerformanceMode],
-  );
+  const enableWasm = useSettingsStore((s) => s.enableWasm);
+  const setEnableWasm = useSettingsStore((s) => s.setEnableWasm);
   return (
     <SettingsSection id="turbowasm" title="TurboWasm">
       <FieldRow
         id="turbo-wasm-acceleration"
         label="TurboWasm Acceleration"
-        description="Offload collision detection to a WebAssembly SIMD module. Falls back to the JS path automatically when SIMD is unavailable, when a sprite has a shape-changing visual effect (mosaic, pixelate, whirl, fisheye) active, or when the color-matching path is exercised under a color/brightness effect. Ignored when Performance Mode is 'legacy-only'."
+        description="Offload collision detection to a WebAssembly SIMD module. Falls back to the JS path automatically when SIMD is unavailable, when a sprite has a shape-changing visual effect (mosaic, pixelate, whirl, fisheye) active, or when the color-matching path is exercised under a color/brightness effect. When the WASM toggle below is off this master switch is ignored."
       >
         <SwitchField
           id="turbo-wasm-acceleration"
@@ -414,28 +374,27 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
         />
       </FieldRow>
       <FieldRow
-        id="performance-mode"
-        label="Performance Mode"
-        description="Selects the collision-detection backend. 'auto' uses WASM SIMD when available and falls back to the JS path otherwise. 'force-wasm' pins the runtime to WASM SIMD (still falls back to JS when SIMD is unavailable). 'legacy-only' disables all TurboWasm hooks so the runtime behaves identically to unmodified scratch-render."
+        id="enable-webgpu"
+        label="Enable WebGPU"
+        description="Offload @compute regions (marked in a project via the // @compute comment DSL) to WebGPU compute shaders. Falls back to the JS path when WebGPU is unavailable or when a region is unsupported (D1/D2/D3 demote). Independent of the WASM toggle above — turning this off disables the GPU compute kernel pipeline without affecting WASM SIMD collision detection."
       >
-        <SelectField<PerformanceMode>
-          id="performance-mode"
-          value={performanceMode}
-          onChange={onPerformanceModeChange}
-          options={PERFORMANCE_MODE_OPTIONS}
-          ariaLabel="Performance mode"
+        <SwitchField
+          id="enable-webgpu"
+          checked={advanced.enableWebgpu}
+          onChange={(v) => patch({ enableWebgpu: v })}
+          ariaLabel="Enable WebGPU toggle"
         />
       </FieldRow>
       <FieldRow
-        id="enable-gpu-kernels"
-        label="GPU Kernels"
-        description="Offload @compute regions (marked in a project via the // @compute comment DSL) to WebGPU compute shaders. Falls back to the JS path when WebGPU is unavailable, when a region is unsupported (D1/D2/D3 demote), or when Performance Mode is 'legacy-only'."
+        id="enable-wasm"
+        label="Enable WASM"
+        description="Install the WASM-SIMD collision-detection hooks on the renderer. Off clears every TurboWasm hook so the runtime behaves identically to unmodified scratch-render (the Definition-of-Done parity mode). On uses WASM SIMD when it has initialised and falls back to the JS path otherwise. Independent of the WebGPU toggle above."
       >
         <SwitchField
-          id="enable-gpu-kernels"
-          checked={advanced.enableGpuKernels}
-          onChange={(v) => patch({ enableGpuKernels: v })}
-          ariaLabel="GPU Kernels toggle"
+          id="enable-wasm"
+          checked={enableWasm}
+          onChange={(v) => setEnableWasm(v)}
+          ariaLabel="Enable WASM toggle"
         />
       </FieldRow>
     </SettingsSection>

@@ -5,19 +5,19 @@
  * Boots `vite preview`, then drives Playwright Chromium through two
  * passes against the same fixture (`test/.test-fixtures/expo-fixture.sb3`):
  *
- *   1. **GPU pass** — `performanceMode: 'auto'`. The vendored VM tries
- *      to obtain a WebGPU device via `navigator.gpu.requestAdapter()`.
- *      When WebGPU is available the M6 pre-parse log line
- *      `[gpu-kernel] bootstrapped <N> region(s); ... device=available`
- *      appears and the `kernelRegistry.size` snapshot is >0. When
- *      WebGPU is unavailable the log shows `device=null`; we record
- *      this and **skip the GPU/legacy comparison** so a missing GPU
- *      is not a CI failure (per spec §16 — the harness should run on
- *      any machine).
+ *   1. **GPU pass** — `enableWasm: true` (the v8 default). The vendored
+ *      VM tries to obtain a WebGPU device via
+ *      `navigator.gpu.requestAdapter()`. When WebGPU is available the
+ *      M6 pre-parse log line `[gpu-kernel] bootstrapped <N> region(s);
+ *      ... device=available` appears and the `kernelRegistry.size`
+ *      snapshot is >0. When WebGPU is unavailable the log shows
+ *      `device=null`; we record this and **skip the GPU/parity
+ *      comparison** so a missing GPU is not a CI failure (per spec
+ *      §16 — the harness should run on any machine).
  *
- *   2. **JS pass** — `performanceMode: 'legacy-only'`. The pre-parse
- *      log shows `performanceMode=legacy-only; skipping @compute
- *      pre-parse` and `kernelRegistry.size === 0`.
+ *   2. **JS pass** — `enableWasm: false`. The pre-parse log shows
+ *      `enableWasm=false; skipping @compute pre-parse` and
+ *      `kernelRegistry.size === 0`.
  *
  * When the GPU pass observed a real device, we capture the canvas
  * pixels in both passes and compare them at the ImageData level
@@ -26,7 +26,7 @@
  * else is a regression in the dispatcher or in the WGSL emitter's
  * host-side data sync.
  *
- * Output (always): ./logs/turbowarp-equivalent-gpu-{default,legacy-only}.png
+ * Output (always): ./logs/turbowarp-equivalent-gpu-{default,parity}.png
  * (the comparison diff image, even on a skip; size 1×1 PNG when no
  * comparison ran).
  *
@@ -129,20 +129,23 @@ async function captureForMode(browser, mode, fixturePath) {
   page.on('pageerror', (err) => errorLines.push(`[pageerror] ${err?.stack ?? err}`));
 
   // Pre-seed localStorage with the requested mode BEFORE first paint.
+  // `mode` is parsed as a boolean: `'true'` → `true`, anything else →
+  // `false`. The persisted version is the current STORAGE_VERSION (8).
+  const enableWasm = mode === 'true';
   await context.addInitScript(
-    ({ key, mode }) => {
+    ({ key, enableWasm }) => {
       const existingRaw = localStorage.getItem(key);
       let parsed;
       try {
-        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 7 };
+        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 8 };
       } catch {
-        parsed = { state: {}, version: 7 };
+        parsed = { state: {}, version: 8 };
       }
-      parsed.state.performanceMode = mode;
-      parsed.version = 7;
+      parsed.state.enableWasm = enableWasm;
+      parsed.version = 8;
       localStorage.setItem(key, JSON.stringify(parsed));
     },
-    { key: SETTINGS_KEY, mode },
+    { key: SETTINGS_KEY, enableWasm },
   );
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
@@ -198,7 +201,7 @@ async function captureForMode(browser, mode, fixturePath) {
       width,
       height,
       dataUrl,
-      performanceMode: tw.performanceMode,
+      enableWasm: tw.enableWasm,
       kernelRegistry: tw.kernelRegistry ?? { size: 0, jsOnly: 0, canonicalKeys: [] },
     };
   });
@@ -219,7 +222,7 @@ function inferWebgpuAvailable(gpuKernelLines) {
   // The M6 player log fires one of two distinct lines per load:
   //   `[gpu-kernel] bootstrapped ... device=available ...`  → WebGPU worked
   //   `[gpu-kernel] bootstrapped ... device=null ...`        → no WebGPU
-  // When performanceMode === 'legacy-only', the player never gets to
+  // When `enableWasm === false`, the player never gets to
   // `bootstrapGpuKernels` so neither line fires — we return `null` to
   // signal "not applicable" rather than `false`.
   for (const line of gpuKernelLines) {
@@ -314,7 +317,7 @@ async function main() {
     console.error('[gpu-kernel-verify] playwright is not installed; skipping.');
     log('import-error', err?.stack ?? String(err));
     writeComparisonImage('default');
-    writeComparisonImage('legacy-only');
+    writeComparisonImage('parity');
     process.exit(0);
   }
 
@@ -324,29 +327,25 @@ async function main() {
 
     const browser = await chromium.launch(getWebgpuLaunchOptions());
     try {
-      const captureAuto = await captureForMode(browser, 'auto', fixturePath);
-      const captureLegacy = await captureForMode(
-        browser,
-        'legacy-only',
-        fixturePath,
-      );
+      const captureEnabled = await captureForMode(browser, 'true', fixturePath);
+      const captureDisabled = await captureForMode(browser, 'false', fixturePath);
 
-      const webgpu = inferWebgpuAvailable(captureAuto.gpuKernelLines);
+      const webgpu = inferWebgpuAvailable(captureEnabled.gpuKernelLines);
 
       log(
         'summary',
         JSON.stringify(
           {
             webgpuObserved: webgpu,
-            auto: {
-              ...captureAuto,
+            enabled: {
+              ...captureEnabled,
               dataUrl: '<elided>',
-              gpuKernelLines: captureAuto.gpuKernelLines,
+              gpuKernelLines: captureEnabled.gpuKernelLines,
             },
-            legacy: {
-              ...captureLegacy,
+            disabled: {
+              ...captureDisabled,
               dataUrl: '<elided>',
-              gpuKernelLines: captureLegacy.gpuKernelLines,
+              gpuKernelLines: captureDisabled.gpuKernelLines,
             },
           },
           null,
@@ -354,14 +353,14 @@ async function main() {
         ),
       );
 
-      if (!captureAuto.ok || !captureLegacy.ok) {
+      if (!captureEnabled.ok || !captureDisabled.ok) {
         // eslint-disable-next-line no-console
         console.error('[gpu-kernel-verify] capture failed:', {
-          captureAuto,
-          captureLegacy,
+          captureEnabled,
+          captureDisabled,
         });
         writeComparisonImage('default');
-        writeComparisonImage('legacy-only');
+        writeComparisonImage('parity');
         process.exit(1);
       }
 
@@ -373,27 +372,27 @@ async function main() {
           `[gpu-kernel-verify] no WebGPU adapter (webgpu=${webgpu}); skipping GPU/JS pixel comparison. See ./logs/gpu-kernel-verify-*.log for the bootstrap log lines.`,
         );
         writeComparisonImage('default');
-        writeComparisonImage('legacy-only');
+        writeComparisonImage('parity');
         return;
       }
 
       // WebGPU WAS available — run the pixel comparison.
-      const comparison = await compareCaptures(browser, captureAuto, captureLegacy);
+      const comparison = await compareCaptures(browser, captureEnabled, captureDisabled);
       log('comparison', JSON.stringify(comparison, null, 2));
 
       if (!comparison.match) {
         // eslint-disable-next-line no-console
         console.error('[gpu-kernel-verify] MISMATCH:', comparison);
         writeComparisonImage('default');
-        writeComparisonImage('legacy-only');
+        writeComparisonImage('parity');
         process.exit(1);
       }
       // eslint-disable-next-line no-console
       console.log(
-        `[gpu-kernel-verify] OK: GPU and legacy-only renderings agree within 1e-6 (maxAbsDiff=${comparison.maxAbsDiff}, width=${comparison.width}, height=${comparison.height}).`,
+        `[gpu-kernel-verify] OK: enableWasm=true and enableWasm=false renderings agree within 1e-6 (maxAbsDiff=${comparison.maxAbsDiff}, width=${comparison.width}, height=${comparison.height}).`,
       );
       writeComparisonImage('default');
-      writeComparisonImage('legacy-only');
+      writeComparisonImage('parity');
     } finally {
       await browser.close();
     }

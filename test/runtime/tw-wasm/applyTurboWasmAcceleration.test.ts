@@ -41,12 +41,12 @@ describe('applyTurboWasmAcceleration', () => {
     fakeWasmReady.value = true;
   });
 
-  it('installs the WASM hook when enabled and SIMD is supported', () => {
+  it('installs the WASM hook when enabled, SIMD is supported, and enableWasm is true', () => {
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     expect(typeof sc.renderer._twWasmIsTouchingDrawables).toBe('function');
     expect(typeof sc.renderer._twWasmIsTouchingColor).toBe('function');
@@ -57,12 +57,12 @@ describe('applyTurboWasmAcceleration', () => {
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     applyTurboWasmAcceleration(sc, {
       enabled: false,
       caps: WASM_CAPS,
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
@@ -73,7 +73,7 @@ describe('applyTurboWasmAcceleration', () => {
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: NO_CAPS,
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
@@ -85,47 +85,47 @@ describe('applyTurboWasmAcceleration', () => {
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
   });
 
-  it('clears every hook in legacy-only mode', () => {
+  it('clears every hook when enableWasm is false (DoD parity)', () => {
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     // Sanity: hook is active before the toggle.
     expect(typeof sc.renderer._twWasmIsTouchingDrawables).toBe('function');
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'legacy-only',
+      enableWasm: false,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
   });
 
-  it('force-wasm installs the hook when WASM is ready', () => {
+  it('enableWasm=false clears hooks even when WASM is ready', () => {
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'force-wasm',
+      enableWasm: false,
     });
-    expect(typeof sc.renderer._twWasmIsTouchingDrawables).toBe('function');
-    expect(typeof sc.renderer._twWasmIsTouchingColor).toBe('function');
+    expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
+    expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
   });
 
-  it('force-wasm falls back to no hook when WASM is not ready', () => {
+  it('enableWasm=true with WASM not ready still falls back to no hook', () => {
     fakeWasmReady.value = false;
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'force-wasm',
+      enableWasm: true,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
   });
@@ -135,17 +135,12 @@ describe('applyTurboWasmAcceleration', () => {
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'force-wasm',
-    });
-    applyTurboWasmAcceleration(sc, {
-      enabled: true,
-      caps: WASM_CAPS,
-      performanceMode: 'legacy-only',
+      enableWasm: false,
     });
     // The WebGPU instanced renderer hook is dead code now. Keeping a
     // regression test so a future re-introduction that wires it up
@@ -159,14 +154,14 @@ describe('applyTurboWasmAcceleration', () => {
       applyTurboWasmAcceleration(null, {
         enabled: true,
         caps: WASM_CAPS,
-        performanceMode: 'auto',
+        enableWasm: true,
       }),
     ).not.toThrow();
     expect(() =>
       applyTurboWasmAcceleration(undefined, {
         enabled: true,
         caps: WASM_CAPS,
-        performanceMode: 'auto',
+        enableWasm: true,
       }),
     ).not.toThrow();
   });
@@ -176,7 +171,7 @@ describe('applyTurboWasmAcceleration', () => {
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: WASM_CAPS,
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     removeTurboWasmAcceleration(sc);
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
@@ -187,43 +182,25 @@ describe('applyTurboWasmAcceleration', () => {
 describe('selectBackendTier', () => {
   it('returns none when disabled', () => {
     expect(
-      selectBackendTier(
-        { enabled: false, caps: WASM_CAPS, performanceMode: 'auto' },
-        true,
-      ),
+      selectBackendTier({ enabled: false, caps: WASM_CAPS, enableWasm: true }, true),
     ).toBe('none');
   });
 
-  it('returns none for legacy-only regardless of readiness', () => {
+  it('returns none when enableWasm is false regardless of readiness', () => {
     expect(
-      selectBackendTier(
-        { enabled: true, caps: WASM_CAPS, performanceMode: 'legacy-only' },
-        true,
-      ),
+      selectBackendTier({ enabled: true, caps: WASM_CAPS, enableWasm: false }, true),
     ).toBe('none');
   });
 
-  it('force-wasm returns wasm when ready, none when not', () => {
+  it('returns wasm when enableWasm is true and WASM is ready', () => {
     expect(
-      selectBackendTier(
-        { enabled: true, caps: WASM_CAPS, performanceMode: 'force-wasm' },
-        true,
-      ),
+      selectBackendTier({ enabled: true, caps: WASM_CAPS, enableWasm: true }, true),
     ).toBe('wasm');
-    expect(
-      selectBackendTier(
-        { enabled: true, caps: WASM_CAPS, performanceMode: 'force-wasm' },
-        false,
-      ),
-    ).toBe('none');
   });
 
-  it('auto returns wasm when ready and none otherwise', () => {
+  it('returns none when enableWasm is true but WASM is not ready', () => {
     expect(
-      selectBackendTier({ enabled: true, caps: WASM_CAPS, performanceMode: 'auto' }, true),
-    ).toBe('wasm');
-    expect(
-      selectBackendTier({ enabled: true, caps: WASM_CAPS, performanceMode: 'auto' }, false),
+      selectBackendTier({ enabled: true, caps: WASM_CAPS, enableWasm: true }, false),
     ).toBe('none');
   });
 });

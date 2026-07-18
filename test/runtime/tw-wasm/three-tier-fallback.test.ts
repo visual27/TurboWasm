@@ -6,7 +6,8 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
  * Phase 2 (WebGPU compute) was retired when the runtime stub never
  * progressed past `requestAdapter()` probing, so the tier chain is now
  * two-way: WASM SIMD when available, otherwise the original JS path.
- * `legacy-only` clears every hook (Definition of Done parity mode).
+ * `enableWasm: false` clears every hook (Definition of Done parity
+ * mode).
  */
 
 const fakeWasmReady = { value: true };
@@ -57,62 +58,51 @@ describe('WASM-SIMD ↔ JS collision fallback (DoD parity)', () => {
     wasmColor.mockImplementation(() => false);
   });
 
-  it('legacy-only: hooks stay null', () => {
+  it('enableWasm=false: hooks stay null', () => {
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: { wasmSimd: true },
-      performanceMode: 'legacy-only',
+      enableWasm: false,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
   });
 
-  it('auto mode installs the WASM hook when SIMD is supported', () => {
+  it('enableWasm=true installs the WASM hook when SIMD is supported', () => {
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: { wasmSimd: true },
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(sc, 0, []);
     expect(wasmDrawables).toHaveBeenCalledTimes(1);
   });
 
-  it('auto mode does not install the hook when WASM is not ready', () => {
+  it('enableWasm=true does not install the hook when WASM is not ready', () => {
     fakeWasmReady.value = false;
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: { wasmSimd: true },
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
   });
 
-  it('force-wasm installs the hook when WASM is ready', () => {
-    const sc = makeScaffolding();
-    applyTurboWasmAcceleration(sc, {
-      enabled: true,
-      caps: { wasmSimd: true },
-      performanceMode: 'force-wasm',
-    });
-    (sc.renderer._twWasmIsTouchingDrawables as (...a: unknown[]) => unknown)(sc, 0, []);
-    expect(wasmDrawables).toHaveBeenCalledTimes(1);
-  });
-
-  it('force-wasm falls through to no hook when WASM is not ready', () => {
+  it('enableWasm=true falls through to no hook when WASM is not ready', () => {
     fakeWasmReady.value = false;
     const sc = makeScaffolding();
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: { wasmSimd: true },
-      performanceMode: 'force-wasm',
+      enableWasm: true,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
   });
 
-  it('hooks stay null when WASM backing is not ready in auto mode', () => {
+  it('hooks stay null when WASM backing is not ready in enableWasm=true mode', () => {
     fakeWasmReady.value = false;
     wasmDrawables.mockImplementation(() => null);
     wasmColor.mockImplementation(() => null);
@@ -120,7 +110,7 @@ describe('WASM-SIMD ↔ JS collision fallback (DoD parity)', () => {
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: { wasmSimd: true },
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
     expect(sc.renderer._twWasmIsTouchingColor).toBeNull();
@@ -131,7 +121,7 @@ describe('WASM-SIMD ↔ JS collision fallback (DoD parity)', () => {
     applyTurboWasmAcceleration(sc, {
       enabled: true,
       caps: { wasmSimd: true },
-      performanceMode: 'auto',
+      enableWasm: true,
     });
     removeTurboWasmAcceleration(sc);
     expect(sc.renderer._twWasmIsTouchingDrawables).toBeNull();
@@ -140,40 +130,25 @@ describe('WASM-SIMD ↔ JS collision fallback (DoD parity)', () => {
 });
 
 describe('selectBackendTier (WASM ↔ JS fallback)', () => {
-  it('legacy-only always returns none regardless of capability flags', () => {
+  it('enableWasm=false always returns none regardless of capability flags', () => {
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'legacy-only' },
+        { enabled: true, caps: { wasmSimd: true }, enableWasm: false },
         true,
       ),
     ).toBe('none');
   });
 
-  it('auto order: wasm when ready, none otherwise', () => {
+  it('enableWasm=true: wasm when ready, none otherwise', () => {
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'auto' },
+        { enabled: true, caps: { wasmSimd: true }, enableWasm: true },
         true,
       ),
     ).toBe('wasm');
     expect(
       selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'auto' },
-        false,
-      ),
-    ).toBe('none');
-  });
-
-  it('force-wasm follows readiness', () => {
-    expect(
-      selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'force-wasm' },
-        true,
-      ),
-    ).toBe('wasm');
-    expect(
-      selectBackendTier(
-        { enabled: true, caps: { wasmSimd: true }, performanceMode: 'force-wasm' },
+        { enabled: true, caps: { wasmSimd: true }, enableWasm: true },
         false,
       ),
     ).toBe('none');
@@ -182,7 +157,7 @@ describe('selectBackendTier (WASM ↔ JS fallback)', () => {
   it('disabled shortcut always returns none', () => {
     expect(
       selectBackendTier(
-        { enabled: false, caps: { wasmSimd: true }, performanceMode: 'auto' },
+        { enabled: false, caps: { wasmSimd: true }, enableWasm: true },
         true,
       ),
     ).toBe('none');

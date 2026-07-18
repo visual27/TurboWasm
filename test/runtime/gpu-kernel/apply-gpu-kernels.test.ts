@@ -38,18 +38,18 @@ afterEach(() => {
 });
 
 describe('applyGpuKernels', () => {
-  it('short-circuits with reason "legacy-only" when performanceMode pins it', () => {
+  it('short-circuits with reason "wasm-disabled" when enableWasm is false', () => {
     const registry = new KernelRegistry();
     const pool = new ListBufferPool({ device: null });
     const result = applyGpuKernels({
       enabled: true,
-      performanceMode: 'legacy-only',
+      enableWasm: false,
       registry,
       pool,
       device: null,
     });
     expect(result.installed).toBe(false);
-    expect(result.reason).toBe('legacy-only');
+    expect(result.reason).toBe('wasm-disabled');
     expect(window.__turboWasmGpuKernelLookup).toBeUndefined();
   });
 
@@ -58,7 +58,7 @@ describe('applyGpuKernels', () => {
     const pool = new ListBufferPool({ device: null });
     const result = applyGpuKernels({
       enabled: false,
-      performanceMode: 'auto',
+      enableWasm: true,
       registry,
       pool,
       device: null,
@@ -68,13 +68,13 @@ describe('applyGpuKernels', () => {
     expect(window.__turboWasmGpuKernelLookup).toBeUndefined();
   });
 
-  it('installs the lookup hook when enabled and performanceMode allows it', () => {
+  it('installs the lookup hook when enabled and enableWasm is true', () => {
     const registry = new KernelRegistry();
     const pool = new ListBufferPool({ device: null });
     registry.register(verdict(), 'wgsl');
     const result = applyGpuKernels({
       enabled: true,
-      performanceMode: 'auto',
+      enableWasm: true,
       registry,
       pool,
       device: null,

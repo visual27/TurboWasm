@@ -4,7 +4,11 @@
  * Per spec §7, this function:
  *
  *   1. Returns empty stub objects when the GPU tier is disabled or the
- *      user pinned `legacy-only`.
+ *      user disabled the WASM toggle (`enableWasm === false`). The latter
+ *      is the v8 successor to the v3..v7 `performanceMode: 'legacy-only'`
+ *      shortcut — disabling WASM also short-circuits the GPU kernel
+ *      pipeline so a parity-test run stays observably identical to
+ *      unmodified scratch-render.
  *   2. Probes `globalThis.navigator?.gpu?.requestAdapter()` best-effort.
  *      When the API is missing (jsdom, Safari, older browsers), returns
  *      a `device: null` result and emits a single
@@ -26,13 +30,12 @@ import type {
   ParsedProject,
   RegionVerdict,
 } from './types';
-import type { PerformanceMode } from '@/types/settings';
 
 export interface InitializeInput {
   regions: RegionVerdict[];
   parsedProject: ParsedProject;
   runtimeState: { listLengths: Record<string, number> };
-  performanceMode: PerformanceMode;
+  enableWasm: boolean;
   enabled: boolean;
 }
 
@@ -93,7 +96,7 @@ export async function initializeGpuKernels(
   };
 
   if (!input.enabled) return empty;
-  if (input.performanceMode === 'legacy-only') return empty;
+  if (!input.enableWasm) return empty;
 
   const device = await requestAdapter();
   if (device === null) {

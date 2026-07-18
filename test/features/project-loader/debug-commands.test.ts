@@ -20,7 +20,7 @@ function resetStore(): void {
     advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [],
-    performanceMode: 'auto',
+    enableWasm: true,
   });
 }
 
@@ -115,23 +115,23 @@ describe('executeDebugCommand — resets', () => {
     useSettingsStore.getState().setVolume(0);
     useSettingsStore.getState().patchAdvanced({ fps: 60 });
     useSettingsStore.getState().addAllowedExtensionUrl('https://example.com/a.js');
-    useSettingsStore.getState().setPerformanceMode('legacy-only');
+    useSettingsStore.getState().setEnableWasm(false);
     addSessionDeniedExtensionUrl('https://example.com/session-deny.js');
     const result = executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset`);
     expect(useSettingsStore.getState().theme).toBe('system');
     expect(useSettingsStore.getState().volume).toBe(100);
     expect(useSettingsStore.getState().advanced.fps).toBe(DEFAULT_ADVANCED_SETTINGS.fps);
     expect(useSettingsStore.getState().allowedExtensionUrls).toEqual([]);
-    expect(useSettingsStore.getState().performanceMode).toBe('auto');
+    expect(useSettingsStore.getState().enableWasm).toBe(true);
     expect(result.message).toMatch(/Reset all settings/);
   });
 
-  it('!reset-performance sets performance mode back to auto', () => {
-    useSettingsStore.getState().setPerformanceMode('force-wasm');
-    expect(useSettingsStore.getState().performanceMode).toBe('force-wasm');
-    const result = executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-performance`);
-    expect(useSettingsStore.getState().performanceMode).toBe('auto');
-    expect(result.message).toMatch(/Performance mode reset to auto/);
+  it('!reset-wasm sets the WASM toggle back to enabled', () => {
+    useSettingsStore.getState().setEnableWasm(false);
+    expect(useSettingsStore.getState().enableWasm).toBe(false);
+    const result = executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-wasm`);
+    expect(useSettingsStore.getState().enableWasm).toBe(true);
+    expect(result.message).toMatch(/WASM toggle reset to enabled/);
   });
 
   it('!reset-svg is no longer a recognised command', () => {
@@ -144,13 +144,25 @@ describe('executeDebugCommand — resets', () => {
     expect(result.message).toMatch(/Unknown debug command/);
   });
 
-  it('!reset-advanced also resets performance mode (no svg acceleration to reset)', () => {
-    useSettingsStore.getState().setPerformanceMode('legacy-only');
+  it('!reset-performance is no longer a recognised command', () => {
+    // `!reset-performance` was retired alongside the v3..v7
+    // `performanceMode` union. The renamed `!reset-wasm` is the
+    // successor and `!reset-performance` must now surface as an
+    // unknown command so users with a stale autocomplete muscle-memory
+    // get a helpful message instead of a silent no-op.
+    const result = executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-performance`);
+    expect(result.severity).toBe('warn');
+    expect(result.message).toMatch(/Unknown debug command/);
+  });
+
+  it('!reset-advanced also resets the WASM toggle', () => {
+    useSettingsStore.getState().setEnableWasm(false);
     executeDebugCommand(`${DEBUG_COMMAND_PREFIX}reset-advanced`);
-    expect(useSettingsStore.getState().performanceMode).toBe('auto');
+    expect(useSettingsStore.getState().enableWasm).toBe(true);
     // The svg acceleration mirror no longer exists; verify the store
-    // shape reflects the v6 schema.
+    // shape reflects the v8 schema.
     expect('svgAccelerationMode' in useSettingsStore.getState()).toBe(false);
+    expect('performanceMode' in useSettingsStore.getState()).toBe(false);
   });
 
   it('!clear-extensions clears the allow-list but leaves advanced alone', () => {
@@ -239,12 +251,15 @@ describe('executeDebugCommand — dump', () => {
       expect(payload).toMatchObject({
         theme: 'system',
         volume: 100,
-        performanceMode: 'auto',
+        enableWasm: true,
       });
       expect(payload.advanced).toBeDefined();
       expect(payload.allowedExtensionUrls).toEqual([]);
-      // The retired svgAccelerationMode field must not appear in the dump.
+      // The retired svgAccelerationMode + performanceMode fields must
+      // not appear in the dump (v6 retired svgAccelerationMode; v8
+      // collapsed performanceMode into enableWasm).
       expect('svgAccelerationMode' in payload).toBe(false);
+      expect('performanceMode' in payload).toBe(false);
     } finally {
       spy.mockRestore();
     }

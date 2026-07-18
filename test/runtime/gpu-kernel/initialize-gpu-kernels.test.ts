@@ -50,7 +50,7 @@ describe('initializeGpuKernels', () => {
         regions: [makeVerdict('b1')],
         parsedProject: EMPTY_PROJECT,
         runtimeState: { listLengths: {} },
-        performanceMode: 'auto',
+        enableWasm: true,
         enabled: true,
       },
       noopAdapter,
@@ -69,7 +69,7 @@ describe('initializeGpuKernels', () => {
         regions: [],
         parsedProject: EMPTY_PROJECT,
         runtimeState: { listLengths: {} },
-        performanceMode: 'auto',
+        enableWasm: true,
         enabled: true,
       },
       noopAdapter,
@@ -79,7 +79,7 @@ describe('initializeGpuKernels', () => {
         regions: [],
         parsedProject: EMPTY_PROJECT,
         runtimeState: { listLengths: {} },
-        performanceMode: 'auto',
+        enableWasm: true,
         enabled: true,
       },
       noopAdapter,
@@ -90,13 +90,13 @@ describe('initializeGpuKernels', () => {
     expect(warnings).toHaveLength(1);
   });
 
-  it('returns an empty registry without warnings when performanceMode is legacy-only', async () => {
+  it('returns an empty registry without warnings when enableWasm is false', async () => {
     const result = await initializeGpuKernels(
       {
         regions: [makeVerdict('b1')],
         parsedProject: EMPTY_PROJECT,
         runtimeState: { listLengths: {} },
-        performanceMode: 'legacy-only',
+        enableWasm: false,
         enabled: true,
       },
       noopAdapter,
@@ -112,7 +112,7 @@ describe('initializeGpuKernels', () => {
         regions: [makeVerdict('b1')],
         parsedProject: EMPTY_PROJECT,
         runtimeState: { listLengths: {} },
-        performanceMode: 'auto',
+        enableWasm: true,
         enabled: false,
       },
       noopAdapter,
@@ -128,7 +128,7 @@ describe('initializeGpuKernels', () => {
         regions: [makeVerdict('b1', false)],
         parsedProject: EMPTY_PROJECT,
         runtimeState: { listLengths: {} },
-        performanceMode: 'auto',
+        enableWasm: true,
         enabled: true,
       },
       noopAdapter,

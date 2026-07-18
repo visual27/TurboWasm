@@ -25,8 +25,9 @@ const stampFile = resolve(pkgDir, '.last-build');
 // `src/runtime/tw-wasm/wasm-collision-client.ts` still resolves to a
 // typecheckable, bundleable module. The runtime code already treats
 // `wasmMemory === null` as the "use the JS fallback path" sentinel, so
-// the observable behavior is identical to `performanceMode: 'legacy-only'`
-// (the Definition-of-Done parity mode documented in README.md).
+// the observable behavior is identical to `enableWasm: false` (the
+// Definition-of-Done parity mode documented in README.md, the v8
+// successor to the v3..v7 `performanceMode: 'legacy-only'` union).
 //
 // These generated files live under `wasm-collision/pkg/` which is
 // `.gitignore`'d — they are build-time artifacts and never get committed
@@ -93,14 +94,14 @@ export default function __wbg_init (module_or_path?: { module_or_path: InitInput
 
 // No-op ESM module providing the same exports as the wasm-pack output.
 // `init()` returns `{ memory: null }` so the runtime code falls through
-// to the JS fallback path (legacy-only equivalent). All function exports
-// are no-ops; the runtime never calls them in the stub path because
-// `isWasmCollisionReady()` (which checks `wasmMemory !== null`) returns
-// false.
+// to the JS fallback path (`enableWasm: false` equivalent). All function
+// exports are no-ops; the runtime never calls them in the stub path
+// because `isWasmCollisionReady()` (which checks `wasmMemory !== null`)
+// returns false.
 const STUB_JS = `// Auto-generated stub for environments without wasm-pack
 // (e.g. Cloudflare Pages). The runtime treats \`memory: null\` as the
 // "WASM unavailable" sentinel and falls through to the JS fallback path,
-// which is behaviorally identical to \`performanceMode: 'legacy-only'\`.
+// which is behaviorally identical to \`enableWasm: false\`.
 //
 // This file is overwritten whenever a real \`wasm-pack build\` runs;
 // the regenerated artifacts take precedence and the stub is discarded.

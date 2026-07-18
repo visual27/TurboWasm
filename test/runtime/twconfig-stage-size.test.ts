@@ -80,7 +80,7 @@ beforeEach(() => {
     advanced: makeAdvanced(),
     defaultAdvanced: makeAdvanced(),
     allowedExtensionUrls: [],
-    performanceMode: 'auto',
+    enableWasm: true,
   });
 });
 

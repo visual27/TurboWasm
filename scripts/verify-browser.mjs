@@ -15,8 +15,9 @@
  *   - Loading a fixture SB3 (test/.test-fixtures/repro.sb3) triggers a
  *     `[player] loadProject` log line and no `Failed to construct
  *     'ImageData'` DOMException.
- *   - Switching the PerformanceMode in the Settings dialog flips the
- *     host hooks accordingly.
+ *   - Flipping the Enable WASM toggle clears the host hooks (the
+ *     previous v3..v7 `performanceMode: 'legacy-only'` path); flipping
+ *     it back re-installs them.
  *
  * Run with: `node scripts/verify-browser.mjs --url http://localhost:4173`.
  *
@@ -65,7 +66,7 @@ async function main() {
     consoleLines.push(`[${msg.type()}] ${msg.text()}`);
   });
   page.on('pageerror', (err) => {
-    errorLines.push(`[pageerror] ${err?.stack ?? err}`);
+    errorLines.push(`[pageerror] ${err?.stack ?? String(err)}`);
   });
 
   await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
@@ -80,7 +81,7 @@ async function main() {
     const r = tw.renderer;
     return {
       mounted: true,
-      performanceMode: tw.performanceMode,
+      enableWasm: tw.enableWasm,
       capabilities: tw.capabilities,
       drawables: r?._allDrawables?.length ?? 0,
       hasWasmHook: typeof r?._twWasmIsTouchingDrawables === 'function',
@@ -98,67 +99,60 @@ async function main() {
   });
   log('hooks', JSON.stringify(hooks, null, 2));
 
-  // ---- Settings dialog: open + flip PerformanceMode ----
+  // ---- Settings dialog: flip Enable WASM ----
   // We do not click — we drive the store directly to keep the test
   // independent of CSS selector stability. The `__exposeForBrowserVerify`
   // re-publishes hooks after every applySettings call, so we can observe
   // the dispatcher re-routing through the same accessor.
-  const legacyCheck = await page.evaluate(() => {
+  const beforeCheck = await page.evaluate(() => {
     const win = window;
     const tw = win.__turbowasm;
     if (!tw) return null;
-    return { performanceMode: tw.performanceMode };
+    return { enableWasm: tw.enableWasm };
   });
-  log('settings-before', JSON.stringify(legacyCheck, null, 2));
+  log('settings-before', JSON.stringify(beforeCheck, null, 2));
 
-  // Drive the store: write `legacy-only` to localStorage and reload to
-  // simulate the user choosing legacy-only in the Settings dialog.
-  // The persisted version is the current STORAGE_VERSION (6); the
-  // persistence layer downgrades any stale `force-webgpu` on read.
+  // Drive the store: write `enableWasm: false` to localStorage and reload
+  // to simulate the user disabling the WASM toggle in the Settings
+  // dialog. The persisted version is the current STORAGE_VERSION (8).
   await page.evaluate(() => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
-    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 6 };
-    parsed.state.performanceMode = 'legacy-only';
-    parsed.version = 6;
+    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 8 };
+    parsed.state.enableWasm = false;
+    parsed.version = 8;
     localStorage.setItem('tw-viewer:settings:v1', JSON.stringify(parsed));
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => Boolean((window).__turbowasm), undefined, { timeout: 10_000 }).catch(() => null);
-  const legacyAfter = await page.evaluate(() => {
+  const afterDisable = await page.evaluate(() => {
     const tw = (window).__turbowasm;
     if (!tw) return null;
     const r = tw.renderer;
     return {
-      performanceMode: tw.performanceMode,
+      enableWasm: tw.enableWasm,
       hasWasmHook: typeof r?._twWasmIsTouchingDrawables === 'function',
       hasWasmColorHook: typeof r?._twWasmIsTouchingColor === 'function',
     };
   });
-  log('settings-after-legacy-only', JSON.stringify(legacyAfter, null, 2));
+  log('settings-after-wasm-disabled', JSON.stringify(afterDisable, null, 2));
 
-  // ---- Debug-command round trip ----
-  // `!reset-performance` debug command should reset to 'auto'.
-  await page.evaluate(() => {
-    const win = window;
-    if (!win.__turbowasm) return;
-  });
-  // Direct DOM: type the !reset command into the project-ID input if
-  // available. Most reliably we drive the store via localStorage + reload.
+  // Re-enable WASM via localStorage + reload to confirm the toggle is
+  // reversible.
   await page.evaluate(() => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
-    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 6 };
-    parsed.state.performanceMode = 'auto';
-    parsed.version = 6;
+    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 8 };
+    parsed.state.enableWasm = true;
+    parsed.version = 8;
     localStorage.setItem('tw-viewer:settings:v1', JSON.stringify(parsed));
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => Boolean((window).__turbowasm), undefined, { timeout: 10_000 }).catch(() => null);
-  const autoAfter = await page.evaluate(() => {
+  const afterReEnable = await page.evaluate(() => {
     const tw = (window).__turbowasm;
     if (!tw) return null;
-    return { performanceMode: tw.performanceMode };
+    return { enableWasm: tw.enableWasm };
   });
-  log('settings-after-auto-restore', JSON.stringify(autoAfter, null, 2));
+  log('settings-after-wasm-restored', JSON.stringify(afterReEnable, null, 2));
 
   await page.waitForTimeout(500);
 

@@ -17,14 +17,17 @@ import { clearSessionDeniedExtensionUrls } from '@/runtime/extension-security';
  *
  *  - `!help`                          — list available commands.
  *  - `!reset` / `!reset-settings`     — reset theme + volume + advanced +
- *                                       performance mode + extension
+ *                                       WASM toggle + extension
  *                                       allow-list + session deny list to
  *                                       defaults.
  *  - `!reset-advanced`                — reset just the advanced settings +
- *                                       extension allow-list +
- *                                       performance mode.
- *  - `!reset-performance`             — reset the performance mode
- *                                       to `auto`.
+ *                                       extension allow-list + WASM
+ *                                       toggle.
+ *  - `!reset-wasm`                    — reset the WASM toggle back to
+ *                                       enabled (the previous
+ *                                       `!reset-performance` alias was
+ *                                       retired alongside the v3..v7
+ *                                       `performanceMode` union).
  *  - `!reset-theme`                   — reset the theme to `system`.
  *  - `!reset-volume`                  — reset the master volume to 100.
  *  - `!clear-extensions` /            — clear the persistent extension
@@ -36,9 +39,9 @@ import { clearSessionDeniedExtensionUrls } from '@/runtime/extension-security';
  *  - `!dump`                          — log the current settings to the
  *                                       browser console.
  *
- * `!reset-svg` was removed when the SVG Acceleration dropdown was
- * retired (Stage 2 of the original TurboWasm Acceleration plan).
- * `performanceMode` was reduced to `auto` / `force-wasm` / `legacy-only`.
+ * `!reset-svg` and `!reset-performance` were retired when the
+ * performance-mode union collapsed to a single `enableWasm` boolean
+ * in v8.
  */
 export const DEBUG_COMMAND_PREFIX = '!';
 
@@ -75,14 +78,14 @@ export function executeDebugCommand(rawInput: string): DebugCommandResult {
       return { severity: 'info', message: resetAll() };
     case 'reset-advanced':
       useSettingsStore.getState().resetAdvanced();
-      useSettingsStore.getState().setPerformanceMode('auto');
+      useSettingsStore.getState().setEnableWasm(true);
       return {
         severity: 'info',
-        message: 'Advanced settings + extension allow-list + performance mode reset to defaults.',
+        message: 'Advanced settings + extension allow-list + WASM toggle reset to defaults.',
       };
-    case 'reset-performance':
-      useSettingsStore.getState().setPerformanceMode('auto');
-      return { severity: 'info', message: 'Performance mode reset to auto.' };
+    case 'reset-wasm':
+      useSettingsStore.getState().setEnableWasm(true);
+      return { severity: 'info', message: 'WASM toggle reset to enabled.' };
     case 'reset-theme':
       useSettingsStore.getState().setTheme('system');
       return { severity: 'info', message: 'Theme reset to system.' };
@@ -117,12 +120,12 @@ function resetAll(): string {
   store.setTheme('system');
   store.setVolume(100);
   store.resetAdvanced();
-  store.setPerformanceMode('auto');
+  store.setEnableWasm(true);
   // The session-only deny list lives in a module-level Set outside
   // the store, so we clear it directly. This is the only place where
   // the debug command reaches outside the settings store.
   clearSessionDeniedExtensionUrls();
-  return 'Reset all settings to defaults (theme, volume, advanced, performance mode, extension allow-list, session deny list).';
+  return 'Reset all settings to defaults (theme, volume, advanced, WASM toggle, extension allow-list, session deny list).';
 }
 
 function clearLocalStorage(): string {
@@ -154,7 +157,7 @@ function dumpSettings(): void {
     lastNonMuteVolume: state.lastNonMuteVolume,
     advanced: state.advanced,
     allowedExtensionUrls: state.allowedExtensionUrls,
-    performanceMode: state.performanceMode,
+    enableWasm: state.enableWasm,
   };
   // The DevTools console renders objects with collapsible fields,
   // which is what we want for a multi-line settings dump.
@@ -165,9 +168,9 @@ function dumpSettings(): void {
 function formatHelp(): string {
   return [
     'Debug commands:',
-    '  !reset                 — reset theme, volume, advanced, performance mode, extension allow-list, session deny list',
-    '  !reset-advanced        — reset advanced settings + extension allow-list + performance mode',
-    '  !reset-performance     — reset performance mode to auto',
+    '  !reset                 — reset theme, volume, advanced, WASM toggle, extension allow-list, session deny list',
+    '  !reset-advanced        — reset advanced settings + extension allow-list + WASM toggle',
+    '  !reset-wasm            — reset WASM toggle to enabled',
     '  !reset-theme           — reset theme to system',
     '  !reset-volume          — reset master volume to 100',
     '  !clear-extensions      — clear the persistent extension allow-list',

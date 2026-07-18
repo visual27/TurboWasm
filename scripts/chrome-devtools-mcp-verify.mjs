@@ -60,7 +60,7 @@ async function readHooks(page) {
     const kr = tw.kernelRegistry;
     return {
       mounted: Boolean(tw.scaffolding),
-      performanceMode: tw.performanceMode,
+      enableWasm: tw.enableWasm,
       capabilities: tw.capabilities,
       hasScaffolding: typeof tw.scaffolding === 'object' && tw.scaffolding !== null,
       hasWasmHook: typeof r._twWasmIsTouchingDrawables === 'function',
@@ -77,7 +77,7 @@ async function readHooks(page) {
       drawables: r._allDrawables?.length ?? 0,
       // M7: GPU compute kernel pipeline telemetry. `kernelRegistry` is
       // unconditionally published by `__exposeForBrowserVerify()` so
-      // even `legacy-only` runs produce a `{size:0, jsOnly:0,
+      // even `enableWasm=false` runs produce a `{size:0, jsOnly:0,
       // canonicalKeys:[]}` snapshot. We do *not* probe `navigator.gpu`
       // here — that's recorded separately in the `webgpu_state`
       // scenario so this snapshot stays in sync with the renderer
@@ -103,14 +103,14 @@ async function waitForPlayerReady(page) {
   await page.waitForTimeout(500);
 }
 
-async function setModeAndReload(page, mode) {
-  await page.evaluate((m) => {
+async function setModeAndReload(page, enableWasm) {
+  await page.evaluate((w) => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
-    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 3 };
-    parsed.state.performanceMode = m;
-    parsed.version = 3;
+    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 8 };
+    parsed.state.enableWasm = w;
+    parsed.version = 8;
     localStorage.setItem('tw-viewer:settings:v1', JSON.stringify(parsed));
-  }, mode);
+  }, enableWasm);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-testid="stage-container"]', { timeout: 10_000 }).catch(() => null);
   await waitForPlayerReady(page);
@@ -187,7 +187,7 @@ async function main() {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
     if (!raw) return { present: false };
     const parsed = JSON.parse(raw);
-    return { present: true, version: parsed.version, performanceMode: parsed.state?.performanceMode };
+    return { present: true, version: parsed.version, enableWasm: parsed.state?.enableWasm };
   });
   jsonLog('A2-localstorage-baseline', lsBefore);
 
@@ -241,10 +241,10 @@ async function main() {
 
       await page.evaluate((urls) => {
         const raw = localStorage.getItem('tw-viewer:settings:v1');
-        const parsed = raw ? JSON.parse(raw) : { state: {}, version: 3 };
+        const parsed = raw ? JSON.parse(raw) : { state: {}, version: 8 };
         parsed.state.allowedExtensionUrls = urls;
-        parsed.state.performanceMode = parsed.state.performanceMode || 'auto';
-        parsed.version = 3;
+        parsed.state.enableWasm = parsed.state.enableWasm ?? true;
+        parsed.version = 8;
         localStorage.setItem('tw-viewer:settings:v1', JSON.stringify(parsed));
       }, extensionUrls);
       await page.reload({ waitUntil: 'domcontentloaded' });
@@ -302,7 +302,7 @@ async function main() {
     writeFileSync(resolve(logsDir, 'chrome-devtools-sb3-loaded.png'), shot);
   }
 
-  // ----- B. PerformanceMode dropdown UI (now that project is loaded) -----
+  // ----- B. Enable WASM / Enable WebGPU toggles inside the dialog ----
   let settingsOpened = false;
   try {
     const settingsBtn = await page.$('[data-testid="open-settings"]');
@@ -316,58 +316,60 @@ async function main() {
   }
   recordResult('B.settings_dialog_opened', settingsOpened);
 
-  await page.waitForSelector('#performance-mode', { timeout: 5_000 }).catch(() => null);
-  const perfModeTrigger = await page.$('#performance-mode');
-  let perfDropdownOptions = null;
-  if (perfModeTrigger) {
-    await perfModeTrigger.click();
-    await page.waitForTimeout(300);
-    perfDropdownOptions = await page.evaluate(() => {
-      const list = document.querySelector('[role="listbox"]');
-      if (!list) return null;
-      return Array.from(list.querySelectorAll('[role="option"]')).map((el) => ({
-        text: (el.textContent ?? '').replace(/\s+/g, ' ').trim(),
-        selected: el.getAttribute('aria-selected'),
-      }));
+  await page.waitForSelector('#enable-wasm', { timeout: 5_000 }).catch(() => null);
+  const enableWasmToggle = await page.$('#enable-wasm');
+  const enableWebgpuToggle = await page.$('#enable-webgpu');
+  const turboWasmToggle = await page.$('#turbo-wasm-acceleration');
+  const togglePresence = {
+    enableWasm: !!enableWasmToggle,
+    enableWebgpu: !!enableWebgpuToggle,
+    turboWasmAcceleration: !!turboWasmToggle,
+  };
+  jsonLog('B1-toggles-present', togglePresence);
+  recordResult('B.enable_wasm_toggle_present', togglePresence.enableWasm);
+  recordResult('B.enable_webgpu_toggle_present', togglePresence.enableWebgpu);
+  recordResult('B.turbo_wasm_toggle_present', togglePresence.turboWasmAcceleration);
+
+  // Confirm the Enable WASM toggle sits below Enable WebGPU (per the v8
+  // dialog layout: TurboWasm Acceleration → Enable WebGPU → Enable WASM).
+  if (enableWasmToggle && enableWebgpuToggle) {
+    const order = await page.evaluate(() => {
+      const order = (id) => {
+        const el = document.getElementById(id);
+        if (!el) return -1;
+        // Compare document order: walk the DOM and tally siblings that
+        // match either id, returning the index of `id`.
+        const all = Array.from(document.querySelectorAll('[data-testid^="settings-section-turbowasm"] *, #enable-wasm, #enable-webgpu, #turbo-wasm-acceleration'));
+        return all.indexOf(el);
+      };
+      return {
+        turbo: order('turbo-wasm-acceleration'),
+        webgpu: order('enable-webgpu'),
+        wasm: order('enable-wasm'),
+      };
     });
-    jsonLog('B2-perf-mode-options', perfDropdownOptions);
+    jsonLog('B2-toggle-order', order);
     recordResult(
-      'B.perf_mode_options_count',
-      Array.isArray(perfDropdownOptions) && perfDropdownOptions.length === 3,
-      perfDropdownOptions,
+      'B.toggles_in_expected_order',
+      order.turbo >= 0 && order.webgpu > order.turbo && order.wasm > order.webgpu,
+      order,
     );
-    // Verify option labels match the spec. `force-webgpu` was retired
-    // in v6; the dropdown now exposes only Auto / Force WASM SIMD /
-    // Legacy only.
-    const expectedLabels = ['Auto', 'Force WASM SIMD', 'Legacy only'];
-    const hasAllLabels = expectedLabels.every((lbl) =>
-      perfDropdownOptions.some((o) => o.text.includes(lbl)),
-    );
-    recordResult('B.perf_mode_labels_match_spec', hasAllLabels, { expectedLabels, options: perfDropdownOptions });
-    const shot = await page.screenshot({ fullPage: false });
-    writeFileSync(resolve(logsDir, 'chrome-devtools-perf-dropdown-open.png'), shot);
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(200);
-  } else {
-    logTo('B2-perf-mode-trigger-missing', '#performance-mode element not found inside settings dialog');
-    recordResult('B.perf_mode_options_count', false, { reason: 'no #performance-mode element' });
-    recordResult('B.perf_mode_labels_match_spec', false, { reason: 'no #performance-mode element' });
   }
+  const shot = await page.screenshot({ fullPage: false });
+  writeFileSync(resolve(logsDir, 'chrome-devtools-settings-toggles.png'), shot);
 
   // Close the settings dialog
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
 
-  // ----- C. Mode roundtrip via localStorage + reload -----
-  // Take screenshots for each mode
-  const snapLegacy = await setModeAndReload(page, 'legacy-only');
-  const snapForceWasm = await setModeAndReload(page, 'force-wasm');
-  const snapAuto = await setModeAndReload(page, 'auto');
+  // ----- C. Enable WASM roundtrip via localStorage + reload -----
+  const snapWasmOff = await setModeAndReload(page, false);
+  const snapWasmOn = await setModeAndReload(page, true);
 
-  // Screenshot per mode (some may not reload the project; do it explicitly)
-  async function screenshotMode(label) {
-    const snap = await setModeAndReload(page, label);
-    // Re-load project for visual context
+  // Re-load project for visual context per mode (some reloads drop the
+  // project state, so re-upload the fixture for each screenshot).
+  async function screenshotState(enableWasm) {
+    const snap = await setModeAndReload(page, enableWasm);
     try {
       const fileInput = await page.$('input[type="file"]');
       if (fileInput) {
@@ -386,37 +388,34 @@ async function main() {
     } catch {
       /* ignore */
     }
+    const label = enableWasm ? 'wasm-on' : 'wasm-off';
     const shot = await page.screenshot({ fullPage: false });
     writeFileSync(resolve(logsDir, `chrome-devtools-home-${label}.png`), shot);
     return snap;
   }
 
-  // (Already have snaps from setModeAndReload above; replace with project-loaded ones)
-  const snapLegacyLoaded = await screenshotMode('legacy-only');
-  const snapForceWasmLoaded = await screenshotMode('force-wasm');
-  const snapAutoLoaded = await screenshotMode('auto');
+  const snapWasmOffLoaded = await screenshotState(false);
+  const snapWasmOnLoaded = await screenshotState(true);
 
-  // Use the loaded snaps for the assertions
-  const legacyAllDetached =
-    snapLegacyLoaded.performanceMode === 'legacy-only' &&
-    snapLegacyLoaded.hasWasmHook === false &&
-    snapLegacyLoaded.hasWasmColorHook === false &&
-    snapLegacyLoaded.hasGpuStartHook === false &&
-    snapLegacyLoaded.hasDrawBatchHook === false &&
-    snapLegacyLoaded.hasSvgHostHook === false &&
-    snapLegacyLoaded.hasResvgRasterHook === false;
-  recordResult('C.legacy_only_all_hooks_detached', legacyAllDetached, snapLegacyLoaded);
+  // enableWasm=false clears every TurboWasm hook — the DoD parity mode
+  // replaces the v3..v7 `performanceMode: 'legacy-only'` path.
+  const wasmOffAllDetached =
+    snapWasmOffLoaded.enableWasm === false &&
+    snapWasmOffLoaded.hasWasmHook === false &&
+    snapWasmOffLoaded.hasWasmColorHook === false &&
+    snapWasmOffLoaded.hasGpuStartHook === false &&
+    snapWasmOffLoaded.hasDrawBatchHook === false &&
+    snapWasmOffLoaded.hasSvgHostHook === false &&
+    snapWasmOffLoaded.hasResvgRasterHook === false;
+  recordResult('C.enable_wasm_off_all_hooks_detached', wasmOffAllDetached, snapWasmOffLoaded);
 
-  const autoMatchesCaps =
-    snapAutoLoaded.performanceMode === 'auto' &&
-    snapAutoLoaded.hasWasmHook === Boolean(snapAutoLoaded.capabilities?.wasmSimd);
-  recordResult('C.auto_mode_matches_capabilities', autoMatchesCaps, snapAutoLoaded);
-
-  recordResult(
-    'C.force_wasm_mode_does_not_throw',
-    snapForceWasmLoaded.performanceMode === 'force-wasm' && typeof snapForceWasmLoaded.hasWasmHook === 'boolean',
-    snapForceWasmLoaded,
-  );
+  // enableWasm=true installs the WASM hook iff the runtime detected
+  // SIMD support. This replaces the v3..v7 `performanceMode: 'auto'`
+  // round-trip path.
+  const wasmOnMatchesCaps =
+    snapWasmOnLoaded.enableWasm === true &&
+    snapWasmOnLoaded.hasWasmHook === Boolean(snapWasmOnLoaded.capabilities?.wasmSimd);
+  recordResult('C.enable_wasm_on_matches_capabilities', wasmOnMatchesCaps, snapWasmOnLoaded);
 
   // ----- D. __turbowasm exposed value shape -----
   const dSnap = await page.evaluate(() => {
@@ -427,16 +426,16 @@ async function main() {
       hasScaffolding: typeof tw.scaffolding === 'object' && tw.scaffolding !== null,
       hasRenderer: typeof tw.renderer === 'object' && tw.renderer !== null,
       hasCapabilities: typeof tw.capabilities === 'object' && tw.capabilities !== null,
-      hasPerformanceMode: typeof tw.performanceMode === 'string',
+      hasEnableWasm: typeof tw.enableWasm === 'boolean',
       capabilities: tw.capabilities,
-      performanceMode: tw.performanceMode,
+      enableWasm: tw.enableWasm,
       rendererTwKeys: Object.keys(r).filter((k) => k.startsWith('_tw')).sort(),
     };
   });
   jsonLog('D-expose-shape', dSnap);
   recordResult(
     'D.expose_shape',
-    dSnap !== null && dSnap.hasScaffolding && dSnap.hasRenderer && dSnap.hasCapabilities && dSnap.hasPerformanceMode,
+    dSnap !== null && dSnap.hasScaffolding && dSnap.hasRenderer && dSnap.hasCapabilities && dSnap.hasEnableWasm,
     dSnap,
   );
 
@@ -488,24 +487,24 @@ async function main() {
     try {
       await runCommand('!help');
       await runCommand('!dump');
-      await runCommand('!reset-performance');
+      await runCommand('!reset-wasm');
       const afterReset = await page.evaluate(() => {
         const raw = localStorage.getItem('tw-viewer:settings:v1');
-        return raw ? JSON.parse(raw).state?.performanceMode : null;
+        return raw ? JSON.parse(raw).state?.enableWasm : null;
       });
       jsonLog('F-debug-commands', { afterReset });
-      recordResult('F.reset_performance_to_auto', afterReset === 'auto', { afterReset });
+      recordResult('F.reset_wasm_to_enabled', afterReset === true, { afterReset });
     } catch (e) {
       logTo('F-error', e?.stack ?? String(e));
-      recordResult('F.reset_performance_to_auto', false, { reason: 'exception', error: e?.message?.slice(0, 200) });
+      recordResult('F.reset_wasm_to_enabled', false, { reason: 'exception', error: e?.message?.slice(0, 200) });
     }
   } else {
     logTo('F-missing-input', 'project input not found');
-    recordResult('F.reset_performance_to_auto', false, { reason: 'no project input' });
+    recordResult('F.reset_wasm_to_enabled', false, { reason: 'no project input' });
   }
 
   // ----- G. LocalStorage migration -----
-  // v1 → v3
+  // v1 → v8 (legacy payload with no `enableWasm` / `performanceMode`)
   await page.evaluate(() => {
     localStorage.setItem(
       'tw-viewer:settings:v1',
@@ -528,20 +527,20 @@ async function main() {
     const parsed = JSON.parse(raw);
     return {
       version: parsed.version,
-      performanceMode: parsed.state?.performanceMode,
+      enableWasm: parsed.state?.enableWasm,
       theme: parsed.state?.theme,
       disableCompiler: parsed.state?.advanced?.disableCompiler,
     };
   });
-  const v1Runtime = await page.evaluate(() => ({ performanceMode: window.__turbowasm?.performanceMode }));
+  const v1Runtime = await page.evaluate(() => ({ enableWasm: window.__turbowasm?.enableWasm }));
   jsonLog('G1-v1-migration', { ls: v1Migrated, runtime: v1Runtime });
   recordResult(
-    'G.v1_to_v3_migration',
-    v1Migrated?.theme === 'dark' && v1Runtime?.performanceMode === 'auto',
+    'G.v1_to_v8_migration',
+    v1Migrated?.theme === 'dark' && v1Runtime?.enableWasm === true,
     { v1Migrated, v1Runtime },
   );
 
-  // v2 → v3
+  // v2 → v8 (legacy payload with no `enableWasm` / `performanceMode`)
   await page.evaluate(() => {
     localStorage.setItem(
       'tw-viewer:settings:v1',
@@ -558,9 +557,39 @@ async function main() {
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForPlayerReady(page);
-  const v2Runtime = await page.evaluate(() => ({ performanceMode: window.__turbowasm?.performanceMode }));
+  const v2Runtime = await page.evaluate(() => ({ enableWasm: window.__turbowasm?.enableWasm }));
   jsonLog('G2-v2-runtime', v2Runtime);
-  recordResult('G.v2_to_v3_migration', v2Runtime?.performanceMode === 'auto', v2Runtime);
+  recordResult('G.v2_to_v8_migration', v2Runtime?.enableWasm === true, v2Runtime);
+
+  // v7 → v8: a payload that still carries the legacy `performanceMode`
+  // + `advanced.enableGpuKernels` shape must be migrated in place.
+  await page.evaluate(() => {
+    localStorage.setItem(
+      'tw-viewer:settings:v1',
+      JSON.stringify({
+        state: {
+          theme: 'system',
+          volume: 100,
+          advanced: { enableGpuKernels: false },
+          defaultAdvanced: { enableGpuKernels: false },
+          performanceMode: 'legacy-only',
+        },
+        version: 7,
+      }),
+    );
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForPlayerReady(page);
+  const v7Runtime = await page.evaluate(() => ({
+    enableWasm: window.__turbowasm?.enableWasm,
+    enableWebgpu: window.__turbowasm?.enableWebgpu,
+  }));
+  jsonLog('G3-v7-runtime', v7Runtime);
+  recordResult(
+    'G.v7_to_v8_migration',
+    v7Runtime?.enableWasm === false && v7Runtime?.enableWebgpu === false,
+    v7Runtime,
+  );
 
   // Invalid version → reset
   await page.evaluate(() => {
@@ -571,9 +600,9 @@ async function main() {
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForPlayerReady(page);
-  const invalidRuntime = await page.evaluate(() => ({ performanceMode: window.__turbowasm?.performanceMode }));
-  jsonLog('G3-invalid-runtime', invalidRuntime);
-  recordResult('G.invalid_version_resets_to_auto', invalidRuntime?.performanceMode === 'auto', invalidRuntime);
+  const invalidRuntime = await page.evaluate(() => ({ enableWasm: window.__turbowasm?.enableWasm }));
+  jsonLog('G4-invalid-runtime', invalidRuntime);
+  recordResult('G.invalid_version_resets_to_defaults', invalidRuntime?.enableWasm === true, invalidRuntime);
 
   // ----- H. Network assets -----
   const wasmRequests = networkLog
@@ -621,13 +650,13 @@ async function main() {
   );
   recordResult('H.scaffolding_loaded', jsRequests.some((r) => r.url.includes('scaffolding') && r.status === 200), { jsRequests });
 
-  // ----- I. Visual regression (3 modes) -----
-  // `force-webgpu` was retired in v6; the three surviving modes each get
-  // a screenshot under logs/.
+  // ----- I. Visual regression (enableWasm on/off) -----
+  // The v3..v7 `performanceMode` union was collapsed to a single
+  // `enableWasm` boolean in v8, so the surviving visual states are
+  // `enableWasm=true` (default) and `enableWasm=false` (parity mode).
   const screenshots = [
-    'chrome-devtools-home-auto.png',
-    'chrome-devtools-home-legacy-only.png',
-    'chrome-devtools-home-force-wasm.png',
+    'chrome-devtools-home-wasm-on.png',
+    'chrome-devtools-home-wasm-off.png',
   ];
   const shots = screenshots.map((s) => ({
     file: s,
@@ -635,7 +664,7 @@ async function main() {
     size: existsSync(resolve(logsDir, s)) ? statSync(resolve(logsDir, s)).size : 0,
   }));
   jsonLog('I1-screenshots', shots);
-  recordResult('I.all_4_screenshots_taken', shots.every((s) => s.exists && s.size > 1000), shots);
+  recordResult('I.all_screenshots_taken', shots.every((s) => s.exists && s.size > 1000), shots);
 
   // ----- J. Error monitoring -----
   const fatalErrors = errorLines.filter(
@@ -683,7 +712,7 @@ async function main() {
   const gpuKernelLines = consoleLines.filter((l) => l.text.includes('[gpu-kernel]'));
   const bootstrappedAvailable = gpuKernelLines.some((l) => /device=available/.test(l.text));
   const bootstrappedNull = gpuKernelLines.some((l) => /device=null/.test(l.text));
-  const legacyOnlySkipped = consoleLines.some((l) => /\[gpu-kernel\] performanceMode=legacy-only/.test(l.text));
+  const wasmDisabledSkipped = consoleLines.some((l) => /\[gpu-kernel\] enableWasm=false/.test(l.text));
   const webgpuState = {
     probedAt: new Date().toISOString(),
     launcherOptedOut: isWebgpuOptedOut(),
@@ -694,7 +723,7 @@ async function main() {
     bootstrapLogLines: gpuKernelLines.map((l) => l.text.slice(0, 200)),
     bootstrappedAvailable,
     bootstrappedNull,
-    legacyOnlySkipped,
+    wasmDisabledSkipped,
     // Invariant: API+adapter presence must agree with the [gpu-kernel]
     // log line so a silent disagreement between Chromium and the
     // vendored VM surfaces here.
@@ -709,9 +738,9 @@ async function main() {
     typeof webgpuProbe.apiAvailable === 'boolean' && Array.isArray(gpuKernelLines),
     webgpuState,
   );
-  // The invariant is best-effort: `legacy-only` runs never enter
+  // The invariant is best-effort: enableWasm=false runs never enter
   // bootstrap, so we skip the assertion there.
-  if (!legacyOnlySkipped) {
+  if (!wasmDisabledSkipped) {
     recordResult(
       'J2.webgpu_invariant',
       webgpuState.invariant === true || webgpuState.invariant === null,
@@ -721,7 +750,7 @@ async function main() {
     recordResult(
       'J2.webgpu_invariant',
       true,
-      { note: 'legacy-only path; bootstrap skipped', legacyOnlySkipped: true },
+      { note: 'enableWasm=false path; bootstrap skipped', wasmDisabledSkipped: true },
     );
   }
 

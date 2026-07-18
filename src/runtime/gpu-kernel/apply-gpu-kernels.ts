@@ -6,11 +6,15 @@
  * `control_repeat` block. `applyGpuKernels` registers that global so
  * the M2 hook can find the compiled kernel for the block.
  *
- * Three short-circuit modes:
+ * Two short-circuit modes:
  *
  *   - `enabled === false`: no installation. The lookup returns
  *     `undefined`, the M2 hook skips the GPU path entirely.
- *   - `performanceMode === 'legacy-only'`: same as above.
+ *   - `!enableWasm`: same as above. The WASM toggle is the user's master
+ *     switch for every TurboWasm hook — the GPU compute kernel pipeline
+ *     is one of those hooks, so disabling WASM also disables this path
+ *     (a power user wanting to verify DoD parity should see no
+ *     TurboWasm acceleration at all).
  *   - otherwise: install `lookup(blockId)` and return `{ installed: true }`.
  *
  * Tests install / uninstall the lookup via
@@ -25,7 +29,7 @@ export type LookupFn = (blockId: string) => Kernel | undefined;
 
 export interface ApplyGpuKernelsOptions {
   enabled: boolean;
-  performanceMode: 'auto' | 'force-wasm' | 'legacy-only';
+  enableWasm: boolean;
   registry: KernelRegistry;
   pool: ListBufferPool;
   device: GpuLikeDispatchDevice | null;
@@ -51,9 +55,9 @@ export function applyGpuKernels(options: ApplyGpuKernelsOptions): ApplyGpuKernel
     uninstallLookup();
     return { installed: false, reason: 'disabled' };
   }
-  if (options.performanceMode === 'legacy-only') {
+  if (!options.enableWasm) {
     uninstallLookup();
-    return { installed: false, reason: 'legacy-only' };
+    return { installed: false, reason: 'wasm-disabled' };
   }
   installLookup(options.registry);
   return { installed: true };

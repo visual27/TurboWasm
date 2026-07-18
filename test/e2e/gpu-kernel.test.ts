@@ -6,11 +6,11 @@
  * up `vite preview` + Playwright Chromium and:
  *
  *   - Loads `test/.test-fixtures/expo-fixture.sb3` with
- *     `performanceMode: 'auto'`, captures the GPU pipeline's bootstrap
- *     log line (`[gpu-kernel] bootstrapped ... device=...`), and the
- *     `kernelRegistry` snapshot.
- *   - Loads the same fixture with `performanceMode: 'legacy-only'` and
- *     captures the (empty) registry.
+ *     `enableWasm: true` (the v8 default), captures the GPU pipeline's
+ *     bootstrap log line (`[gpu-kernel] bootstrapped ... device=...`),
+ *     and the `kernelRegistry` snapshot.
+ *   - Loads the same fixture with `enableWasm: false` and captures the
+ *     (empty) registry.
  *   - When WebGPU was observed, compares the canvas pixels from both
  *     passes within 1e-6 absolute tolerance. When WebGPU was *not*
  *     observed (CI without GPU hardware), the harness exits 0 with a

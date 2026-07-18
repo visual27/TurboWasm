@@ -1,21 +1,22 @@
 #!/usr/bin/env node
 /**
  * Verify that the rendered sprite output is *bit-identical* between the
- * default PerformanceMode and `legacy-only`.
+ * default `enableWasm: true` state and the `enableWasm: false` parity
+ * state.
  *
  * Phase 4 (resvg-wasm) was removed in v5; Phase 2 (WebGPU compute) and
  * Phase 3 (WebGPU instanced renderer) were retired in v6 along with
  * their UI selectors. The remaining rendering path is identical to the
  * upstream TurboWarp Scaffolding `drawImage(this._svgImage, ...)` flow
- * regardless of which PerformanceMode is selected, so the canvas pixels
- * produced by the two modes must match exactly.
+ * regardless of which `enableWasm` value is selected, so the canvas
+ * pixels produced by the two states must match exactly.
  *
  * Mechanism:
  *   1. Spin up `vite preview` in the background (Windows: `taskkill /f /t`
  *      on teardown).
  *   2. Use Playwright Chromium to open two browser contexts: one with
- *      default mode, one with `performanceMode: 'legacy-only'` written
- *      to `localStorage` before page load.
+ *      `enableWasm: true` (default), one with `enableWasm: false`
+ *      written to `localStorage` before page load.
  *   3. In each context, navigate to the preview, load the SVG-sprite
  *      fixture via `#<project-id>` URL syntax, wait for `__turbowasm` to
  *      expose a renderer, and capture the rendered canvas pixels with
@@ -111,23 +112,26 @@ async function captureForMode(browser, mode, fixturePath) {
   const consoleLines = [];
   const errorLines = [];
   page.on('console', (msg) => consoleLines.push(`[${msg.type()}] ${msg.text()}`));
-  page.on('pageerror', (err) => errorLines.push(`[pageerror] ${err?.stack ?? err}`));
+  page.on('pageerror', (err) => errorLines.push(`[pageerror] ${err?.stack ?? String(err)}`));
 
-  // Stage 1 sets `performanceMode` via localStorage BEFORE first paint.
+  // Stage 1 sets `enableWasm` via localStorage BEFORE first paint.
+  // `mode` is parsed as a boolean: `'true'` → `true`, anything else →
+  // `false`. The persisted version is the current STORAGE_VERSION (8).
+  const enableWasm = mode === 'true';
   await context.addInitScript(
-    ({ key, mode }) => {
+    ({ key, enableWasm }) => {
       const existingRaw = localStorage.getItem(key);
       let parsed;
       try {
-        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 6 };
+        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 8 };
       } catch {
-        parsed = { state: {}, version: 6 };
+        parsed = { state: {}, version: 8 };
       }
-      parsed.state.performanceMode = mode;
-      parsed.version = 6;
+      parsed.state.enableWasm = enableWasm;
+      parsed.version = 8;
       localStorage.setItem(key, JSON.stringify(parsed));
     },
-    { key: SETTINGS_KEY, mode },
+    { key: SETTINGS_KEY, enableWasm },
   );
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
@@ -183,7 +187,7 @@ async function captureForMode(browser, mode, fixturePath) {
       width: w,
       height: h,
       dataUrl,
-      performanceMode: tw.performanceMode,
+      enableWasm: tw.enableWasm,
       drawables: renderer._allDrawables?.length ?? 0,
     };
   });
@@ -296,27 +300,30 @@ async function main() {
 
     const browser = await chromium.launch({ headless: true });
     try {
-      const captureDefault = await captureForMode(browser, 'auto', fixturePath);
-      const captureLegacy = await captureForMode(browser, 'legacy-only', fixturePath);
+      const captureEnabled = await captureForMode(browser, 'true', fixturePath);
+      const captureDisabled = await captureForMode(browser, 'false', fixturePath);
       log(
         'summary',
         JSON.stringify(
           {
-            default: { ...captureDefault, dataUrl: '<elided>' },
-            legacy: { ...captureLegacy, dataUrl: '<elided>' },
+            enabled: { ...captureEnabled, dataUrl: '<elided>' },
+            disabled: { ...captureDisabled, dataUrl: '<elided>' },
           },
           null,
           2,
         ),
       );
 
-      if (!captureDefault.ok || !captureLegacy.ok) {
+      if (!captureEnabled.ok || !captureDisabled.ok) {
         // eslint-disable-next-line no-console
-        console.error('[turbowarp-equivalent] capture failed:', { captureDefault, captureLegacy });
+        console.error('[turbowarp-equivalent] capture failed:', {
+          captureEnabled,
+          captureDisabled,
+        });
         process.exit(1);
       }
 
-      const comparison = await compareCaptures(browser, captureDefault, captureLegacy);
+      const comparison = await compareCaptures(browser, captureEnabled, captureDisabled);
       log('comparison', JSON.stringify(comparison, null, 2));
 
       if (!comparison.match) {
@@ -325,7 +332,7 @@ async function main() {
         process.exit(1);
       }
       // eslint-disable-next-line no-console
-      console.log('[turbowarp-equivalent] OK: default and legacy-only rendered bit-identically.');
+      console.log('[turbowarp-equivalent] OK: enableWasm=true and enableWasm=false rendered bit-identically.');
     } finally {
       await browser.close();
     }

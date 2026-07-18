@@ -1,7 +1,6 @@
 import type { RuntimeCapabilities } from './capabilities';
 import { wasmIsTouchingColor, wasmIsTouchingDrawables, isWasmCollisionReady } from './wasm-collision-client';
 import type { RendererLike } from './wasm-collision-client';
-import type { PerformanceMode } from '@/types/settings';
 
 /**
  * Public-facing description of the TurboWasm acceleration layer's
@@ -24,12 +23,13 @@ export interface ApplyTurboWasmArgs {
   enabled: boolean;
   caps: RuntimeCapabilities;
   /**
-   * User-selected backend mode. Decides whether the WASM SIMD hook is
-   * installed. `'legacy-only'` clears the TurboWasm hook on the renderer
-   * so the runtime falls through to the original scratch-render path
-   * with zero behavioural change.
+   * User-controlled WASM-SIMD acceleration switch. `false` clears every
+   * TurboWasm hook on the renderer so the runtime falls through to the
+   * original scratch-render path with zero behavioural change (the
+   * Definition-of-Done parity mode). `true` installs the WASM hook when
+   * `wasmReady` and falls back to the JS path otherwise.
    */
-  performanceMode: PerformanceMode;
+  enableWasm: boolean;
 }
 
 type TurboWasmCallback = (
@@ -54,20 +54,22 @@ interface RendererWithHooks {
  * Decide whether the WASM SIMD hook should be installed on the
  * renderer.
  *
- *  - `'legacy-only'` returns `'none'` so the renderer falls through to
- *    its unmodified JS path.
- *  - `'force-wasm'` returns `'wasm'` when WASM SIMD has initialised.
- *  - `'auto'` returns `'wasm'` when WASM SIMD has initialised,
- *    otherwise `'none'` (the JS path).
+ *  - `!args.enableWasm` returns `'none'` so the renderer falls through
+ *    to its unmodified JS path.
+ *  - otherwise returns `'wasm'` when WASM SIMD has initialised,
+ *    `'none'` (the JS path) otherwise.
  *
  * Previously this function consulted a WebGPU compute tier first
  * (`'gpu'` → `'wasm'` → `'none'`). The WebGPU tier was retired (it
  * always returned `null` from the JS-side hook) so the selector now
- * has only two outcomes.
+ * has only two outcomes. The collapsed v8 shape (single boolean
+ * `enableWasm` instead of the v3..v7 `performanceMode` three-way
+ * union) is the source of truth — `selectBackendTier` no longer
+ * consults `auto` / `force-wasm` / `legacy-only` strings.
  */
 export function selectBackendTier(args: ApplyTurboWasmArgs, wasmReady: boolean): 'wasm' | 'none' {
   if (!args.enabled) return 'none';
-  if (args.performanceMode === 'legacy-only') return 'none';
+  if (!args.enableWasm) return 'none';
   return wasmReady ? 'wasm' : 'none';
 }
 

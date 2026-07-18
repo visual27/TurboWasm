@@ -1,4 +1,4 @@
-import type { AdvancedSettings, PerformanceMode } from '@/types/settings';
+import type { AdvancedSettings } from '@/types/settings';
 
 export const APP_NAME = 'TurboWasm Viewer';
 
@@ -16,7 +16,7 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   stageHeight: 360,
   extensionSandboxMode: 'worker',
   turboWasmAccelerationEnabled: true,
-  enableGpuKernels: true,
+  enableWebgpu: true,
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
@@ -53,16 +53,29 @@ export const STORAGE_KEYS = {
 // pipeline (M1 of the GPU kernel plan, see
 // `src/runtime/gpu-kernel/`). v6 → v7 migration fills the field with
 // `true` for existing payloads; the field is otherwise identical in
-// shape to `turboWasmAccelerationEnabled`. Older payloads are read and
-// migrated on the fly — see `src/lib/persistence.ts`.
-export const STORAGE_VERSION = 7;
+// shape to `turboWasmAccelerationEnabled`. Bumped to 8 when the
+// top-level `performanceMode` union was collapsed into a single
+// `enableWasm: boolean` (the three-way `'auto' | 'force-wasm' |
+// 'legacy-only'` choice was reduced to a single switch — `force-wasm`
+// was functionally identical to `auto`, so it was removed to avoid
+// confusing dead-end options) and `advanced.enableGpuKernels` was
+// renamed to `advanced.enableWebgpu` to align the field name with the
+// user-facing label. v7 → v8 migration converts both fields in place:
+// `performanceMode` collapses to `enableWasm` (`auto`/`force-wasm` →
+// `true`, `legacy-only` → `false`), and `advanced.enableGpuKernels`
+// is renamed to `advanced.enableWebgpu` while keeping the same boolean
+// value. Older payloads are read and migrated on the fly — see
+// `src/lib/persistence.ts`.
+export const STORAGE_VERSION = 8;
 
 /**
- * Default value for `performanceMode` when no user preference has been
- * persisted yet (or when the legacy migration runs). `auto` lets the
- * runtime pick the best backend per environment.
+ * Default value for `enableWasm` when no user preference has been
+ * persisted yet (or when the legacy migration runs). `true` lets the
+ * runtime pick WASM SIMD when supported and fall back to the JS path
+ * otherwise (the previous `'auto'` behaviour, which is also what the
+ * now-deleted `'force-wasm'` mode did).
  */
-export const DEFAULT_PERFORMANCE_MODE: PerformanceMode = 'auto';
+export const DEFAULT_ENABLE_WASM = true;
 
 export const ENV = {
   githubRepoUrl:

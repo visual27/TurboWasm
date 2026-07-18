@@ -1,17 +1,15 @@
-import { STORAGE_KEYS, STORAGE_VERSION } from '@/utils/constants';
+import { DEFAULT_ENABLE_WASM, STORAGE_KEYS, STORAGE_VERSION } from '@/utils/constants';
 import type {
   AdvancedSettings,
   ExtensionSandboxMode,
-  PerformanceMode,
   SettingsStoreSerialized,
   SettingsStoreShape,
   Theme,
 } from '@/types/settings';
-import { PERFORMANCE_MODES, ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
+import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
   DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_ALLOWED_EXTENSION_URLS,
-  DEFAULT_PERFORMANCE_MODE,
 } from '@/utils/constants';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume } from '@/utils/format';
 
@@ -66,10 +64,6 @@ function isExtensionSandboxMode(v: unknown): v is ExtensionSandboxMode {
   return v === 'worker' || v === 'iframe' || v === 'unsandboxed';
 }
 
-function isPerformanceMode(v: unknown): v is PerformanceMode {
-  return typeof v === 'string' && (PERFORMANCE_MODES as readonly string[]).includes(v);
-}
-
 /**
  * Parse an arbitrary object into a sanitized AdvancedSettings. Used for both
  * the runtime `advanced` and the saved `defaultAdvanced`.
@@ -85,6 +79,15 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
   const r = input as Record<string, unknown>;
   const disableCompiler =
     forceDisableCompilerOff ? false : typeof r.disableCompiler === 'boolean' ? r.disableCompiler : base.disableCompiler;
+  // v7 → v8 migration: the WebGPU toggle was previously named
+  // `enableGpuKernels`. Older payloads may still carry the old key —
+  // prefer the renamed `enableWebgpu` and fall back to the legacy name
+  // so a reload picks up the user's previous choice.
+  const rawEnableWebgpu = (() => {
+    if (typeof r.enableWebgpu === 'boolean') return r.enableWebgpu;
+    if (typeof r.enableGpuKernels === 'boolean') return r.enableGpuKernels;
+    return base.enableWebgpu;
+  })();
   return {
     fps: typeof r.fps === 'number' ? clampFps(r.fps) : base.fps,
     interpolation: typeof r.interpolation === 'boolean' ? r.interpolation : base.interpolation,
@@ -110,13 +113,7 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
       typeof r.turboWasmAccelerationEnabled === 'boolean'
         ? r.turboWasmAccelerationEnabled
         : base.turboWasmAccelerationEnabled,
-    // v6 → v7 migration: a previous payload might not have
-    // `enableGpuKernels`. Default to `true` (same default as
-    // `turboWasmAccelerationEnabled`) so the user does not silently land
-    // on the JS path. Following the spec, `saveAdvancedAsDefault()` will
-    // also force this field back to `true` on the saved-default side.
-    enableGpuKernels:
-      typeof r.enableGpuKernels === 'boolean' ? r.enableGpuKernels : base.enableGpuKernels,
+    enableWebgpu: rawEnableWebgpu,
   };
 }
 
@@ -144,7 +141,7 @@ function emptyShape(): SettingsStoreShape {
     advanced: { ...DEFAULT_ADVANCED_SETTINGS },
     defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
     allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
-    performanceMode: DEFAULT_PERFORMANCE_MODE,
+    enableWasm: DEFAULT_ENABLE_WASM,
     // No user history yet; the Alt+Flag shortcut falls back to
     // defaultAdvanced.fps (when !== 30) or 60.
     userExplicitFps: null,
@@ -168,20 +165,23 @@ function deriveUserExplicitFps(
 }
 
 /**
- * v5 → v6 migration helper: `'force-webgpu'` was retired when the WebGPU
- * compute tier (Phase 2) was removed (the JS-side hook always returned
- * `null`). A user who had pinned WebGPU before the removal would silently
- * end up on the `'none'` (JS) tier otherwise. Downgrading to `'auto'`
- * keeps WASM SIMD as the highest tier consulted, which matches the
- * pre-removal behaviour for users who never relied on the GPU path.
+ * v7 → v8 migration: collapse the v3..v7 `performanceMode` union
+ * (`'auto' | 'force-wasm' | 'legacy-only'`) into the single
+ * `enableWasm: boolean` switch. The runtime already treated `'auto'` and
+ * `'force-wasm'` identically (both install the WASM hook when `wasmReady`
+ * is true and fall back to the JS path otherwise), so collapsing them
+ * into `true` preserves the existing behaviour for every user that picked
+ * either value. `'legacy-only'` maps to `false`.
  *
- * The comparison uses `(mode as string)` because the post-v6
- * `PerformanceMode` union does not include `'force-webgpu'`; the
- * migration check still needs to recognise the legacy value in v5
- * payloads that reached storage before this commit.
+ * Inputs outside the union (e.g. a stale `'force-webgpu'` payload that
+ * slipped past the v5→v6 downgrade, or a future string the v8 type does
+ * not list) fall back to `DEFAULT_ENABLE_WASM` so a malformed save never
+ * silently disables the WASM hook.
  */
-function migratePerformanceMode(mode: PerformanceMode): PerformanceMode {
-  return (mode as string) === 'force-webgpu' ? DEFAULT_PERFORMANCE_MODE : mode;
+function migrateEnableWasm(raw: unknown): boolean {
+  if (raw === 'legacy-only') return false;
+  if (raw === 'auto' || raw === 'force-wasm') return true;
+  return DEFAULT_ENABLE_WASM;
 }
 
 export function readSettings(): SettingsStoreShape {
@@ -198,9 +198,11 @@ export function readSettings(): SettingsStoreShape {
     // retired in v6). v5 added the top-level `userExplicitFps`. v6
     // dropped `svgAccelerationMode` (and its top-level mirror) and the
     // `'force-webgpu'` performance mode. v7 added
-    // `advanced.enableGpuKernels`. Anything outside this range
-    // (including untagged / wrong-version / corrupt blobs) resets to
-    // defaults.
+    // `advanced.enableGpuKernels`. v8 collapsed the top-level
+    // `performanceMode` union into `enableWasm: boolean` and renamed
+    // `advanced.enableGpuKernels` to `advanced.enableWebgpu`. Anything
+    // outside this range (including untagged / wrong-version / corrupt
+    // blobs) resets to defaults.
     if (
       typeof parsed.version !== 'number' ||
       parsed.version < 1 ||
@@ -217,19 +219,6 @@ export function readSettings(): SettingsStoreShape {
         ? clampVolume(parsed.state.lastNonMuteVolume)
         : volume;
     const allowedExtensionUrls = sanitizeAllowedExtensionUrls(parsed.state?.allowedExtensionUrls);
-    // v5 → v6 migration: `'force-webgpu'` is no longer a valid value
-    // (downgraded to `'auto'`). The `isPerformanceMode` guard rejects the
-    // string entirely, so the explicit downgrade runs *before* the guard.
-    // The cast widens the type comparison to any string so the legacy
-    // value is still recognised even though it's no longer part of the
-    // narrowed `PerformanceMode` union.
-    const rawPerformanceMode: unknown = parsed.state?.performanceMode;
-    const performanceMode =
-      rawPerformanceMode === 'force-webgpu'
-        ? DEFAULT_PERFORMANCE_MODE
-        : isPerformanceMode(rawPerformanceMode)
-          ? rawPerformanceMode
-          : DEFAULT_PERFORMANCE_MODE;
 
     if (parsed.version === 1) {
       // v1 → v2 migration: a single `advanced` field acted as both the
@@ -244,17 +233,18 @@ export function readSettings(): SettingsStoreShape {
         advanced,
         defaultAdvanced,
         allowedExtensionUrls,
-        performanceMode: migratePerformanceMode(performanceMode),
+        enableWasm: DEFAULT_ENABLE_WASM,
         // v4 → v5 migration: seed `userExplicitFps` from the v1 fields.
         userExplicitFps: deriveUserExplicitFps(advanced, defaultAdvanced),
       };
     }
 
-    // v2 / v3 / v4 / v5. v2/v3/v4 share the `advanced` + `defaultAdvanced`
-    // shape; v3 added the top-level `performanceMode`, v5 added the
-    // top-level `userExplicitFps`. `sanitizeAdvanced` drops the now-
-    // retired `svgAccelerationMode` field by ignoring it (the type no
-    // longer includes it).
+    // v2..v7. v2/v3/v4 share the `advanced` + `defaultAdvanced` shape;
+    // v3 added the top-level `performanceMode`, v5 added the top-level
+    // `userExplicitFps`. `sanitizeAdvanced` drops the now-retired
+    // `svgAccelerationMode` field by ignoring it (the type no longer
+    // includes it) and handles the v7→v8 rename of `enableGpuKernels`
+    // → `enableWebgpu` inline.
     const advanced = sanitizeAdvanced(parsed.state?.advanced, true);
     const defaultAdvanced = sanitizeAdvanced(
       parsed.state?.defaultAdvanced ?? parsed.state?.advanced,
@@ -268,6 +258,19 @@ export function readSettings(): SettingsStoreShape {
       typeof parsed.state?.userExplicitFps === 'number' && parsed.state.userExplicitFps !== 30
         ? clampFps(parsed.state.userExplicitFps)
         : deriveUserExplicitFps(advanced, defaultAdvanced);
+    // v7 → v8 migration: collapse the v3..v7 `performanceMode` union
+    // into `enableWasm`. v8 payloads carry `enableWasm` directly and a
+    // stale `performanceMode` is ignored (the v3..v7 field is gone from
+    // the type). Both `enableWasm` (v8) and `performanceMode` (v3..v7)
+    // are accepted on read; the v8 value wins when present. The
+    // `performanceMode` access is through the legacy `unknown` cast
+    // because the v8 `SettingsStoreShape` no longer exposes the field.
+    const enableWasm =
+      typeof parsed.state?.enableWasm === 'boolean'
+        ? parsed.state.enableWasm
+        : migrateEnableWasm(
+            (parsed.state as unknown as { performanceMode?: unknown })?.performanceMode,
+          );
     return {
       theme,
       volume,
@@ -275,7 +278,7 @@ export function readSettings(): SettingsStoreShape {
       advanced,
       defaultAdvanced,
       allowedExtensionUrls,
-      performanceMode: migratePerformanceMode(performanceMode),
+      enableWasm,
       userExplicitFps,
     };
   } catch {
