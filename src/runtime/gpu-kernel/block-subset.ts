@@ -31,13 +31,14 @@
  * still D1 demoted.
  */
 
-import type {
-  BlockSubsetVerdict,
-  Diagnostic,
-  ExtractedRegion,
-  ParsedComment,
-  ParsedProject,
-  RawBlock,
+import {
+  HOOK_OPCODE_KEYS,
+  type BlockSubsetVerdict,
+  type Diagnostic,
+  type ExtractedRegion,
+  type ParsedComment,
+  type ParsedProject,
+  type RawBlock,
 } from './types';
 
 const GPU_UNSAFE_OPCODES: ReadonlySet<string> = new Set([
@@ -108,9 +109,6 @@ const GPU_UNSAFE_OPCODES: ReadonlySet<string> = new Set([
   'procedure_call',
   'argument_reporter_string',
 ]);
-
-/** Sub-keys of `inputs` we walk when collecting body blocks. */
-const HOOK_OPCODE_KEYS = ['SUBSTACK', 'SUBSTACK2', 'CONDITION'] as const;
 
 export interface ClassifyBlockSubsetInput {
   region: ExtractedRegion;

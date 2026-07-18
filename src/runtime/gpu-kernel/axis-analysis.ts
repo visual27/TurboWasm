@@ -22,15 +22,16 @@
  * `operator_mathop`, string shadow, etc.) is treated as a real offset.
  */
 
-import type {
-  AxisFinal,
-  AxisVerdict,
-  Diagnostic,
-  ExtractedRegion,
-  ParsedDirective,
-  ParsedProject,
-  RawBlock,
-  RepeatDirective,
+import {
+  HOOK_OPCODE_KEYS,
+  type AxisFinal,
+  type AxisVerdict,
+  type Diagnostic,
+  type ExtractedRegion,
+  type ParsedDirective,
+  type ParsedProject,
+  type RawBlock,
+  type RepeatDirective,
 } from './types';
 
 export interface AxisAnalysisResult {
@@ -43,15 +44,6 @@ const INDEX_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Scratch-vm shadow opcode for `math_number` (used in BlockShadowArray). */
 const SHADOW_OPCODE_MATH_NUMBER = 10;
-
-/**
- * Sub-keys of `inputs` we walk when collecting body blocks. We include
- * `CONDITION` because the safety guarantees of D1/D2 hold for any
- * expression the body uses to gate its execution; missing it would
- * silently let unsafe opcodes (e.g. `operator_random` inside `control_if`)
- * slip past D1. The block-subset classifier already walks the same set.
- */
-const BODY_INPUT_KEYS = ['SUBSTACK', 'SUBSTACK2', 'CONDITION'] as const;
 
 export function analyzeAxes(
   region: ExtractedRegion,
@@ -191,12 +183,20 @@ function escapeRegExp(s: string): string {
 /**
  * Opcodes whose execution writes to a scratch variable. Used by (c)
  * to detect "body writes to Ri".
+ *
+ * `data_setvariableto` and `data_changevariableby` are listed as
+ * **independent** opcodes (not aliases): scratch-vm routes them
+ * through different blocks (`setVariableTo` vs `changeVariableBy`)
+ * with distinct fields, even though they share the same `VARIABLE`
+ * shape we extract here. Aliasing them in this set would lose that
+ * distinction if a future opcode-specific check is added.
+ *
+ * `data_changevaroflist` and `data_replaceitemoflist` write to list
+ * elements rather than the index var, so they are not in this set.
  */
 const VARIABLE_WRITE_OPCODES: ReadonlySet<string> = new Set([
   'data_setvariableto',
   'data_changevariableby',
-  // 'data_changevaroflist' and 'data_replaceitemoflist' write to list
-  // elements rather than the index var, so they are not in this set.
 ]);
 
 /**
@@ -370,7 +370,7 @@ function collectBodyBlocks(
     if (!block) continue;
     out.push(block);
     if (typeof block.next === 'string') queue.push(block.next);
-    for (const key of BODY_INPUT_KEYS) {
+    for (const key of HOOK_OPCODE_KEYS) {
       const sub = block.inputs[key];
       if (typeof sub === 'string') queue.push(sub);
       else if (

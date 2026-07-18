@@ -72,16 +72,39 @@ export const ALL_AXES: readonly AxisFinal[] = [
 ] as const;
 
 /**
+ * Sub-keys of `inputs` we walk when collecting body blocks across the
+ * D1 / D2 classifiers. Shared between `block-subset.ts` and
+ * `axis-analysis.ts` so the two never silently diverge — §19.1 #4
+ * (verified in this commit: both files previously held an identical
+ * copy of the same three keys). `CONDITION` is included because the
+ * safety guarantees of D1/D2 hold for any expression the body uses to
+ * gate its execution; missing it would silently let unsafe opcodes
+ * (e.g. `operator_random` inside `control_if`) slip past D1.
+ */
+export const HOOK_OPCODE_KEYS = ['SUBSTACK', 'SUBSTACK2', 'CONDITION'] as const;
+
+/**
  * `@bind <name>(<slot>) ro|rw [f32|i32|byte]`.
  *
  * `dtype` defaults to `'f32'` when the directive omits it. `slot` is the
  * GPU `@group(0) @binding(N)` index that the WGSL emitter assigns.
  * `rw` is true for storage buffers that the body writes to, false for
  * read-only storage (which the kernel-registry can dispatch concurrently).
+ *
+ * `internalName` (§Phase E): when the user writes a quoted name like
+ * `@bind "my list"(0) rw f32`, the directive carries `name = 'my list'`
+ * (used for runtime adapter lookups via `__getListBuffer`) and a
+ * WGSL-safe `internalName = '__tw_<hash>'` (FNV-1a of `name`). The WGSL
+ * emitter uses `internalName` for storage declarations and `let`
+ * bindings. `internalName` is `undefined` for unquoted (identifier) names
+ * because the existing `safeIdentifier` + reserved-keyword rename pass
+ * already produces a valid WGSL name; the field exists only when the
+ * surface-syntax name is not a valid WGSL identifier.
  */
 export interface BindDirective {
   kind: 'bind';
   name: string;
+  internalName?: string;
   slot: number;
   readOnly: boolean;
   dtype: 'f32' | 'i32' | 'byte';
@@ -148,10 +171,17 @@ export interface RepeatDirective {
  * single dispatch. `formula` is the raw tail; cascade-analysis builds a
  * dependency graph from it and the WGSL emitter toposorts it into `let`
  * bindings per spec §3.7.
+ *
+ * `internalName` (§Phase E): mirror of `BindDirective.internalName` —
+ * set when the user writes a quoted name. The emitter uses it to derive
+ * the WGSL `let` binding name; cascade-analysis still keys the
+ * dependency graph on `var` (case-preserving) so canonical keys remain
+ * stable across quote-stripping.
  */
 export interface MapDirective {
   kind: 'map';
   var: string;
+  internalName?: string;
   formula: string;
   /** The owning region's `control_repeat` block id, for diagnostics. */
   blockId: string;
@@ -238,6 +268,13 @@ export interface BlockSubsetVerdict {
 /**
  * Per-`@repeat Ri` axis verdict. `finalAxis` is `'sequential'` when D2
  * demote kicked in. Other axes may still run in parallel.
+ *
+ * `diagnostics` is **reserved for per-axis warnings** — currently empty
+ * by design. Region-level diagnostics flow through
+ * `AxisAnalysisResult.diagnostics` so a single demote surfaces once at
+ * the region level rather than once per axis. The field is kept on the
+ * interface so a future per-axis warning (e.g. "this axis ran sequential
+ * because of X") has a place to live without churning the type.
  */
 export interface AxisVerdict {
   /** The axis declared by `@repeat Ri:<axis>`. */
