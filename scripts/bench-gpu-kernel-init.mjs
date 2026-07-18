@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { makeExpoFixture } from './make-expo-fixture.mjs';
+import { getWebgpuLaunchOptions } from './webgpu-flags.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -227,14 +228,7 @@ async function main() {
   try {
     await waitForPreview(PREVIEW_URL);
 
-    const browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--enable-unsafe-webgpu',
-        '--enable-features=Vulkan,WebGPU',
-        '--use-vulkan=swiftshader',
-      ],
-    });
+    const browser = await chromium.launch(getWebgpuLaunchOptions());
 
     const preParseWalls = [];
     const uploadToReadys = [];

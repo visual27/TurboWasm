@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const JSZip = require('jszip');
+import { getWebgpuLaunchOptions, isWebgpuOptedOut, WEBGPU_LAUNCH_FLAGS } from './webgpu-flags.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -56,6 +57,7 @@ async function readHooks(page) {
     const tw = window.__turbowasm;
     if (!tw) return { mounted: false };
     const r = tw.renderer ?? {};
+    const kr = tw.kernelRegistry;
     return {
       mounted: Boolean(tw.scaffolding),
       performanceMode: tw.performanceMode,
@@ -73,6 +75,16 @@ async function readHooks(page) {
       hasSvgHostHook: !!r._twWasmSvgAcceleration,
       hasResvgRasterHook: !!r._twWasmRasterSvgCostume,
       drawables: r._allDrawables?.length ?? 0,
+      // M7: GPU compute kernel pipeline telemetry. `kernelRegistry` is
+      // unconditionally published by `__exposeForBrowserVerify()` so
+      // even `legacy-only` runs produce a `{size:0, jsOnly:0,
+      // canonicalKeys:[]}` snapshot. We do *not* probe `navigator.gpu`
+      // here — that's recorded separately in the `webgpu_state`
+      // scenario so this snapshot stays in sync with the renderer
+      // hooks above.
+      kernelRegistry: kr
+        ? { size: kr.size ?? 0, jsOnly: kr.jsOnly ?? 0, canonicalKeys: Array.isArray(kr.canonicalKeys) ? kr.canonicalKeys.slice(0, 8) : [] }
+        : null,
     };
   });
 }
@@ -116,7 +128,9 @@ async function main() {
     process.exit(2);
   }
 
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = getWebgpuLaunchOptions();
+  logTo('launch-options', JSON.stringify({ ...launchOptions, optedOut: isWebgpuOptedOut(), flags: WEBGPU_LAUNCH_FLAGS }, null, 2));
+  const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
 
@@ -641,6 +655,75 @@ async function main() {
     fatalErrors.length === 0,
     { count: fatalErrors.length, sample: fatalErrors[0]?.message },
   );
+
+  // ----- J2. WebGPU detection (M7) -----
+  // Probe `navigator.gpu` and try `requestAdapter()` to confirm the
+  // Chromium launch flags actually enabled the API surface. This is
+  // the single source of truth for "is WebGPU available in this run":
+  // the log line `[gpu-kernel] bootstrapped ... device=available`
+  // only fires when a project is loaded, but this probe is independent.
+  const webgpuProbe = await page.evaluate(async () => {
+    const nav = /** @type {any} */ (globalThis.navigator);
+    const gpu = nav?.gpu;
+    if (!gpu) return { apiAvailable: false, adapter: null, reason: 'navigator.gpu is undefined' };
+    let adapter = null;
+    let adapterInfo = null;
+    try {
+      adapter = await gpu.requestAdapter();
+      if (adapter) {
+        let info = null;
+        try { info = await adapter.requestAdapterInfo?.(); } catch { /* ignore */ }
+        adapterInfo = info ? { vendor: info.vendor ?? null, architecture: info.architecture ?? null, device: info.device ?? null, description: info.description ?? null } : null;
+      }
+    } catch (err) {
+      return { apiAvailable: true, adapter: null, reason: `requestAdapter threw: ${err?.message ?? err}` };
+    }
+    return { apiAvailable: true, adapter: adapter ? 'available' : 'null', adapterInfo };
+  });
+  const gpuKernelLines = consoleLines.filter((l) => l.text.includes('[gpu-kernel]'));
+  const bootstrappedAvailable = gpuKernelLines.some((l) => /device=available/.test(l.text));
+  const bootstrappedNull = gpuKernelLines.some((l) => /device=null/.test(l.text));
+  const legacyOnlySkipped = consoleLines.some((l) => /\[gpu-kernel\] performanceMode=legacy-only/.test(l.text));
+  const webgpuState = {
+    probedAt: new Date().toISOString(),
+    launcherOptedOut: isWebgpuOptedOut(),
+    launchFlags: WEBGPU_LAUNCH_FLAGS,
+    apiAvailable: webgpuProbe.apiAvailable,
+    adapterObserved: webgpuProbe.adapter === 'available',
+    adapterInfo: webgpuProbe.adapterInfo ?? null,
+    bootstrapLogLines: gpuKernelLines.map((l) => l.text.slice(0, 200)),
+    bootstrappedAvailable,
+    bootstrappedNull,
+    legacyOnlySkipped,
+    // Invariant: API+adapter presence must agree with the [gpu-kernel]
+    // log line so a silent disagreement between Chromium and the
+    // vendored VM surfaces here.
+    invariant:
+      webgpuProbe.adapter === 'available'
+        ? bootstrappedAvailable || null
+        : !bootstrappedAvailable,
+  };
+  jsonLog('webgpu', webgpuState);
+  recordResult(
+    'J2.webgpu_state_recorded',
+    typeof webgpuProbe.apiAvailable === 'boolean' && Array.isArray(gpuKernelLines),
+    webgpuState,
+  );
+  // The invariant is best-effort: `legacy-only` runs never enter
+  // bootstrap, so we skip the assertion there.
+  if (!legacyOnlySkipped) {
+    recordResult(
+      'J2.webgpu_invariant',
+      webgpuState.invariant === true || webgpuState.invariant === null,
+      { invariant: webgpuState.invariant, adapterObserved: webgpuState.adapterObserved, bootstrappedAvailable },
+    );
+  } else {
+    recordResult(
+      'J2.webgpu_invariant',
+      true,
+      { note: 'legacy-only path; bootstrap skipped', legacyOnlySkipped: true },
+    );
+  }
 
   logTo(
     'J3-console-all',
