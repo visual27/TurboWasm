@@ -15,6 +15,9 @@ function skeletonRegion(): ExtractedRegion {
     commentId: 'c1',
     firstSubstackBlockId: 'a',
     bodyBlockIds: ['a'],
+    kernelContainerBlockId: 'r0',
+    nestedRepeatContainerBlockIds: [],
+    duplicateComputeBlockIds: [],
   };
 }
 

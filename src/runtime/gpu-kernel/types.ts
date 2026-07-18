@@ -151,7 +151,7 @@ export interface WorkgroupSizeDirective {
 }
 
 /**
- * `@repeat R<i>[:<axis>] = <formula>[, max=<uint>]`.
+ * `@repeat R<i>[:<axis>] = <formula>[, max=<uint>][, blockId="<id>"]`.
  *
  * `name` is e.g. `R0`. `axis` defaults to `'sequential'` (the safe
  * fallback) when omitted. `formula` is the raw text after `=` —
@@ -161,6 +161,14 @@ export interface WorkgroupSizeDirective {
  * — set when the user writes a quoted `@repeat` name. The emitter uses
  * `internalName` in `for` bindings and `let` references; cascade-analysis
  * still keys on `name` so canonical keys remain stable across quoting.
+ *
+ * `boundBlockId` (§Phase 0, nested-parallelization-00-overview §1.1):
+ * optional trailing `, blockId="<id>"` that names the scratch block
+ * (typically a `data_changevariableby` / `data_itemoflist`) the directive
+ * is pointing at — i.e. the iteration-advance / indirect-access site
+ * that Phase 1 will register into the emitter's skip-set. Distinct from
+ * `blockId` (which is the *owning* control_repeat block the directive's
+ * comment sits on). Volatile: NOT included in canonical key.
  */
 export interface RepeatDirective {
   kind: 'repeat';
@@ -175,22 +183,32 @@ export interface RepeatDirective {
   max?: number;
   /** The repeat's `control_repeat` block id, for diagnostics. */
   blockId: string;
+  /**
+   * Phase 0: explicit binding to a scratch block in the body
+   * (e.g. `data_changevariableby`). Volatile — excluded from canonical key.
+   */
+  boundBlockId?: string;
   line: number;
   column: number;
 }
 
 /**
- * `@map <var> <- <formula>`. The body of the region must reference this
- * `var` via a list-write so the GPU-side accumulator can be folded into a
- * single dispatch. `formula` is the raw tail; cascade-analysis builds a
- * dependency graph from it and the WGSL emitter toposorts it into `let`
- * bindings per spec §3.7.
+ * `@map <var> <- <formula>[, blockId="<id>"]`. The body of the region must
+ * reference this `var` via a list-write so the GPU-side accumulator can be
+ * folded into a single dispatch. `formula` is the raw tail; cascade-analysis
+ * builds a dependency graph from it and the WGSL emitter toposorts it into
+ * `let` bindings per spec §3.7.
  *
  * `internalName` (§Phase E): mirror of `BindDirective.internalName` —
  * set when the user writes a quoted name. The emitter uses it to derive
  * the WGSL `let` binding name; cascade-analysis still keys the
  * dependency graph on `var` (case-preserving) so canonical keys remain
  * stable across quote-stripping.
+ *
+ * `boundBlockId` (§Phase 0, nested-parallelization-00-overview §1.1):
+ * optional trailing `, blockId="<id>"` that names the scratch block
+ * (typically a `data_itemoflist` read) the directive is pointing at.
+ * Volatile: NOT included in canonical key.
  */
 export interface MapDirective {
   kind: 'map';
@@ -199,6 +217,11 @@ export interface MapDirective {
   formula: string;
   /** The owning region's `control_repeat` block id, for diagnostics. */
   blockId: string;
+  /**
+   * Phase 0: explicit binding to a scratch block in the body
+   * (e.g. `data_itemoflist` for read). Volatile — excluded from canonical key.
+   */
+  boundBlockId?: string;
   line: number;
   column: number;
 }
@@ -252,9 +275,23 @@ export interface ParsedProject {
  * + inner sub-stack traversal, but NOT recursive into another
  * `@compute` region per spec §4.5 — that becomes a D1 demote of the
  * outer region).
+ *
+ * §Phase 0 (nested-parallelization-01-phase0 §3.2): `blockId` is unified
+ * with `kernelContainerBlockId`. In the legacy case (outer `@compute`),
+ * the candidate and kernel container are identical; in the nested case
+ * (`@compute` on a deeper `control_repeat`), `blockId` is promoted to
+ * the ancestor's id (= kernel container). All downstream code that
+ * referenced `region.blockId` therefore continues to refer to the
+ * kernel container — including `kernel-registry.ts` and
+ * `block-subset.ts`.
  */
 export interface ExtractedRegion {
   regionId: string;
+  /**
+   * Kernel container's `control_repeat` block id. Phase 0 unified with
+   * `kernelContainerBlockId`. In the legacy case this equals the
+   * `@compute`-marked candidate's id.
+   */
   blockId: string;
   spriteId: string;
   commentId: string;
@@ -267,6 +304,28 @@ export interface ExtractedRegion {
    * outer region.
    */
   bodyBlockIds: string[];
+  /**
+   * Phase 0: kernel container's `control_repeat` block id. Identical to
+   * `blockId`. Phase 2 will use this as the implicit-axis carrier for
+   * nested `@compute` layouts.
+   */
+  kernelContainerBlockId: string;
+  /**
+   * Phase 0: list of body-side `control_repeat` block ids that are
+   * candidates for implicit axis emission in Phase 2. Includes the
+   * `@compute` candidate itself when nested. Empty for the legacy
+   * (outer-only) layout.
+   */
+  nestedRepeatContainerBlockIds: string[];
+  /**
+   * Phase 0: scratch block ids of additional `@compute` markers found
+   * inside the same sprite. Empty when the sprite carries exactly one
+   * marker (the common case). When non-empty, a
+   * `gpu.multiple_compute_regions` diagnostic is emitted at
+   * `region-extractor.ts` time and only the first candidate is kept in
+   * `regions[]`.
+   */
+  duplicateComputeBlockIds: string[];
 }
 
 /**

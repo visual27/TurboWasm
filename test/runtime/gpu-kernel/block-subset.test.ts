@@ -16,6 +16,9 @@ function region(body: RawBlock[]): ExtractedRegion {
     commentId: 'cmt1',
     firstSubstackBlockId: body[0]?.id ?? '',
     bodyBlockIds: body.map((b) => b.id),
+    kernelContainerBlockId: 'r0',
+    nestedRepeatContainerBlockIds: [],
+    duplicateComputeBlockIds: [],
   };
 }
 

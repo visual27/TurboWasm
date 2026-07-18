@@ -278,4 +278,136 @@ describe('comment-parser', () => {
     const three = parseComputeComment(mkComment('@compute\n@workgroup_size(8,4,2)'), REGION);
     expect(three.directives.find((d) => d.kind === 'workgroup_size')).toMatchObject({ x: 8, y: 4, z: 2 });
   });
+
+  describe('boundBlockId suffix (§Phase 0, nested parallelization)', () => {
+    it("'@repeat' accepts trailing blockId=\"<id>\" suffix", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat Rx:global_x = N, blockId="abc"'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({
+        kind: 'repeat',
+        name: 'Rx',
+        axis: 'global_x',
+        formula: 'N',
+        boundBlockId: 'abc',
+      });
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it("'@repeat' accepts blockId=\"<id>\" combined with max=", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat Rx:global_x = N, max=64, blockId="abc"'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({
+        kind: 'repeat',
+        name: 'Rx',
+        axis: 'global_x',
+        formula: 'N',
+        max: 64,
+        boundBlockId: 'abc',
+      });
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it("'@repeat' accepts blockId=\"<id>\" before max=", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat Rx:global_x = N, blockId="abc", max=64'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({
+        formula: 'N',
+        max: 64,
+        boundBlockId: 'abc',
+      });
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it("'@repeat' rejects unquoted blockId= as a syntax error", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat Rx:global_x = N, blockId=abc'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      // The directive still parses (formula preserved); the bad suffix
+      // is dropped with a warn diagnostic.
+      expect(repeat).toMatchObject({ formula: 'N' });
+      expect(repeat && 'boundBlockId' in repeat ? repeat.boundBlockId : undefined).toBeUndefined();
+      expect(
+        result.diagnostics.some(
+          (d) => d.code === 'gpu.dsl_syntax_error' && d.message.includes('malformed blockId'),
+        ),
+      ).toBe(true);
+    });
+
+    it("'@repeat' rejects empty blockId=\"\" as a syntax error", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat Rx:global_x = N, blockId=""'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ formula: 'N' });
+      expect(
+        result.diagnostics.some(
+          (d) => d.code === 'gpu.dsl_syntax_error' && d.message.includes('empty blockId'),
+        ),
+      ).toBe(true);
+    });
+
+    it("'@map' accepts trailing blockId=\"<id>\" suffix", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@map idx <- R0, blockId="def"'),
+        REGION,
+      );
+      const map = result.directives.find((d) => d.kind === 'map');
+      expect(map).toMatchObject({
+        kind: 'map',
+        var: 'idx',
+        formula: 'R0',
+        boundBlockId: 'def',
+      });
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it("'@repeat' formula containing '[...]' is not confused with blockId= suffix", () => {
+      // The bracket syntax in @Phase E+ sugar (`len(my_list)` etc.) has
+      // its own commas inside `[...]` if we ever extend it. Here we
+      // simulate a formula with an in-formula comma token that the
+      // quote-aware split must skip past.
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat Rx:global_x = len(my_list), blockId="x"'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ formula: 'len(my_list)', boundBlockId: 'x' });
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it("'@repeat' quoted string containing ',' is not confused with blockId= suffix", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat Rx:global_x = "a,b", blockId="x"'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ formula: '"a,b"', boundBlockId: 'x' });
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it("legacy '@repeat Rx:global_x = N, max=64' keeps boundBlockId undefined", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat Rx:global_x = N, max=64'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ formula: 'N', max: 64 });
+      expect(
+        repeat && 'boundBlockId' in repeat ? repeat.boundBlockId : undefined,
+      ).toBeUndefined();
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+  });
 });

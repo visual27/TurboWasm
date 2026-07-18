@@ -22,6 +22,9 @@ function region(bodyIds: string[]): ExtractedRegion {
     commentId: 'c1',
     firstSubstackBlockId: bodyIds[0] ?? 'a',
     bodyBlockIds: bodyIds,
+    kernelContainerBlockId: 'r0',
+    nestedRepeatContainerBlockIds: [],
+    duplicateComputeBlockIds: [],
   };
 }
 
@@ -258,6 +261,9 @@ describe('axis-analysis (D2)', () => {
       commentId: 'c1',
       firstSubstackBlockId: 'if',
       bodyBlockIds: ['if'],
+      kernelContainerBlockId: 'if',
+      nestedRepeatContainerBlockIds: [],
+      duplicateComputeBlockIds: [],
     };
     const result = analyzeAxes(regionWithCondition, directives, proj);
     expect(result.axes['R0']?.finalAxis).toBe('sequential');
