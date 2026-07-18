@@ -51,8 +51,6 @@ export const ALL_AXES: readonly AxisFinal[] = [
   'workgroup_z',
 ] as const;
 
-export type Dtype = 'f32' | 'i32' | 'byte';
-
 export interface BindDirective {
   kind: 'bind';
   name: string;
@@ -64,14 +62,17 @@ export interface BindDirective {
   internalName?: string;
   slot: number;
   readOnly: boolean;
-  dtype: Dtype;
+  dtype: 'f32' | 'i32' | 'byte';
   line: number;
   column: number;
 }
 
+export type Dtype = BindDirective['dtype'];
+
 export interface MaxDirective {
   kind: 'max';
-  groupName: string;
+  name: string;
+  internalName?: string;
   value: number;
   line: number;
   column: number;
@@ -89,6 +90,7 @@ export interface WorkgroupSizeDirective {
 export interface RepeatDirective {
   kind: 'repeat';
   name: string;
+  internalName?: string;
   axis: AxisFinal;
   formula: string;
   max?: number;

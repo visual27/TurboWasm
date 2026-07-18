@@ -23,6 +23,24 @@ describe('parseScgpuDocument', () => {
     ]);
   });
 
+  it('parses quoted @bind and @map names', () => {
+    const text = [
+      '@compute',
+      '@bind "my list"(0) rw f32',
+      '@map "output index" <- R0',
+    ].join('\n');
+    const result = parseScgpuDocument(text);
+    const directives = result.regions[0]?.directives.map((entry) => entry.directive) ?? [];
+    expect(directives.find((directive) => directive.kind === 'bind')).toMatchObject({
+      name: 'my list',
+      internalName: expect.stringMatching(/^__tw_[0-9a-f]{8}$/),
+    });
+    expect(directives.find((directive) => directive.kind === 'map')).toMatchObject({
+      var: 'output index',
+      internalName: expect.stringMatching(/^__tw_[0-9a-f]{8}$/),
+    });
+  });
+
   it('strips UTF-8 BOM', () => {
     const text = '\uFEFF@compute\n@bind tmp0(0) ro\n';
     const result = parseScgpuDocument(text);

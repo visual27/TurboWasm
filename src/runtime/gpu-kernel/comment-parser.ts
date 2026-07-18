@@ -1,19 +1,26 @@
 /**
  * Tokenize + parse `@compute` block comments on `control_repeat` blocks.
  *
- * The DSL is documented in Â§3 of `gpu-kernel-spec-summary.md`. Summary:
+ * The DSL is documented in §3 of `gpu-kernel-spec-summary.md`. Summary:
  *
  *   @bind <name>(<slot>) ro|rw [f32|i32|byte]
  *   @max length=<uint>
- *   @max <groupName>=<uint>
+ *   @max <name>=<uint>
  *   @workgroup_size(<x>) | (<x>,<y>) | (<x>,<y>,<z>)
  *   @repeat R<i>[:<axis>] = <formula>[, max=<uint>]
  *   @map <var> <- <formula>
  *
+ * `<name>` (and `<var>`, `<axis>`) accept either a plain identifier
+ * (`tmp0`, `R0`, `aabb_width`) or a double-quoted string
+ * (`"my list"`, `"my group"`, `"R0"`). §Phase E extended this support to
+ * `@bind` and `@map`; §Phase E+ extends it to every identifier slot in
+ * the parser. Quoted form is recommended in documentation but unquoted
+ * identifiers continue to work for backwards compatibility.
+ *
  * The parser is intentionally permissive about whitespace (TAB/spaces/CRLF
- * per Â§3.8) and directive casing (`@Bind` == `@BIND` == `@bind`), but
- * strict about identifiers. Anything that smells malformed becomes a
- * `Diagnostic` (`code: 'gpu.dsl_syntax_error'`) which the WGSL emitter
+ * per §3.8) and directive casing (`@Bind` == `@BIND` == `@bind`), but
+ * strict about identifier syntax. Anything that smells malformed becomes
+ * a `Diagnostic` (`code: 'gpu.dsl_syntax_error'`) which the WGSL emitter
  * then turns into a D1 demote on the owning region.
  */
 
@@ -32,7 +39,7 @@ import { ALL_AXES } from './types';
 
 /**
  * Parse the text of one `@compute` comment block into the directives and
- * any diagnostics. Diagnostics are non-fatal at this layer â the caller
+ * any diagnostics. Diagnostics are non-fatal at this layer — the caller
  * decides whether a syntax error becomes a D1 demote (it does).
  *
  * @param comment  The scratch comment DTO (`{ text, blockId }`).
@@ -136,7 +143,7 @@ interface ParsedNameToken {
   /**
    * `__tw_<hash>` for quoted names that contain characters not legal in
    * a WGSL identifier (spaces, punctuation). `undefined` for plain
-   * identifiers â the existing reserved-keyword rename pass handles those.
+   * identifiers — the existing reserved-keyword rename pass handles those.
    */
   internalName: string | undefined;
   diagnostic: Omit<Diagnostic, 'regionId' | 'blockId' | 'line'> | null;
@@ -145,20 +152,20 @@ interface ParsedNameToken {
 /**
  * Parse a name token that may be a plain identifier (`tmp0`) or a
  * double-quoted string (`"my list"`, `"weird\"name"`). The quoted form
- * (Â§Phase E) lets users `@bind` Scratch lists that have spaces or
+ * (§Phase E) lets users `@bind` Scratch lists that have spaces or
  * punctuation in their names without violating WGSL's identifier
- * grammar.
+ * grammar. §Phase E+ extends this to every NAME slot in the parser.
  *
  * Escape sequences inside quoted strings:
- *   - `\"` â `"`
- *   - `\\` â `\`
- *   - any other `\X` â `X` (literal)
+ *   - `\"` → `"`
+ *   - `\\` → `\`
+ *   - any other `\X` → `X` (literal)
  *
  * On empty quoted names the helper returns a diagnostic (severity warn,
  * code `gpu.dsl_syntax_error`). The caller propagates `regionId` /
  * `blockId` / `line` into the final diagnostic.
  */
-function parseNameToken(token: string): ParsedNameToken {
+export function parseNameToken(token: string): ParsedNameToken {
   if (token.length >= 2 && token.startsWith('"') && token.endsWith('"')) {
     const raw = token.slice(1, -1);
     // Walk the string char-by-char so the two structured escapes (`\"`
@@ -219,14 +226,14 @@ function parseNameToken(token: string): ParsedNameToken {
 
 /**
  * FNV-1a 32-bit hash, formatted as `__tw_<8 hex digits>`. Identical
- * to `wgsl-emitter.ts:hashedIdentifier` â duplicated here so the parser
+ * to `wgsl-emitter.ts:hashedIdentifier` — duplicated here so the parser
  * does not depend on the emitter and so a parser-only build (e.g. for
  * the `@turbowasm/gpu-kernel-parser` package) can still derive
  * `internalName`. The two functions are expected to agree byte-for-byte
- * because they share the same `Scratch` name lookup contract â see
+ * because they share the same `Scratch` name lookup contract — see
  * `test/runtime/gpu-kernel/comment-parser.test.ts` for the cross-check.
  */
-function hashedIdentifier(identifier: string, salt: number): string {
+export function hashedIdentifier(identifier: string, salt: number): string {
   let hash = 0x811c9dc5;
   const input = salt === 0 ? identifier : `${identifier}:${salt}`;
   for (let index = 0; index < input.length; index += 1) {
@@ -243,13 +250,32 @@ function parseBind(
   blockId: string,
 ): LineParse {
   // Pattern: <name>(<slot>) ro|rw [f32|i32|byte]
-  // `<name>` is either an identifier (`tmp0`) or a quoted string (`"my list"`).
-  // Quoted names carry an `internalName` (FNV-1a hash) used by the WGSL
-  // emitter to derive a valid identifier; unquoted names go through the
-  // existing reserved-keyword rename pass (no `internalName` set here).
-  const m = tail.match(
-    /^("[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(\d+)\s*\)\s+(ro|rw)(?:\s+(f32|i32|byte))?\s*$/i,
-  );
+  // `<name>` accepts either an identifier (`tmp0`) or a quoted string
+  // (`"my list"`). Quoted names carry an `internalName` (FNV-1a hash)
+  // used by the WGSL emitter to derive a valid identifier; unquoted
+  // names go through the existing reserved-keyword rename pass.
+  //
+  // We split on the first `(` so the name token can be quoted (a quoted
+  // name may legally contain parentheses in future DSL extensions, so we
+  // only split on the *unquoted* opening paren here — for now a quoted
+  // name cannot contain `(`, but the regex below accepts the surface
+  // form once extracted).
+  const splitAt = findUnquotedOpenParen(tail);
+  if (splitAt < 0) {
+    return {
+      directive: null,
+      diagnostic: makeDiag(
+        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte]', got '${truncate(tail, 32)}'`,
+        regionId,
+        blockId,
+        line,
+        0,
+      ),
+    };
+  }
+  const nameToken = tail.slice(0, splitAt).trim();
+  const after = tail.slice(splitAt + 1);
+  const m = after.match(/^\s*(\d+)\s*\)\s+(ro|rw)(?:\s+(f32|i32|byte))?\s*$/i);
   if (!m) {
     return {
       directive: null,
@@ -262,11 +288,9 @@ function parseBind(
       ),
     };
   }
-  const nameToken = m[1] ?? '';
-  const slotStr = m[2] ?? '0';
-  const slot = Number.parseInt(slotStr, 10);
-  const rw = (m[3] ?? '').toLowerCase() === 'rw';
-  const dtypeRaw = (m[4] ?? 'f32').toLowerCase();
+  const slot = Number.parseInt(m[1] ?? '0', 10);
+  const rw = (m[2] ?? '').toLowerCase() === 'rw';
+  const dtypeRaw = (m[3] ?? 'f32').toLowerCase();
   const dtype = (dtypeRaw === 'i32' || dtypeRaw === 'byte') ? dtypeRaw : 'f32';
   const parsed = parseNameToken(nameToken);
   if (parsed.diagnostic) {
@@ -285,19 +309,45 @@ function parseBind(
   return { directive, diagnostic: null };
 }
 
+/**
+ * Find the index of the first unquoted `(` in `s`. Quoted segments
+ * (between matching `"` characters) are skipped so a quoted name
+ * containing future-extension characters (or whitespace) does not
+ * confuse the split. Returns -1 when no unquoted `(` is found.
+ */
+function findUnquotedOpenParen(s: string): number {
+  let inQuote = false;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '\\' && inQuote && i + 1 < s.length) {
+      // Skip escaped char inside a quoted string.
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inQuote = !inQuote;
+      continue;
+    }
+    if (!inQuote && ch === '(') return i;
+  }
+  return -1;
+}
+
 function parseMax(
   tail: string,
   line: number,
   regionId: string,
   blockId: string,
 ): LineParse {
-  // Pattern: <ident>=<uint>
-  const m = tail.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)\s*$/);
-  if (!m) {
+  // Pattern: <name>=<uint> where <name> is identifier-or-quoted (§Phase
+  // E+). We split on the *unquoted* `=` so a quoted group name with
+  // future extension characters does not break the parse.
+  const eq = findUnquotedEq(tail);
+  if (eq < 0) {
     return {
       directive: null,
       diagnostic: makeDiag(
-        `malformed @max: expected '<group>=<uint>', got '${truncate(tail, 32)}'`,
+        `malformed @max: expected '<name>=<uint>', got '${truncate(tail, 32)}'`,
         regionId,
         blockId,
         line,
@@ -305,13 +355,30 @@ function parseMax(
       ),
     };
   }
-  const groupName = m[1] ?? '';
-  const value = Number.parseInt(m[2] ?? '0', 10);
+  const nameToken = tail.slice(0, eq).trim();
+  const valueStr = tail.slice(eq + 1).trim();
+  if (!/^\d+$/.test(valueStr)) {
+    return {
+      directive: null,
+      diagnostic: makeDiag(
+        `malformed @max: expected '<name>=<uint>', got '${truncate(tail, 32)}'`,
+        regionId,
+        blockId,
+        line,
+        0,
+      ),
+    };
+  }
+  const parsed = parseNameToken(nameToken);
+  if (parsed.diagnostic) {
+    return { directive: null, diagnostic: { ...parsed.diagnostic, regionId, blockId, line } };
+  }
+  const value = Number.parseInt(valueStr, 10);
   if (!Number.isFinite(value) || value < 0) {
     return {
       directive: null,
       diagnostic: makeDiag(
-        `@max value must be a non-negative integer (got '${m[2] ?? ''}')`,
+        `@max value must be a non-negative integer (got '${valueStr}')`,
         regionId,
         blockId,
         line,
@@ -319,8 +386,32 @@ function parseMax(
       ),
     };
   }
-  const directive: MaxDirective = { kind: 'max', groupName, value, line, column: 0 };
+  const directive: MaxDirective = {
+    kind: 'max',
+    name: parsed.name,
+    ...(parsed.internalName ? { internalName: parsed.internalName } : {}),
+    value,
+    line,
+    column: 0,
+  };
   return { directive, diagnostic: null };
+}
+
+function findUnquotedEq(s: string): number {
+  let inQuote = false;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '\\' && inQuote && i + 1 < s.length) {
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inQuote = !inQuote;
+      continue;
+    }
+    if (!inQuote && ch === '=') return i;
+  }
+  return -1;
 }
 
 function parseWorkgroupSize(
@@ -352,7 +443,7 @@ function parseWorkgroupSize(
     return {
       directive: null,
       diagnostic: makeDiag(
-        `@workgroup_size entries must be â¥ 1, got (${x},${y},${z})`,
+        `@workgroup_size entries must be ≥ 1, got (${x},${y},${z})`,
         regionId,
         blockId,
         line,
@@ -371,12 +462,13 @@ function parseRepeat(
   blockId: string,
   repeatBlockId: string,
 ): LineParse {
-  // Pattern: R<i>[:<axis>] = <formula>[, max=<uint>]
-  // The formula may contain anything up to a trailing `, max=...`.
-  // We split on the first `=` to get the head (left) and the tail right
-  // of `=`. Then look for trailing `, max=<uint>` on the right tail.
-  const eq = tail.indexOf('=');
-  if (eq === -1) {
+  // Pattern: <name>[:<axis>] = <formula>[, max=<uint>]
+  // Both `<name>` and `<axis>` accept either an identifier or a quoted
+  // string (§Phase E+). The formula may contain anything up to a trailing
+  // `, max=...`. We split on the first *unquoted* `=` so a quoted name
+  // containing future-extension characters does not break the parse.
+  const eq = findUnquotedEq(tail);
+  if (eq < 0) {
     return {
       directive: null,
       diagnostic: makeDiag(
@@ -399,23 +491,26 @@ function parseRepeat(
     right = right.slice(0, right.length - maxMatch[0].length).trim();
   }
 
-  // Head: `R<digit>` or `R<digit>:<axis>`.
-  const headMatch = head.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*([A-Za-z_][A-Za-z0-9_]*))?$/);
-  if (!headMatch) {
-    return {
-      directive: null,
-      diagnostic: makeDiag(
-        `malformed @repeat head: expected 'R<i>[:<axis>]', got '${truncate(head, 32)}'`,
-        regionId,
-        blockId,
-        line,
-        0,
-      ),
-    };
+  // Head: `<name>` or `<name>:<axis>`. Find the unquoted `:` between
+  // them. When absent, the whole head is `<name>` and `<axis>` defaults
+  // to `'sequential'`.
+  const colon = findUnquotedColon(head);
+  const nameRaw = (colon < 0 ? head : head.slice(0, colon)).trim();
+  const axisRaw = (colon < 0 ? '' : head.slice(colon + 1)).trim();
+  const nameParsed = parseNameToken(nameRaw);
+  if (nameParsed.diagnostic) {
+    return { directive: null, diagnostic: { ...nameParsed.diagnostic, regionId, blockId, line } };
   }
-  const name = headMatch[1] ?? '';
-  const axisRaw = headMatch[2] ?? 'sequential';
-  const axis = normalizeAxis(axisRaw);
+  let axis: AxisFinal;
+  if (axisRaw.length === 0) {
+    axis = 'sequential';
+  } else {
+    const axisParsed = parseNameToken(axisRaw);
+    if (axisParsed.diagnostic) {
+      return { directive: null, diagnostic: { ...axisParsed.diagnostic, regionId, blockId, line } };
+    }
+    axis = normalizeAxis(axisParsed.name);
+  }
 
   if (right.length === 0) {
     return {
@@ -432,7 +527,8 @@ function parseRepeat(
 
   const directive: RepeatDirective = {
     kind: 'repeat',
-    name,
+    name: nameParsed.name,
+    ...(nameParsed.internalName ? { internalName: nameParsed.internalName } : {}),
     axis,
     formula: right,
     max,
@@ -441,6 +537,23 @@ function parseRepeat(
     column: 0,
   };
   return { directive, diagnostic: null };
+}
+
+function findUnquotedColon(s: string): number {
+  let inQuote = false;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '\\' && inQuote && i + 1 < s.length) {
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inQuote = !inQuote;
+      continue;
+    }
+    if (!inQuote && ch === ':') return i;
+  }
+  return -1;
 }
 
 function parseMap(
@@ -528,5 +641,5 @@ function makeDiag(
 }
 
 function truncate(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max - 1) + 'â¦';
+  return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }

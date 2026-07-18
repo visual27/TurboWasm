@@ -273,26 +273,32 @@ Example:
 @bind buff_r(2) rw
 ```
 
-##### Quoted names (spaces / punctuation)
+##### Quoted names (spaces / punctuation) — recommended
 
 Scratch allows variable and list names that contain spaces, such as
-`"my list"`. Quote them in `@bind` and `@map` declarations to use
-these names verbatim:
+`"my list"`. **Quoting is the recommended form for every identifier
+slot** in the `@compute` DSL — `@bind`, `@max`, `@repeat`, and `@map`
+all accept either a plain identifier or a double-quoted string. The
+quoted form is unambiguous even when names contain punctuation or
+extend into future DSL extensions; unquoted identifiers continue to
+work for backwards compatibility.
 
 ```
 @compute
-@bind "my list"(0) rw f32      ; name='my list', internalName=__tw_<hash>
-@bind tmp0(1) ro f32           ; unquoted names work as before
-@repeat R0:global_x = 64
-@map idx <- 0
+@bind "my list"(0) rw f32      ; @bind with quoted name (recommended)
+@bind tmp0(1) ro f32           ; unquoted names still work
+@max "my group"=64             ; @max.groupName also accepts quoted
+@repeat "R0":global_x = "my group"   ; @repeat name + axis quoted
+@map "idx with space" <- 0     ; @map var quoted
 ```
 
 The quoted name is preserved as the `name` field on the directive
 (used for runtime lookups via `__getListBuffer`). The parser derives
 an `internalName` (FNV-1a hash, formatted as `__tw_<8 hex digits>`)
 for the WGSL side; the emitter uses it for the `@group(0) @binding(N)`
-storage declaration and the `ScratchUniforms.<name>_length` field.
-`@map` quoted names follow the same shape.
+storage declaration, the `ScratchUniforms.<name>_length` field, and
+the `for`/`let` bindings. Quoted references in formulas (`"my list"`)
+resolve through the rename pass to the same internal name.
 
 Escape sequences inside a quoted name: `\"` → `"`, `\\` → `\`; any
 other `\<char>` drops the backslash and keeps the literal character
@@ -301,6 +307,38 @@ other `\<char>` drops the backslash and keeps the literal character
 Canonical keys (cache hits) are based on `name`, so two regions that
 bind the same Scratch list — quoted or not — share the same compiled
 pipeline.
+
+##### Formula syntax sugar
+
+The `@map <var> <- <formula>` and `@repeat R<i> = <formula>` slots
+accept a small set of general notations and rewrite them to the
+underlying scratch-compat definitions during WGSL emission. The
+user-facing surface stays language-natural; the emitter handles the
+expansion.
+
+| DSL form | Expands to |
+| --- | --- |
+| `name[idx]` | `scratch_list_read_{dtype}(&<emit>, scratch_index_clamp(idx, u_scratch.<emit>_length), u_scratch.<emit>_length)` |
+| `len(name)` | `u_scratch.<emit>_length` |
+| `bool(x)` | `select(0.0, 1.0, x != 0.0)` |
+
+`<emit>` is the WGSL-safe identifier for the `@bind` (the original
+name if WGSL-safe, otherwise the FNV-1a `internalName`). `<dtype>`
+matches the binding's `f32`/`i32`/`byte` declaration. `bool(x)`
+mirrors `scratch_bool` from `scratch-compat.ts`: NaN-safe coercion to
+`0.0` / `1.0`. `name` and `idx` may be any expression; nested sugar
+inside the subscript or argument is recursively expanded.
+
+```
+@bind my_list(0) ro f32
+@repeat R0:global_x = len(my_list), max=64
+@map flag <- bool(my_list[R0])
+```
+
+Subscript and `len(...)` targets that do not resolve to a `@bind`
+directive in the same region surface a `gpu.formula_sugar_undeclared_target`
+diagnostic; the formula body is left as-is so the user can fix the
+typo without losing the rest of the WGSL output.
 
 #### `@max <ident>=<uint>`
 

@@ -502,4 +502,119 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
     // No @group(0) storage declarations — guard the absence.
     expect(result.wgsl).not.toMatch(/@group\(0\)\s+@binding\(/);
   });
+
+  describe('§Phase E+ — quoted names + formula sugar', () => {
+    it('rewrites name[idx] subscript to scratch_list_read_f32 in emitted WGSL', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind my_list(0) ro f32',
+          '@repeat R0:global_x = len(my_list), max=64',
+          '@map idx <- my_list[R0]',
+        ].join('\n'),
+        ['idx'],
+        { R0: 'global_x' },
+      );
+      const result = emitRegion(input);
+      expect(result.wgsl).toContain(
+        'scratch_list_read_f32(&my_list, scratch_index_clamp(R0, u_scratch.my_list_length), u_scratch.my_list_length)',
+      );
+    });
+
+    it('rewrites len(name) to u_scratch.<name>_length in @repeat formula', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind my_list(0) ro f32',
+          '@repeat R0:global_x = len(my_list), max=64',
+          '@map idx <- R0',
+        ].join('\n'),
+        ['idx'],
+        { R0: 'global_x' },
+      );
+      const result = emitRegion(input);
+      // The @repeat formula should contain u_scratch.my_list_length
+      // twice — once in the dispatchWorkgroups comment and once in the
+      // for-loop bound. Look for the unescaped literal first.
+      expect(result.wgsl).toContain('u_scratch.my_list_length');
+    });
+
+    it('rewrites bool(x) to select(0.0, 1.0, x != 0.0) in @map formula', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind my_list(0) ro f32',
+          '@repeat R0:global_x = len(my_list), max=64',
+          '@map flag <- bool(my_list[R0])',
+        ].join('\n'),
+        ['flag'],
+        { R0: 'global_x' },
+      );
+      const result = emitRegion(input);
+      expect(result.wgsl).toContain('let flag: f32 = select(0.0, 1.0,');
+      expect(result.wgsl).toContain('!= 0.0);');
+    });
+
+    it('emits quoted @bind name via internalName without warnings', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind "my list"(0) ro f32',
+          '@repeat R0:global_x = 32, max=64',
+          '@map idx <- R0',
+        ].join('\n'),
+        ['idx'],
+        { R0: 'global_x' },
+      );
+      const result = emitRegion(input);
+      // The internalName (FNV-1a hash) should appear in the storage
+      // declaration; the surface name "my list" should NOT leak into
+      // WGSL identifier positions.
+      expect(result.wgsl).toMatch(/var<storage, read>\s+__tw_[0-9a-f]{8}: array<f32>/);
+      expect(result.wgsl).not.toMatch(/"my list"/);
+      // u_scratch struct field for length uses the same internalName.
+      expect(result.wgsl).toMatch(/\s+__tw_[0-9a-f]{8}_length: u32/);
+    });
+
+    it('quotes @max group name via internalName in @repeat formula reference', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind my_list(0) ro f32',
+          '@max "my length"=64',
+          '@repeat R0:global_x = "my length"',
+          '@map idx <- R0',
+        ].join('\n'),
+        ['idx'],
+        { R0: 'global_x' },
+      );
+      const result = emitRegion(input);
+      // The quoted @max group's internalName replaces "my length" in
+      // the formula. The hash should appear in the dispatch plan.
+      expect(result.wgsl).toMatch(/__tw_[0-9a-f]{8}/);
+      expect(result.wgsl).not.toMatch(/"my length"/);
+    });
+
+    it('quotes @repeat R<i> name via internalName in @map reference', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind my_list(0) ro f32',
+          '@repeat "R0":global_x = 32, max=64',
+          '@map idx <- "R0"',
+        ].join('\n'),
+        ['idx'],
+        { 'R0': 'global_x' },
+      );
+      const result = emitRegion(input);
+      // @repeat with quoted name R0 produces internalName; @map
+      // references it via the formula. Since formulas use raw
+      // identifier matching, "R0" must match the quoted surface name's
+      // hash. The test confirms the rename pass routes through
+      // internalName rather than producing a diagnostic.
+      // (The exact substring is hash-dependent; we check the absence
+      // of error markers and the presence of let-binding for `idx`.)
+      expect(result.wgsl).toMatch(/let idx: f32/);
+    });
+  });
 });

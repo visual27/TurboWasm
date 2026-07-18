@@ -100,6 +100,21 @@ describe('formatScgpuDocument', () => {
     expect(new Set(positions).size).toBe(1);
   });
 
+  it('aligns quoted and unquoted @bind columns when requested', () => {
+    const text = [
+      '@compute',
+      '@bind "my list"(1) rw f32',
+      '@bind tmp0(0) ro',
+    ].join('\n');
+    const out = formatScgpuDocument(text, { alignedBinds: true });
+    const binds = out.split('\n').filter((line) => line.startsWith('@bind'));
+    const positions = binds.map((line) =>
+      line.indexOf('ro') >= 0 ? line.indexOf('ro') : line.indexOf('rw'),
+    );
+    expect(new Set(positions).size).toBe(1);
+    expect(out).toContain('@bind "my list"(1) rw f32');
+  });
+
   it('sorts @bind directives by slot', () => {
     const text = [
       '@compute',

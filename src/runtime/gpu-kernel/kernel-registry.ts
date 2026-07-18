@@ -234,7 +234,7 @@ function stripDirectiveVolatile(
         dtype: d.dtype,
       };
     case 'max':
-      return { kind: d.kind, groupName: d.groupName, value: d.value };
+      return { kind: d.kind, name: d.name, value: d.value };
     case 'workgroup_size':
       return { kind: d.kind, x: d.x, y: d.y, z: d.z };
     case 'repeat':

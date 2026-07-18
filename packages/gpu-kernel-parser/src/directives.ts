@@ -53,7 +53,7 @@ export type KnownAxis = (typeof KNOWN_AXES)[number];
 export const DIRECTIVE_DESCRIPTIONS: Record<DirectiveName, string> = {
   compute:
     'Region marker. Begins a `@compute` block; subsequent directives belong to the same region until the next marker.',
-  bind: 'Buffer declaration. Form: `@bind <name>(<slot>) (ro|rw) [f32|i32|byte]`. dtype defaults to `f32`.',
+  bind: 'Buffer declaration. Form: `@bind <name>(<slot>) (ro|rw) [f32|i32|byte]`; quote names containing spaces or punctuation. dtype defaults to `f32`.',
   max: 'Static size hint. Form: `@max <group>=<uint>`. Not read by the emitter; retained as documentation.',
   workgroup_size:
     'Workgroup dimensions. Form: `@workgroup_size(x[,y[,z]])`. Each value must be ≥ 1. Defaults to (64,1,1).',

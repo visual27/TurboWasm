@@ -113,15 +113,23 @@ export interface BindDirective {
 }
 
 /**
- * `@max length=<uint>` or `@max <groupName>=<uint>`.
+ * `@max length=<uint>` or `@max <name>=<uint>`.
  *
- * `groupName` is either `'length'` (dispatch buffer cap) or any other
+ * `name` is either `'length'` (dispatch buffer cap) or any other
  * identifier the emitter will lookup against an `@repeat` declaration
  * (e.g. `@max aabb_width=64` paired with `@repeat R0:global_x = aabb_width`).
+ *
+ * `internalName` (§Phase E+): when the user writes a quoted group name
+ * like `@max "my group"=64`, `name` keeps the surface form (used as the
+ * canonical key) and `internalName` carries a FNV-1a-hashed WGSL-safe
+ * identifier. The WGSL emitter substitutes every reference to `name` in
+ * `@repeat` / `@map` formulas with `internalName` when set; the
+ * rename-and-collision pass lives in `wgsl-emitter.ts:renameIdentifiers`.
  */
 export interface MaxDirective {
   kind: 'max';
-  groupName: string;
+  name: string;
+  internalName?: string;
   value: number;
   line: number;
   column: number;
@@ -148,10 +156,16 @@ export interface WorkgroupSizeDirective {
  * `name` is e.g. `R0`. `axis` defaults to `'sequential'` (the safe
  * fallback) when omitted. `formula` is the raw text after `=` —
  * WGSL-allowed syntax per spec §5.2a (the emitter handles parsing).
+ *
+ * `internalName` (§Phase E+): same contract as `BindDirective.internalName`
+ * — set when the user writes a quoted `@repeat` name. The emitter uses
+ * `internalName` in `for` bindings and `let` references; cascade-analysis
+ * still keys on `name` so canonical keys remain stable across quoting.
  */
 export interface RepeatDirective {
   kind: 'repeat';
   name: string;
+  internalName?: string;
   axis: AxisFinal;
   formula: string;
   /**

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseComputeComment } from '../src/comment-parser';
 import type { ParsedComment } from '../src/types';
@@ -9,6 +10,18 @@ function mkComment(text: string, blockId = 'blk'): ParsedComment {
 }
 
 describe('parseComputeComment', () => {
+  it('matches the Viewer runtime parser source verbatim', () => {
+    const packageSource = readFileSync(
+      new URL('../src/comment-parser.ts', import.meta.url),
+      'utf8',
+    );
+    const runtimeSource = readFileSync(
+      new URL('../../../src/runtime/gpu-kernel/comment-parser.ts', import.meta.url),
+      'utf8',
+    );
+    expect(packageSource).toBe(runtimeSource);
+  });
+
   it('parses @bind, @max, @workgroup_size, @repeat, @map in a single comment', () => {
     const text = [
       '@compute',
@@ -230,6 +243,28 @@ describe('parseComputeComment', () => {
       const map = result.directives.find((d) => d.kind === 'map');
       expect(map).toMatchObject({ kind: 'map', var: 'idx', formula: '0' });
       expect((map as { internalName?: string }).internalName).toBeUndefined();
+    });
+  });
+
+  describe('quoted names in @max / @repeat (§Phase E+ parser-package mirror)', () => {
+    it('parses @max "my group"=64 with internalName', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@max "my group"=64'),
+        REGION,
+      );
+      const max = result.directives.find((d) => d.kind === 'max');
+      expect(max).toMatchObject({ kind: 'max', name: 'my group', value: 64 });
+      expect((max as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
+    });
+
+    it('parses @repeat "R0":"global_x" = 32 with quoted name and quoted axis', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat "R0":"global_x" = 32'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'global_x', formula: '32' });
+      expect((repeat as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
     });
   });
 });

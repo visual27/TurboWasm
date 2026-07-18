@@ -1,15 +1,31 @@
+import { rewriteFormula } from './formula-rewrite';
 import { scratchCompatHeader } from './scratch-compat';
 import type {
   AxisFinal,
   BindDirective,
   Diagnostic,
   MapDirective,
+  MaxDirective,
   ParsedProject,
   RawBlock,
   RegionVerdict,
   RepeatDirective,
   WorkgroupSizeDirective,
 } from './types';
+
+/**
+ * Structural subset of `MaxDirective` that `renameIdentifiers` reads.
+ * Defined as a local type to keep the function signature stable across
+ * future field additions.
+ */
+export type MaxDirectiveLike = Pick<MaxDirective, 'name' | 'internalName' | 'value'>;
+
+/**
+ * Structural subset of `RepeatDirective` that `renameIdentifiers` reads.
+ * Defined as a local type to keep the function signature stable across
+ * future field additions.
+ */
+export type RepeatDirectiveLike = Pick<RepeatDirective, 'name' | 'internalName'>;
 
 export interface EmitInput {
   regionVerdict: RegionVerdict;
@@ -238,6 +254,8 @@ export function renameIdentifiers(
   maps: readonly MapDirective[],
   bindings: readonly BindDirective[] = [],
   regionId = '',
+  maxes: readonly MaxDirectiveLike[] = [],
+  repeats: readonly RepeatDirectiveLike[] = [],
 ): IdentifierRenameResult {
   const renameTable: Record<string, string> = {};
   const bindingRenames: Record<string, string> = {};
@@ -324,6 +342,69 @@ export function renameIdentifiers(
     });
   }
 
+  // 3. §Phase E+ — @max group names. A quoted `@max "my group"=N`
+  //    carries `internalName`. Any `@repeat`/`@map` formula that
+  //    references the surface name must be rewritten to `internalName`
+  //    for WGSL. Unquoted group names that collide with WGSL keywords
+  //    are renamed through the same collision loop as @map.
+  for (const max of maxes) {
+    if (!max.name) continue;
+    if (max.internalName) {
+      if (renameTable[max.name] === undefined) {
+        renameTable[max.name] = max.internalName;
+        occupied.add(max.internalName);
+      }
+      continue;
+    }
+    if (!RESERVED_IDENTIFIERS.has(max.name)) continue;
+    if (renameTable[max.name] !== undefined) continue;
+    let salt = 0;
+    let renamed = hashedIdentifier(max.name, salt);
+    while (occupied.has(renamed) || RESERVED_IDENTIFIERS.has(renamed)) {
+      salt += 1;
+      renamed = hashedIdentifier(max.name, salt);
+    }
+    occupied.add(renamed);
+    renameTable[max.name] = renamed;
+    diagnostics.push({
+      severity: 'warn',
+      code: 'gpu.identifier_collision',
+      message: `@max name '${max.name}' was renamed to '${renamed}' for WGSL emission`,
+      regionId,
+    });
+  }
+
+  // 4. §Phase E+ — @repeat names. Same collision logic; quoted @repeat
+  //    names (`@repeat "R0":global_x = ...`) carry `internalName` so the
+  //    emitter can rewrite any `@map idx <- "R0"` reference to a valid
+  //    WGSL identifier.
+  for (const repeat of repeats) {
+    if (!repeat.name) continue;
+    if (repeat.internalName) {
+      if (renameTable[repeat.name] === undefined) {
+        renameTable[repeat.name] = repeat.internalName;
+        occupied.add(repeat.internalName);
+      }
+      continue;
+    }
+    if (!RESERVED_IDENTIFIERS.has(repeat.name)) continue;
+    if (renameTable[repeat.name] !== undefined) continue;
+    let salt = 0;
+    let renamed = hashedIdentifier(repeat.name, salt);
+    while (occupied.has(renamed) || RESERVED_IDENTIFIERS.has(renamed)) {
+      salt += 1;
+      renamed = hashedIdentifier(repeat.name, salt);
+    }
+    occupied.add(renamed);
+    renameTable[repeat.name] = renamed;
+    diagnostics.push({
+      severity: 'warn',
+      code: 'gpu.identifier_collision',
+      message: `@repeat name '${repeat.name}' was renamed to '${renamed}' for WGSL emission`,
+      regionId,
+    });
+  }
+
   return { renameTable, diagnostics, bindingRenames };
 }
 
@@ -338,6 +419,9 @@ export function emitRegion(input: EmitInput): EmitResult {
     .filter((item): item is BindDirective => item.kind === 'bind')
     .slice()
     .sort((a, b) => a.slot - b.slot);
+  const maxes = regionVerdict.directives.filter(
+    (item): item is MaxDirective => item.kind === 'max',
+  );
   const workgroupDirective = regionVerdict.directives.find(
     (item): item is WorkgroupSizeDirective => item.kind === 'workgroup_size',
   );
@@ -357,7 +441,7 @@ export function emitRegion(input: EmitInput): EmitResult {
     });
   }
 
-  const renamed = renameIdentifiers(maps, bindings, regionVerdict.regionId);
+  const renamed = renameIdentifiers(maps, bindings, regionVerdict.regionId, maxes, repeats);
   diagnostics.push(...renamed.diagnostics);
   const blocks = collectTargetBlocks(input.parsedProject, regionVerdict.spriteId);
   const bindingNames = createBindingNames(bindings);
@@ -395,7 +479,12 @@ export function emitRegion(input: EmitInput): EmitResult {
   for (const binding of bindings) lines.push(emitBinding(binding, bindingNames));
   if (bindings.length > 0) lines.push('');
 
-  const dispatchPlan = computeDispatchPlan(repeats, regionVerdict, workgroupSize);
+  const dispatchPlan = computeDispatchPlan(repeats, regionVerdict, workgroupSize, {
+    bindings,
+    renameTable: renamed.renameTable,
+    bindingRenameTable: renamed.bindingRenames,
+    regionId: regionVerdict.regionId,
+  });
   lines.push(`// ${formatDispatchPlan(dispatchPlan)}`);
   lines.push(
     `@compute @workgroup_size(${workgroupSize.x},${workgroupSize.y},${workgroupSize.z})`,
@@ -455,6 +544,19 @@ function safeIdentifier(identifier: string): string {
     return identifier;
   }
   return hashedIdentifier(identifier, 0);
+}
+
+/**
+ * Public version of `safeIdentifier` for use by adjacent modules (e.g.
+ * `formula-rewrite.ts`) that need the same collision-aware identifier
+ * derivation. Returns the surface name when it is a WGSL-safe
+ * identifier and not a reserved keyword; otherwise returns the
+ * FNV-1a-hashed form. Used as the fallback when `renameTable` doesn't
+ * yet know about a binding (e.g. when formula-rewrite runs before
+ * `renameIdentifiers`).
+ */
+export function safeIdentifierForBinding(identifier: string): string {
+  return safeIdentifier(identifier);
 }
 
 function collectTargetBlocks(project: ParsedProject, spriteId: string): Record<string, RawBlock> {
@@ -573,8 +675,18 @@ function emitFormula(
   context: EmitterContext,
 ): string {
   validateFormula(rawFormula, directive, context);
+  // §Phase E+ — apply general-notation sugar before identifier rewrite
+  // so the rewrite pass sees only scratch-compat primitives.
+  const rewrite = rewriteFormula(rawFormula, {
+    bindings: context.bindings,
+    renameTable: context.renameTable,
+    regionId: context.regionId,
+    blockId: directive.blockId,
+    line: directive.line,
+  });
+  if (rewrite.diagnostics.length > 0) context.diagnostics.push(...rewrite.diagnostics);
   let formula = renameFormulaIdentifiers(
-    rawFormula,
+    rewrite.formula,
     context.renameTable,
     context.bindingRenameTable,
   );
@@ -691,12 +803,23 @@ function renameFormulaIdentifiers(
   // that references `let` would emit `let <hashed>: array<f32>` as the
   // storage variable but the formula would still emit `let` verbatim,
   // shadowing the WGSL keyword inside the function body.
-  return formula.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (identifier) => {
-    if (bindingRenames && bindingRenames[identifier] !== undefined) {
-      return bindingRenames[identifier];
-    }
-    return renameTable[identifier] ?? identifier;
+  //
+  // §Phase E+ — also rewrite quoted-string references (`"my list"`)
+  // whose content matches an entry in `renameTable`. This lets the
+  // user reference a quoted @bind/@max/@repeat by its surface name in
+  // formulas. Quoted references resolve to the same `internalName` /
+  // hashed emit name as the unquoted form.
+  const lookup = (key: string): string | undefined => {
+    if (bindingRenames && bindingRenames[key] !== undefined) return bindingRenames[key];
+    return renameTable[key];
+  };
+  let out = formula.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (identifier) => lookup(identifier) ?? identifier);
+  out = out.replace(/"((?:[^"\\]|\\.)*)"/g, (match, body: string) => {
+    const renamed = lookup(body);
+    if (!renamed) return match;
+    return renamed;
   });
+  return out;
 }
 
 function substituteBinaryOperator(
@@ -767,6 +890,12 @@ function computeDispatchPlan(
   repeats: readonly RepeatDirective[],
   verdict: RegionVerdict,
   workgroupSize: Readonly<WorkgroupSize>,
+  context: {
+    bindings: readonly BindDirective[];
+    renameTable: Readonly<Record<string, string>>;
+    bindingRenameTable: Readonly<Record<string, string>>;
+    regionId: string;
+  } | null = null,
 ): DispatchPlan {
   const formulas: string[][] = [[], [], []];
   for (const repeat of repeats) {
@@ -774,9 +903,30 @@ function computeDispatchPlan(
     if (axis === 'sequential' || axis.startsWith('local_')) continue;
     const dimension = axis.endsWith('_y') ? 1 : axis.endsWith('_z') ? 2 : 0;
     const denominator = dimension === 0 ? workgroupSize.x : dimension === 1 ? workgroupSize.y : workgroupSize.z;
+    // §Phase E+ — apply the same formula-rewrite and rename pass that
+    // `emitFormula` applies so the dispatch comment reflects the
+    // scratch-compat expansion of `len(name)`, `bool(x)`, and quoted
+    // group names. Without this, `len(my_list)` in a `@repeat` formula
+    // would survive in the dispatch plan but the WGSL body would
+    // already use `u_scratch.my_list_length`, causing a textual drift.
+    let expanded = repeat.formula;
+    if (context) {
+      const rewrite = rewriteFormula(repeat.formula, {
+        bindings: context.bindings,
+        renameTable: context.renameTable,
+        regionId: context.regionId,
+        blockId: repeat.blockId,
+        line: repeat.line,
+      });
+      expanded = renameFormulaIdentifiers(
+        rewrite.formula,
+        context.renameTable,
+        context.bindingRenameTable,
+      );
+    }
     const formula = axis.startsWith('workgroup_')
-      ? repeat.formula
-      : `ceil(${repeat.formula} / ${denominator})`;
+      ? expanded
+      : `ceil(${expanded} / ${denominator})`;
     formulas[dimension]?.push(formula);
   }
   const dims: ['x' | 'y' | 'z', number][] = [

@@ -95,16 +95,19 @@ describe('comment-parser', () => {
     });
 
     it('reports a non-identifier, non-quoted @bind name as a malformed directive', () => {
-      // The @bind regex rejects `my-list` outright (no identifier
-      // pattern matches it), so the diagnostic is the malformed-@bind
-      // one from parseBind rather than the per-token diagnostic.
+      // §Phase E+: the @bind body parser splits on `(` and runs the
+      // name through `parseNameToken`, so the rejection surfaces as
+      // the per-token "expected identifier or quoted name" diagnostic
+      // rather than the broader "malformed @bind" shape.
       const result = parseComputeComment(
         mkComment('@compute\n@bind my-list(0) ro'),
         REGION,
       );
       expect(result.directives.find((d) => d.kind === 'bind')).toBeUndefined();
       expect(
-        result.diagnostics.some((d) => d.message.startsWith('malformed @bind')),
+        result.diagnostics.some((d) =>
+          d.message.includes('expected identifier or quoted name'),
+        ),
       ).toBe(true);
     });
 
@@ -141,6 +144,89 @@ describe('comment-parser', () => {
       const map = result.directives.find((d) => d.kind === 'map');
       expect(map).toMatchObject({ kind: 'map', var: 'idx', formula: '0' });
       expect((map as { internalName?: string }).internalName).toBeUndefined();
+    });
+  });
+
+  describe('quoted names in @max / @repeat (§Phase E+)', () => {
+    it('parses @max "my group"=64 with internalName', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@max "my group"=64'),
+        REGION,
+      );
+      const max = result.directives.find((d) => d.kind === 'max');
+      expect(max).toMatchObject({ kind: 'max', name: 'my group', value: 64 });
+      expect((max as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it('parses @max length=1024 without internalName (backwards compat)', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@max length=1024'),
+        REGION,
+      );
+      const max = result.directives.find((d) => d.kind === 'max');
+      expect(max).toMatchObject({ kind: 'max', name: 'length', value: 1024 });
+      expect((max as { internalName?: string }).internalName).toBeUndefined();
+    });
+
+    it('parses @repeat "R0":global_x = N with quoted name and quoted axis', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat "R0":"global_x" = 64'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'global_x', formula: '64' });
+      expect((repeat as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it('parses @repeat R0:"axis name" = N with quoted axis only', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat R0:"axis name" = 32'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      // Unknown axis values fall back to 'sequential' (per normalizeAxis)
+      expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'sequential', formula: '32' });
+    });
+
+    it('parses @repeat R0:global_x = "my group" with quoted formula reference', () => {
+      // The formula text "my group" is opaque to the parser; the
+      // @max-renamed reference surfaces in the WGSL emitter, not here.
+      const result = parseComputeComment(
+        mkComment('@compute\n@max "my group"=64\n@repeat R0 = "my group"'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'sequential', formula: '"my group"' });
+    });
+
+    it('reports an empty quoted @max name as a diagnostic', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@max ""=64'),
+        REGION,
+      );
+      expect(result.directives.find((d) => d.kind === 'max')).toBeUndefined();
+      expect(result.diagnostics.some((d) => d.message.includes('empty quoted name'))).toBe(true);
+    });
+
+    it('reports an empty quoted @repeat name as a diagnostic', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat "" = 64'),
+        REGION,
+      );
+      expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+      expect(result.diagnostics.some((d) => d.message.includes('empty quoted name'))).toBe(true);
+    });
+
+    it('keeps an unquoted @repeat name without internalName (backwards compat)', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@repeat R0:global_x = 64'),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'global_x', formula: '64' });
+      expect((repeat as { internalName?: string }).internalName).toBeUndefined();
     });
   });
 

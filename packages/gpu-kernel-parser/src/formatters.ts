@@ -191,7 +191,8 @@ function alignBinds(
   directives: readonly DocumentDirective[],
 ): string[] {
   if (directives.length === 0) return [];
-  const regex = /^(?<prefix>@bind\s+\S+\s*\(\s*\d+\s*\)\s+)(?<rw>ro|rw)(?<rest>.*)$/i;
+  const regex =
+    /^(?<prefix>@bind\s+(?:"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\d+\s*\)\s+)(?<rw>ro|rw)(?<rest>.*)$/i;
   const matches = directives.map((d) => d.raw.trim().match(regex));
   let widest = 0;
   for (const m of matches) {

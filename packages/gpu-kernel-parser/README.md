@@ -8,8 +8,22 @@ This package is a **plain re-export** of the parser logic that ships inside
 the TurboWasm Viewer (`src/runtime/gpu-kernel/comment-parser.ts`). The
 Viewer and the parser package are kept in lock-step: when the Viewer's
 parser is updated, this package is updated at the same time. The parser
-behaviour is intentionally identical to the in-tree parser — see the
-test-suite under `test/` for the canonical examples.
+behaviour is intentionally identical to the in-tree parser —
+`test/comment-parser.test.ts` verifies the source files byte-for-byte.
+
+## Quoted names
+
+`@bind` and `@map` accept double-quoted names containing spaces or
+punctuation. `\"` and `\\` escape quotes and backslashes; other escaped
+characters keep the character and discard the backslash.
+
+```text
+@bind "my list"(0) rw f32
+@map "output index" <- R0
+```
+
+Parsed directives preserve the Scratch name in `name` or `var` and include
+a WGSL-safe `internalName` in `__tw_<hash>` form.
 
 ## API surface
 
