@@ -259,6 +259,19 @@ export function renameIdentifiers(
   //    the body is emitted.
   for (const binding of bindings) {
     if (!binding.name) continue;
+    // §Phase E: quoted names (e.g. `@bind "my list"(0) rw f32`) carry an
+    // `internalName` set by the parser. The surface name may contain
+    // characters that are illegal in a WGSL identifier (spaces,
+    // punctuation) so it must be aliased to `internalName` for every
+    // formula rewrite — not just when it collides with a reserved
+    // keyword. Register `name → internalName` and skip the
+    // reserved-keyword collision check (which would not match anyway).
+    if (binding.internalName) {
+      renameTable[binding.name] = binding.internalName;
+      bindingRenames[binding.name] = binding.internalName;
+      occupied.add(binding.internalName);
+      continue;
+    }
     if (!RESERVED_IDENTIFIERS.has(binding.name)) continue;
     let salt = 0;
     let renamed = hashedIdentifier(binding.name, salt);
@@ -281,6 +294,16 @@ export function renameIdentifiers(
   // 2. @map names — same collision logic.
   for (const map of maps) {
     if (!map.var) continue;
+    // §Phase E: quoted map names carry `internalName`. Mirror the @bind
+    // branch above so formula-side identifier references resolve to the
+    // WGSL `let` binding name.
+    if (map.internalName) {
+      if (renameTable[map.var] === undefined) {
+        renameTable[map.var] = map.internalName;
+        occupied.add(map.internalName);
+      }
+      continue;
+    }
     if (!RESERVED_IDENTIFIERS.has(map.var)) continue;
     if (renameTable[map.var] !== undefined) continue;
     let salt = 0;
@@ -381,6 +404,11 @@ export function emitRegion(input: EmitInput): EmitResult {
 
   const orderedMaps = orderMaps(maps, regionVerdict.cascade.topoOrder);
   for (const map of orderedMaps) {
+    // §Phase E: quoted `@map` names use `internalName` as the WGSL
+    // `let` binding. The collision-rename pass above (renamed.renameTable)
+    // already records `var → internalName` for quoted names, so falling
+    // through to `renameTable[map.var]` covers both quoted and reserved
+    // keyword collisions.
     const emittedName = renamed.renameTable[map.var] ?? map.var;
     const formula = emitFormula(map.formula, map, context);
     lines.push(`  let ${emittedName}: f32 = ${formula};`);
@@ -441,6 +469,17 @@ function createBindingNames(bindings: readonly BindDirective[]): Map<string, str
   const names = new Map<string, string>();
   const occupied = new Set<string>();
   for (const binding of bindings) {
+    // Quoted names (§Phase E) bypass the safeIdentifier round-trip —
+    // `internalName` is already a valid FNV-1a-hashed WGSL identifier,
+    // and the host-side `name` (which may contain spaces or punctuation)
+    // is not a valid WGSL identifier. The `internalName` is also unique
+    // by construction (FNV-1a of a 32-bit salt), so we can register it
+    // directly without a salt loop.
+    if (binding.internalName) {
+      names.set(binding.name, binding.internalName);
+      occupied.add(binding.internalName);
+      continue;
+    }
     let name = safeIdentifier(binding.name);
     let salt = 0;
     while (occupied.has(name)) {

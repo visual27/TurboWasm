@@ -37,6 +37,113 @@ describe('comment-parser', () => {
     expect(map).toMatchObject({ kind: 'map', var: 'idx0' });
   });
 
+  describe('quoted names (§Phase E)', () => {
+    it('parses @bind "my list"(0) rw f32 with hashed internalName', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind "my list"(0) rw f32'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({
+        kind: 'bind',
+        name: 'my list',
+        slot: 0,
+        readOnly: false,
+        dtype: 'f32',
+      });
+      // internalName is FNV-1a hash of 'my list' (salt=0).
+      expect((bind as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
+      // No diagnostics — quoted name is valid.
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it('keeps an unquoted name without internalName (backwards compat)', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind tmp0(0) rw f32'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({ kind: 'bind', name: 'tmp0', slot: 0, dtype: 'f32' });
+      expect((bind as { internalName?: string }).internalName).toBeUndefined();
+    });
+
+    it('escapes \\" inside a quoted name', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind "weird\\"name"(0) ro'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({ kind: 'bind', name: 'weird"name' });
+    });
+
+    it('escapes \\\\ inside a quoted name', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind "back\\\\slash"(0) ro'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({ kind: 'bind', name: 'back\\slash' });
+    });
+
+    it('reports an empty quoted name as a diagnostic', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind ""(0) ro'),
+        REGION,
+      );
+      expect(result.directives.find((d) => d.kind === 'bind')).toBeUndefined();
+      expect(result.diagnostics.some((d) => d.message.includes('empty quoted name'))).toBe(true);
+    });
+
+    it('reports a non-identifier, non-quoted @bind name as a malformed directive', () => {
+      // The @bind regex rejects `my-list` outright (no identifier
+      // pattern matches it), so the diagnostic is the malformed-@bind
+      // one from parseBind rather than the per-token diagnostic.
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind my-list(0) ro'),
+        REGION,
+      );
+      expect(result.directives.find((d) => d.kind === 'bind')).toBeUndefined();
+      expect(
+        result.diagnostics.some((d) => d.message.startsWith('malformed @bind')),
+      ).toBe(true);
+    });
+
+    it('reports a non-identifier, non-quoted @map var name via parseNameToken', () => {
+      // `@map` is permissive enough that `my-list` slips past the
+      // arrow split, so parseNameToken is the one that fires.
+      const result = parseComputeComment(
+        mkComment('@compute\n@map my-list <- 0'),
+        REGION,
+      );
+      expect(result.directives.find((d) => d.kind === 'map')).toBeUndefined();
+      expect(
+        result.diagnostics.some((d) =>
+          d.message.includes('expected identifier or quoted name'),
+        ),
+      ).toBe(true);
+    });
+
+    it('parses @map "idx with space" <- 0', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@map "idx with space" <- 0'),
+        REGION,
+      );
+      const map = result.directives.find((d) => d.kind === 'map');
+      expect(map).toMatchObject({ kind: 'map', var: 'idx with space', formula: '0' });
+      expect((map as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
+    });
+
+    it('parses an unquoted @map var without internalName (backwards compat)', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@map idx <- 0'),
+        REGION,
+      );
+      const map = result.directives.find((d) => d.kind === 'map');
+      expect(map).toMatchObject({ kind: 'map', var: 'idx', formula: '0' });
+      expect((map as { internalName?: string }).internalName).toBeUndefined();
+    });
+  });
+
   it('flags an unknown directive', () => {
     const text = '@compute\n@bogus foo\n';
     const result = parseComputeComment(mkComment(text), REGION);

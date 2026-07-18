@@ -318,6 +318,36 @@ it('clamps dimensions and total workgroup invocations deterministically', () => 
       expect(result.wgsl).toMatch(/let __tw_[0-9a-f]{8}: f32 = 0;/);
       expect(result.wgsl).not.toMatch(/let "idx with space"/);
     });
+
+    it('data_itemoflist body lookup works with quoted name (E-6 end-to-end)', () => {
+      // Build a region that quotes a list name and references it from
+      // the body via `data_itemoflist`. `bindingForList` keys on
+      // `binding.name === listName`, so the quoted scratch name must
+      // resolve to the directive's `name` field (not its
+      // `internalName`). The WGSL emitter then emits a call into the
+      // hashed storage identifier.
+      const read = block('read', 'data_itemoflist', {
+        inputs: { INDEX: { id: 'idx_read' }, LIST: { id: 'my list', name: 'my list' } },
+      });
+      const idxRead = block('idx_read', 'data_variable', {
+        fields: { VARIABLE: { id: 'idx_read', name: 'idx_read' } },
+      });
+      const project: ParsedProject = makeProject([read, idxRead]);
+      const { regionVerdict } = makeVerdict(
+        ['@compute', '@bind "my list"(0) ro f32', '@map idx_read <- 0'].join('\n'),
+        ['idx_read'],
+      );
+      // Replace input.parsedProject with our hand-built one carrying the
+      // `data_itemoflist` body.
+      const result = emitRegion({ regionVerdict, parsedProject: project });
+      // The body should call scratch_list_read_f32 against the hashed
+      // internalName — proving the bindingForList lookup flowed the
+      // quoted `name` through to the surface, while the WGSL-side
+      // identifier uses the hash.
+      expect(result.wgsl).toMatch(
+        /scratch_list_read_f32\(&__tw_[0-9a-f]{8}, /,
+      );
+    });
   });
 
   it('plumbs workgroupLimits into clampWorkgroupSize', () => {
