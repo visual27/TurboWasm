@@ -263,39 +263,59 @@ function hasCrossIterationAccess(bodyBlocks: RawBlock[], name: string): boolean 
  * block. Cross-iteration is present if:
  *
  *   - One slot is a `data_variable` referencing `name`, **and**
- *   - The other slot is *not* a numeric literal whose text parses to 0.
+ *   - The other slot is *not* a numeric literal whose text parses to 0,
+ *     **and** the other slot is not itself a `data_variable` referencing
+ *     the same `name` (`Ri + Ri` reads the same index value twice in
+ *     one iteration — not a cross-iteration access).
  *
- * Any dynamic partner (`data_variable`, math operator, etc.) is treated
- * as a real offset because we cannot prove it is constant 0.
+ * Any other dynamic partner (`data_variable` with a different id, math
+ * operator, etc.) is treated as a real offset because we cannot prove
+ * it is constant 0.
  */
 function detectOffsetInInputs(
   inputs: Record<string, unknown>,
   name: string,
 ): boolean {
+  const num1 = inputs['NUM1'];
+  const num2 = inputs['NUM2'];
+  // Special-case: `Ri ± Ri` — both slots resolve to the same index value
+  // within a single iteration, so this is not a cross-iteration access.
+  if (isDataVariableFor(num1, name) && isDataVariableFor(num2, name)) {
+    return false;
+  }
   const slots: Array<'NUM1' | 'NUM2'> = ['NUM1', 'NUM2'];
   for (const slot of slots) {
     const operand = inputs[slot];
-    if (!operand || typeof operand !== 'object') continue;
-    const op = operand as Record<string, unknown>;
-    if (op['opcode'] !== 'data_variable') continue;
-    const fields = op['fields'];
-    if (!fields || typeof fields !== 'object') continue;
-    const variable = (fields as Record<string, unknown>)['VARIABLE'];
-    if (!variable || typeof variable !== 'object') continue;
-    const id = (variable as { id?: unknown }).id;
-    if (typeof id !== 'string') continue;
-    if (id.toLowerCase() !== name.toLowerCase()) continue;
+    if (!isDataVariableFor(operand, name)) continue;
     // The partner slot is the other one.
     const partnerSlot = slot === 'NUM1' ? 'NUM2' : 'NUM1';
     const partner = inputs[partnerSlot];
     if (isZeroLiteralShadow(partner)) {
       // Ri ± 0 → safe. Continue scanning in case the other slot also
-      // has a `data_variable` referencing Ri (which would also be safe).
+      // has a `data_variable` referencing a different `name`, which
+      // would re-enter this loop on its own iteration.
       continue;
     }
     return true;
   }
   return false;
+}
+
+/**
+ * True when `value` is a `data_variable` reporter referencing `name`
+ * (case-insensitive). Used by `detectOffsetInInputs` to short-circuit
+ * `Ri ± Ri` and to recognise `data_variable` reporters in either slot.
+ */
+function isDataVariableFor(value: unknown, name: string): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const op = value as Record<string, unknown>;
+  if (op['opcode'] !== 'data_variable') return false;
+  const fields = op['fields'];
+  if (!fields || typeof fields !== 'object') return false;
+  const variable = (fields as Record<string, unknown>)['VARIABLE'];
+  if (!variable || typeof variable !== 'object') return false;
+  const id = (variable as { id?: unknown }).id;
+  return typeof id === 'string' && id.toLowerCase() === name.toLowerCase();
 }
 
 /**

@@ -150,6 +150,76 @@ describe('axis-analysis (D2)', () => {
     expect(result.axes['R0']?.finalAxis).toBe('sequential');
   });
 
+  // B-1: safe `Ri + Ri` (both slots reference the same index var).
+  it('keeps the axis for `Ri + Ri` (same-index partner, no cross-iteration)', () => {
+    const directives = parse('@repeat R0:global_x = R0 + 1\n@map R0 <- 0\n').directives;
+    const r0a = block('r0a', 'data_variable', { fields: { VARIABLE: { id: 'R0', name: 'R0' } } });
+    const r0b = block('r0b', 'data_variable', { fields: { VARIABLE: { id: 'R0', name: 'R0' } } });
+    const op = block('a', 'operator_add', {
+      inputs: {
+        NUM1: r0a,
+        NUM2: r0b,
+      },
+    });
+    const result = analyzeAxes(region(['a']), directives, project([op, r0a, r0b]));
+    expect(result.axes['R0']?.finalAxis).toBe('global_x');
+  });
+
+  it('keeps the axis for `Ri - Ri` (same-index partner, subtract)', () => {
+    const directives = parse('@repeat R0:global_x = R0 + 1\n@map R0 <- 0\n').directives;
+    const r0a = block('r0a', 'data_variable', { fields: { VARIABLE: { id: 'R0', name: 'R0' } } });
+    const r0b = block('r0b', 'data_variable', { fields: { VARIABLE: { id: 'R0', name: 'R0' } } });
+    const op = block('a', 'operator_subtract', {
+      inputs: {
+        NUM1: r0a,
+        NUM2: r0b,
+      },
+    });
+    const result = analyzeAxes(region(['a']), directives, project([op, r0a, r0b]));
+    expect(result.axes['R0']?.finalAxis).toBe('global_x');
+  });
+
+  it('keeps the axis for `0 + Ri` (zero literal in NUM1, partner is Ri)', () => {
+    const directives = parse('@repeat R0:global_x = R0 + 1\n@map R0 <- 0\n').directives;
+    const r0 = block('r0', 'data_variable', { fields: { VARIABLE: { id: 'R0', name: 'R0' } } });
+    const op = block('a', 'operator_add', {
+      inputs: {
+        NUM1: [1, [10, '0']] as unknown as RawBlock,
+        NUM2: r0,
+      },
+    });
+    const result = analyzeAxes(region(['a']), directives, project([op, r0]));
+    expect(result.axes['R0']?.finalAxis).toBe('global_x');
+  });
+
+  it('keeps the axis for `Ri + 0.0` (zero literal as a float shadow)', () => {
+    const directives = parse('@repeat R0:global_x = R0 + 1\n@map R0 <- 0\n').directives;
+    const r0 = block('r0', 'data_variable', { fields: { VARIABLE: { id: 'R0', name: 'R0' } } });
+    const op = block('a', 'operator_add', {
+      inputs: {
+        NUM1: r0,
+        // shadow-encoded `[2, [10, "0.0"]]` style is also a math_number zero.
+        NUM2: [2, [10, '0.0']] as unknown as RawBlock,
+      },
+    });
+    const result = analyzeAxes(region(['a']), directives, project([op, r0]));
+    expect(result.axes['R0']?.finalAxis).toBe('global_x');
+  });
+
+  it('demotes (D2) for `Ri + [1, "abc"]` (string literal shadow — not zero)', () => {
+    const directives = parse('@repeat R0:global_x = R0 + 1\n@map R0 <- 0\n').directives;
+    const r0 = block('r0', 'data_variable', { fields: { VARIABLE: { id: 'R0', name: 'R0' } } });
+    const op = block('a', 'operator_add', {
+      inputs: {
+        NUM1: r0,
+        // `[1, "abc"]` — not a math_number shadow. Conservatively reject.
+        NUM2: [1, 'abc'] as unknown as RawBlock,
+      },
+    });
+    const result = analyzeAxes(region(['a']), directives, project([op, r0]));
+    expect(result.axes['R0']?.finalAxis).toBe('sequential');
+  });
+
   // #4: CONDITION walk
   it('collects CONDITION blocks of control_if for D2 analysis', () => {
     const directives = parse('@repeat R0:global_x = N\n@map R0 <- 0\n').directives;
