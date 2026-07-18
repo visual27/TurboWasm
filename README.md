@@ -259,7 +259,7 @@ storage buffer.
 
 | Token | Meaning |
 | --- | --- |
-| `name` | Scratch list/scalar name. Case-insensitive (lower-cased before lookup). |
+| `name` | Scratch list/scalar name. Case-insensitive (lower-cased before lookup). Plain ASCII identifier, or a quoted string for names containing spaces / punctuation (see [Quoted names](#quoted-names-spaces--punctuation)). |
 | `slot` | Non-negative integer. Becomes the WGSL `@group(0) @binding(N)` index. |
 | `ro` | Read-only storage (`var<storage, read>`). |
 | `rw` | Read-write storage (`var<storage, read_write>`). |
@@ -272,6 +272,35 @@ Example:
 @bind tmp0(1) ro
 @bind buff_r(2) rw
 ```
+
+##### Quoted names (spaces / punctuation)
+
+Scratch allows variable and list names that contain spaces, such as
+`"my list"`. Quote them in `@bind` and `@map` declarations to use
+these names verbatim:
+
+```
+@compute
+@bind "my list"(0) rw f32      ; name='my list', internalName=__tw_<hash>
+@bind tmp0(1) ro f32           ; unquoted names work as before
+@repeat R0:global_x = 64
+@map idx <- 0
+```
+
+The quoted name is preserved as the `name` field on the directive
+(used for runtime lookups via `__getListBuffer`). The parser derives
+an `internalName` (FNV-1a hash, formatted as `__tw_<8 hex digits>`)
+for the WGSL side; the emitter uses it for the `@group(0) @binding(N)`
+storage declaration and the `ScratchUniforms.<name>_length` field.
+`@map` quoted names follow the same shape.
+
+Escape sequences inside a quoted name: `\"` → `"`, `\\` → `\`; any
+other `\<char>` drops the backslash and keeps the literal character
+(forward compatibility for future escapes).
+
+Canonical keys (cache hits) are based on `name`, so two regions that
+bind the same Scratch list — quoted or not — share the same compiled
+pipeline.
 
 #### `@max <ident>=<uint>`
 
