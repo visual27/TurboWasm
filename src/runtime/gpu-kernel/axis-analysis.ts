@@ -5,12 +5,21 @@
  *   (a) `@map` declares `Ri`.
  *   (b) The formula references `Ri` at least once.
  *   (c) The body does not write to `Ri`.
- *   (d) No cross-iteration access (`Ri ± k`, k≠0).
- *   (e) Every block in the body is GPU-supportable.
+ *   (d) No cross-iteration access — `Ri ± k` with k ≠ 0 literal,
+ *       or `Ri ± data_variable(non-R0)`.
+ *   (e) Every block in the body is GPU-supportable (D1).
  *
- * When any one of (a)-(d) fails, the axis collapses to `'sequential'`
+ * When any of (a)–(d) fails, the axis collapses to `'sequential'`
  * (a for-loop on the JS side via the M5 dispatcher); (e) failure is
  * already covered by `block-subset` (D1 takes the whole region down).
+ *
+ * Safe expressions
+ * ----------------
+ * `Ri + 0` / `Ri - 0` are safe (k=0). A naïve "Ri and a number" check
+ * would flag them; we test the partner slot for a literal zero shadow
+ * (scratch-vm encodes a literal as `[1, [10, "<num>"]]` or `[10, "<num>"]`,
+ * opcode 10 = `math_number`). Anything else (dynamic `data_variable`,
+ * `operator_mathop`, string shadow, etc.) is treated as a real offset.
  */
 
 import type {
@@ -32,6 +41,18 @@ export interface AxisAnalysisResult {
 
 const INDEX_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** Scratch-vm shadow opcode for `math_number` (used in BlockShadowArray). */
+const SHADOW_OPCODE_MATH_NUMBER = 10;
+
+/**
+ * Sub-keys of `inputs` we walk when collecting body blocks. We include
+ * `CONDITION` because the safety guarantees of D1/D2 hold for any
+ * expression the body uses to gate its execution; missing it would
+ * silently let unsafe opcodes (e.g. `operator_random` inside `control_if`)
+ * slip past D1. The block-subset classifier already walks the same set.
+ */
+const BODY_INPUT_KEYS = ['SUBSTACK', 'SUBSTACK2', 'CONDITION'] as const;
+
 export function analyzeAxes(
   region: ExtractedRegion,
   directives: readonly ParsedDirective[],
@@ -50,8 +71,9 @@ export function analyzeAxes(
 
   const out: Record<string, AxisVerdict> = {};
   for (const r of repeats) {
-    const verdict = computeAxisVerdict(r, maps, bodyBlocks, region, diagnostics);
+    const verdict = computeAxisVerdict(r, maps, bodyBlocks, region);
     out[r.name] = verdict;
+    diagnostics.push(...verdict.diagnostics);
   }
   return { axes: out, diagnostics };
 }
@@ -61,7 +83,6 @@ function computeAxisVerdict(
   maps: Set<string>,
   bodyBlocks: RawBlock[],
   region: ExtractedRegion,
-  diagnostics: Diagnostic[],
 ): AxisVerdict {
   if (r.axis === 'sequential') {
     return {
@@ -73,46 +94,73 @@ function computeAxisVerdict(
 
   // (a) @map declares Ri.
   if (!maps.has(r.name)) {
-    diagnostics.push(
-      axisDiag(region, r, `axis '${r.axis}' demoted: @map for '${r.name}' missing (D2)`),
-    );
-    return { requestedAxis: r.axis, finalAxis: 'sequential', demoteReason: 'd2', diagnostics: [] };
+    return {
+      requestedAxis: r.axis,
+      finalAxis: 'sequential',
+      demoteReason: 'd2',
+      diagnostics: [
+        axisDiag(region, r, `axis '${r.axis}' demoted: @map for '${r.name}' missing (D2)`),
+      ],
+    };
   }
 
   // (b) formula references Ri.
   if (!formulaMentions(r.formula, r.name)) {
-    diagnostics.push(
-      axisDiag(region, r, `axis '${r.axis}' demoted: formula does not reference '${r.name}' (D2)`),
-    );
-    return { requestedAxis: r.axis, finalAxis: 'sequential', demoteReason: 'd2', diagnostics: [] };
+    return {
+      requestedAxis: r.axis,
+      finalAxis: 'sequential',
+      demoteReason: 'd2',
+      diagnostics: [
+        axisDiag(
+          region,
+          r,
+          `axis '${r.axis}' demoted: formula does not reference '${r.name}' (D2)`,
+        ),
+      ],
+    };
   }
 
-  // (c) body does not write to Ri. We treat any block whose opcode is
-  // `data_setvariableto` / `data_changevariableby` / `data_itemoflist`
-  // mutation etc, with Ri in its variable name, as a write.
+  // (c) body does not write to Ri.
   const writes = findVariableWrites(bodyBlocks);
   if (writes.has(r.name)) {
-    diagnostics.push(
-      axisDiag(region, r, `axis '${r.axis}' demoted: body writes to '${r.name}' (D2)`),
-    );
-    return { requestedAxis: r.axis, finalAxis: 'sequential', demoteReason: 'd2', diagnostics: [] };
+    return {
+      requestedAxis: r.axis,
+      finalAxis: 'sequential',
+      demoteReason: 'd2',
+      diagnostics: [
+        axisDiag(region, r, `axis '${r.axis}' demoted: body writes to '${r.name}' (D2)`),
+      ],
+    };
   }
 
-  // (d) no cross-iteration access (`Ri±k`, k≠0). The body would have to
-  // compute a numeric offset from Ri and use it as a list index. We
-  // detect this by scanning block inputs for `(Ri + N)` / `(Ri - N)`
-  // patterns nested inside list reads.
+  // (d) no cross-iteration access (`Ri±k`, k≠0).
   if (hasCrossIterationAccess(bodyBlocks, r.name)) {
-    diagnostics.push(
-      axisDiag(region, r, `axis '${r.axis}' demoted: cross-iteration access on '${r.name}' (D2)`),
-    );
-    return { requestedAxis: r.axis, finalAxis: 'sequential', demoteReason: 'd2', diagnostics: [] };
+    return {
+      requestedAxis: r.axis,
+      finalAxis: 'sequential',
+      demoteReason: 'd2',
+      diagnostics: [
+        axisDiag(
+          region,
+          r,
+          `axis '${r.axis}' demoted: cross-iteration access on '${r.name}' (D2)`,
+        ),
+      ],
+    };
   }
 
-  return { requestedAxis: r.axis, finalAxis: r.axis, diagnostics: [] };
+  return {
+    requestedAxis: r.axis,
+    finalAxis: r.axis,
+    diagnostics: [],
+  };
 }
 
-function axisDiag(region: ExtractedRegion, r: RepeatDirective, message: string): Diagnostic {
+function axisDiag(
+  region: ExtractedRegion,
+  r: RepeatDirective,
+  message: string,
+): Diagnostic {
   return {
     severity: 'warn',
     code: 'd2.axis_demoted',
@@ -141,6 +189,17 @@ function escapeRegExp(s: string): string {
 }
 
 /**
+ * Opcodes whose execution writes to a scratch variable. Used by (c)
+ * to detect "body writes to Ri".
+ */
+const VARIABLE_WRITE_OPCODES: ReadonlySet<string> = new Set([
+  'data_setvariableto',
+  'data_changevariableby',
+  // 'data_changevaroflist' and 'data_replaceitemoflist' write to list
+  // elements rather than the index var, so they are not in this set.
+]);
+
+/**
  * Walk every body block's `fields` / `inputs` and collect the names
  * referenced by `data_setvariableto` / `data_changevariableby` opcodes.
  * We use this to detect (c).
@@ -148,34 +207,28 @@ function escapeRegExp(s: string): string {
 function findVariableWrites(bodyBlocks: RawBlock[]): Set<string> {
   const writes = new Set<string>();
   for (const block of bodyBlocks) {
+    if (!VARIABLE_WRITE_OPCODES.has(block.opcode)) continue;
+    const fields = block.fields;
+    const variable = fields['VARIABLE'];
     if (
-      block.opcode === 'data_setvariableto' ||
-      block.opcode === 'data_changevariableby' ||
-      block.opcode === 'data_setvariableto' // alias (some forks ship both)
+      variable &&
+      typeof variable === 'object' &&
+      typeof (variable as { id?: unknown }).id === 'string'
     ) {
-      const fields = block.fields;
-      const variable = fields['VARIABLE'];
-      if (
-        variable &&
-        typeof variable === 'object' &&
-        typeof (variable as { id?: unknown }).id === 'string'
-      ) {
-        writes.add(((variable as { id: string }).id ?? '').toLowerCase());
-      }
-      // Some blocks carry the variable name as a top-level field.
-      const variable2 = fields['FIELD_LIST'];
-      if (typeof variable2 === 'string') writes.add(variable2.toLowerCase());
+      writes.add(((variable as { id: string }).id ?? '').toLowerCase());
     }
+    // Some blocks carry the variable name as a top-level field.
+    const variable2 = fields['FIELD_LIST'];
+    if (typeof variable2 === 'string') writes.add(variable2.toLowerCase());
   }
   return writes;
 }
 
 /**
  * Cross-iteration access: scan every body block's `inputs` for an
- * arithmetic expression of the form `<name> + <int>` or `<name> - <int>`
- * where the integer is anything but 0. We look at the *expression tree*,
- * which the vendored scratch-vm exposes as `{ opcode: 'operator_add',
- * inputs: { ... } }`.
+ * arithmetic expression of the form `<name> + k` or `<name> - k` where
+ * `k` is a numeric literal **not** equal to 0, or where the partner
+ * operand is a `data_variable` referencing a different index var.
  */
 function hasCrossIterationAccess(bodyBlocks: RawBlock[], name: string): boolean {
   const stack: unknown[] = [...bodyBlocks];
@@ -190,8 +243,7 @@ function hasCrossIterationAccess(bodyBlocks: RawBlock[], name: string): boolean 
       obj['inputs'] !== null
     ) {
       const inputs = obj['inputs'] as Record<string, unknown>;
-      const fromInputs = detectOffsetInInputs(inputs, name);
-      if (fromInputs) return true;
+      if (detectOffsetInInputs(inputs, name)) return true;
     }
     // Recurse into known nested fields.
     if (typeof obj['inputs'] === 'object' && obj['inputs'] !== null) {
@@ -206,31 +258,87 @@ function hasCrossIterationAccess(bodyBlocks: RawBlock[], name: string): boolean 
   return false;
 }
 
-function detectOffsetInInputs(inputs: Record<string, unknown>, name: string): boolean {
-  // inputs: { NUM1: <block or shadow>, NUM2: <block or shadow> }
-  for (const slot of ['NUM1', 'NUM2']) {
+/**
+ * Inspect both NUM1/NUM2 slots of an `operator_add` / `operator_subtract`
+ * block. Cross-iteration is present if:
+ *
+ *   - One slot is a `data_variable` referencing `name`, **and**
+ *   - The other slot is *not* a numeric literal whose text parses to 0.
+ *
+ * Any dynamic partner (`data_variable`, math operator, etc.) is treated
+ * as a real offset because we cannot prove it is constant 0.
+ */
+function detectOffsetInInputs(
+  inputs: Record<string, unknown>,
+  name: string,
+): boolean {
+  const slots: Array<'NUM1' | 'NUM2'> = ['NUM1', 'NUM2'];
+  for (const slot of slots) {
     const operand = inputs[slot];
     if (!operand || typeof operand !== 'object') continue;
     const op = operand as Record<string, unknown>;
-    // Shadow block: `[1, [10, "name"]]` or `[10, "name"]` (a literal name).
-    if (op['opcode'] === 'data_variable' && typeof op['fields'] === 'object') {
-      const fields = op['fields'] as Record<string, unknown>;
-      const variable = fields['VARIABLE'];
-      if (
-        variable &&
-        typeof variable === 'object' &&
-        typeof (variable as { id?: unknown }).id === 'string' &&
-        ((variable as { id: string }).id ?? '').toLowerCase() === name.toLowerCase()
-      ) {
-        // paired with a non-zero numeric literal in the other slot → cross-iter.
-        return true;
-      }
+    if (op['opcode'] !== 'data_variable') continue;
+    const fields = op['fields'];
+    if (!fields || typeof fields !== 'object') continue;
+    const variable = (fields as Record<string, unknown>)['VARIABLE'];
+    if (!variable || typeof variable !== 'object') continue;
+    const id = (variable as { id?: unknown }).id;
+    if (typeof id !== 'string') continue;
+    if (id.toLowerCase() !== name.toLowerCase()) continue;
+    // The partner slot is the other one.
+    const partnerSlot = slot === 'NUM1' ? 'NUM2' : 'NUM1';
+    const partner = inputs[partnerSlot];
+    if (isZeroLiteralShadow(partner)) {
+      // Ri ± 0 → safe. Continue scanning in case the other slot also
+      // has a `data_variable` referencing Ri (which would also be safe).
+      continue;
     }
+    return true;
   }
   return false;
 }
 
-function collectBodyBlocks(project: ParsedProject, region: ExtractedRegion): RawBlock[] {
+/**
+ * True when `value` is a scratch-vm shadow encoding a numeric literal
+ * whose value parses to 0. Accepts both `[1, [10, "0"]]` (BlockShadowArray)
+ * and `[10, "0"]` (literal-only BlockShadow). Other shadow opcodes
+ * (string, list) are not zero literals.
+ */
+function isZeroLiteralShadow(value: unknown): boolean {
+  let payload: unknown = value;
+  // Strip outer BlockShadowArray wrapper when present.
+  if (Array.isArray(value)) {
+    if (value.length >= 2 && value[0] === 1 && Array.isArray(value[1])) {
+      payload = value[1];
+    } else if (value.length >= 2 && typeof value[0] === 'number') {
+      payload = value[1];
+    } else {
+      return false;
+    }
+  } else if (value && typeof value === 'object') {
+    // Object form: `{ block, shadow, ... }` — recursively inspect.
+    const obj = value as Record<string, unknown>;
+    if ('shadow' in obj) return isZeroLiteralShadow(obj['shadow']);
+    if ('block' in obj) return isZeroLiteralShadow(obj['block']);
+    return false;
+  } else {
+    return false;
+  }
+  if (!Array.isArray(payload) || payload.length < 2) return false;
+  const opcode = payload[0];
+  if (opcode !== SHADOW_OPCODE_MATH_NUMBER) return false;
+  const text = payload[1];
+  if (typeof text !== 'string') return false;
+  // Parse defensively: "0", "0.0", "-0", "-0.0" are all zero.
+  if (text.trim() === '') return false;
+  const num = Number(text);
+  return Number.isFinite(num) && num === 0;
+}
+
+function collectBodyBlocks(
+  project: ParsedProject,
+  region: ExtractedRegion,
+): RawBlock[] {
   const out: RawBlock[] = [];
   const visited = new Set<string>();
   const queue = [...region.bodyBlockIds];
@@ -242,10 +350,14 @@ function collectBodyBlocks(project: ParsedProject, region: ExtractedRegion): Raw
     if (!block) continue;
     out.push(block);
     if (typeof block.next === 'string') queue.push(block.next);
-    for (const key of ['SUBSTACK', 'SUBSTACK2']) {
+    for (const key of BODY_INPUT_KEYS) {
       const sub = block.inputs[key];
       if (typeof sub === 'string') queue.push(sub);
-      else if (sub && typeof sub === 'object' && typeof (sub as { id?: unknown }).id === 'string') {
+      else if (
+        sub &&
+        typeof sub === 'object' &&
+        typeof (sub as { id?: unknown }).id === 'string'
+      ) {
         queue.push((sub as { id: string }).id);
       }
     }

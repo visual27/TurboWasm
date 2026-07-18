@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  BYTES_PER_ELEMENT,
   GpuLikeDevice,
   ListBufferPool,
 } from '@/runtime/gpu-kernel/list-buffer-binding';
@@ -188,6 +189,23 @@ describe('ListBufferPool', () => {
     expect(Array.from(byte.syncToHost() as Uint8Array)).toEqual([255, 0, 128]);
   });
 
+  it('byte dtype uploads as u32 cells (one byte per cell, packed in low 8 bits)', () => {
+    const byte = pool.bind(makeBind('c', { dtype: 'byte' }));
+    byte.syncFromHost([255, 0, 128]);
+    expect(byte.length).toBe(3);
+    const buf = byte.gpuBuffer as MockGpuBuffer;
+    // Physical size is 3 elements * 4 bytes = 12 bytes.
+    expect(buf.size).toBe(3 * BYTES_PER_ELEMENT.byte);
+    const write = device.__writes[0];
+    expect(write).toBeDefined();
+    // Uploaded view is 3 u32 cells: 0x000000ff, 0x00000000, 0x00000080.
+    expect(write!.bytes.byteLength).toBe(12);
+    const view = new DataView(write!.bytes.buffer, write!.bytes.byteOffset, write!.bytes.byteLength);
+    expect(view.getUint32(0, true)).toBe(255);
+    expect(view.getUint32(4, true)).toBe(0);
+    expect(view.getUint32(8, true)).toBe(128);
+  });
+
   it('handles a null device without throwing', () => {
     const noDevice = new ListBufferPool({ device: null });
     const binding = noDevice.bind(makeBind('scratch'));
@@ -204,5 +222,13 @@ describe('ListBufferPool', () => {
     pool.setDevice(device2);
     expect(firstBuffer.destroyed).toBe(true);
     expect(binding.gpuBuffer).toBeNull();
+  });
+
+  it('clear drops every binding (project reload)', () => {
+    pool.bind(makeBind('a')).syncFromHost([1, 2]);
+    pool.bind(makeBind('b')).syncFromHost([3, 4]);
+    expect(pool.size()).toBe(2);
+    pool.clear();
+    expect(pool.size()).toBe(0);
   });
 });

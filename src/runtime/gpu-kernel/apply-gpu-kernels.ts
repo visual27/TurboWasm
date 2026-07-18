@@ -2,85 +2,96 @@
  * Install the GPU kernel hook into the runtime handshake channel (M5).
  *
  * The vendored scratch-vm hook (M2 patch series) reads
- * `window.__turboWasmGpuKernelLookup(blockId)` whenever it enters a
- * `control_repeat` block. `applyGpuKernels` registers that global so
- * the M2 hook can find the compiled kernel for the block.
+ * `globalThis.__turboWasmGpuKernelDispatch(blockId)` whenever it enters
+ * a `control_repeat` block. `applyGpuKernels` registers that global
+ * so the M2 hook can dispatch the GPU kernel and decide whether the
+ * JS body should run.
  *
  * Two short-circuit modes:
  *
- *   - `enabled === false`: no installation. The lookup returns
- *     `undefined`, the M2 hook skips the GPU path entirely.
+ *   - `enabled === false`: no installation. The hook returns `false`,
+ *     the M2 hook falls through to the JS path entirely.
  *   - `!enableWasm`: same as above. The WASM toggle is the user's master
  *     switch for every TurboWasm hook — the GPU compute kernel pipeline
  *     is one of those hooks, so disabling WASM also disables this path
  *     (a power user wanting to verify DoD parity should see no
  *     TurboWasm acceleration at all).
- *   - otherwise: install `lookup(blockId)` and return `{ installed: true }`.
+ *   - otherwise: install `dispatch(blockId)` and return
+ *     `{ installed: true }`.
  *
- * Tests install / uninstall the lookup via
- * `__installGpuKernelRegistryForTesting` so they can drive the dispatch
- * path without a real vendored VM.
+ * The lookup helper `__turboWasmGpuKernelLookup(blockId)` is retained
+ * as a test-only helper (used by `__installGpuKernelRegistryForTesting`)
+ * because a few unit tests prefer the synchronous lookup path over the
+ * full dispatcher.
  */
-import type { Kernel, KernelRegistry } from './kernel-registry';
-import type { ListBufferPool } from './list-buffer-binding';
-import type { GpuLikeDispatchDevice } from './__dispatch-kernel-sync';
+import type { KernelRegistry } from './kernel-registry';
+import type {
+  DispatchContext,
+  DispatchResult,
+  RuntimeAdapter,
+} from './__dispatch-kernel-sync';
+import { dispatchKernel } from './__dispatch-kernel-sync';
+import type {
+  ApplyGpuKernelsOptions,
+  ApplyGpuKernelsResult,
+  LookupFn,
+} from './apply-gpu-kernels-types';
 
-export type LookupFn = (blockId: string) => Kernel | undefined;
-
-export interface ApplyGpuKernelsOptions {
-  enabled: boolean;
-  enableWasm: boolean;
-  registry: KernelRegistry;
-  pool: ListBufferPool;
-  device: GpuLikeDispatchDevice | null;
-}
-
-export interface ApplyGpuKernelsResult {
-  installed: boolean;
-  reason?: string;
-}
+export type { ApplyGpuKernelsOptions, ApplyGpuKernelsResult, LookupFn };
 
 declare global {
   interface Window {
+    __turboWasmGpuKernelDispatch?: DispatchFn;
     __turboWasmGpuKernelLookup?: LookupFn;
   }
 }
 
 /**
- * Install / uninstall the GPU kernel lookup. Idempotent: calling twice
- * is a no-op when the same registry is already installed.
+ * Hook signature the vendored scratch-vm runtime expects. Returns a
+ * boolean (synchronous) OR a Promise<boolean> (async); the vendored
+ * patch is patched to await the Promise and translate truthy →
+ * skip-body, falsy → fall through.
+ */
+export type DispatchFn = (blockId: string) => boolean | Promise<boolean>;
+
+/**
+ * Install / uninstall the GPU kernel dispatcher. Idempotent: calling
+ * twice is a no-op when the same registry is already installed.
  */
 export function applyGpuKernels(options: ApplyGpuKernelsOptions): ApplyGpuKernelsResult {
   if (!options.enabled) {
+    uninstallDispatcher();
     uninstallLookup();
     return { installed: false, reason: 'disabled' };
   }
   if (!options.enableWasm) {
+    uninstallDispatcher();
     uninstallLookup();
     return { installed: false, reason: 'wasm-disabled' };
   }
+  installDispatcher(options);
   installLookup(options.registry);
   return { installed: true };
 }
 
 /**
- * Direct setter for the lookup. Used by the vendored scratch-vm hook
- * layer when it needs to override the default registry (e.g. when the
- * player wants to swap in a different registry between projects). Also
- * useful for unit tests.
+ * Direct setter for the dispatcher. Used by tests and by the vendored
+ * scratch-vm hook layer when it needs to override the default
+ * registry.
  */
-export function __setGpuKernelLookup(fn: LookupFn | null): void {
+export function __setGpuKernelDispatcher(fn: DispatchFn | null): void {
   if (typeof window === 'undefined') return;
   if (fn === null) {
-    delete window.__turboWasmGpuKernelLookup;
+    delete window.__turboWasmGpuKernelDispatch;
     return;
   }
-  window.__turboWasmGpuKernelLookup = fn;
+  window.__turboWasmGpuKernelDispatch = fn;
 }
 
 /**
  * Test-only: install a registry as the active GPU kernel lookup. The
- * companion uninstall entry point is `__uninstallGpuKernelRegistryForTesting`.
+ * companion uninstall entry point is
+ * `__uninstallGpuKernelRegistryForTesting`.
  */
 export function __installGpuKernelRegistryForTesting(registry: KernelRegistry): void {
   installLookup(registry);
@@ -116,10 +127,48 @@ export function __getGpuKernelForBrowserVerify(registry: KernelRegistry): {
  * Internal helpers                                                    *
  * ------------------------------------------------------------------ */
 
+function installDispatcher(options: ApplyGpuKernelsOptions): void {
+  if (typeof window === 'undefined') return;
+  const pipelines = options.pipelines ?? new Map();
+  const runtime: RuntimeAdapter = options.runtime ?? makeNullRuntime();
+  const fn: DispatchFn = (blockId) => {
+    const kernel = options.registry.lookup(blockId);
+    if (!kernel) return false;
+    if (kernel.jsOnly) return false;
+    const ctx: DispatchContext = {
+      device: options.device,
+      registry: options.registry,
+      pool: options.pool,
+      regionVerdict: kernel.regionVerdict,
+      dims: { x: 1, y: 1, z: 1 },
+      pipelines: pipelines as Map<string, unknown> as DispatchContext['pipelines'],
+      runtime,
+    };
+    try {
+      return dispatchKernel(kernel.id, ctx).then(
+        (r: DispatchResult): boolean => r.ok && !r.demoted,
+        (): boolean => false,
+      );
+    } catch (err) {
+      // Last-resort safety net: the dispatcher swallows throws, but
+      // any synchronous failure here must not propagate to the VM.
+      // eslint-disable-next-line no-console
+      console.error('[gpu-kernel] dispatcher failed:', err);
+      return false;
+    }
+  };
+  window.__turboWasmGpuKernelDispatch = fn;
+}
+
 function installLookup(registry: KernelRegistry): void {
   if (typeof window === 'undefined') return;
   const fn: LookupFn = (blockId) => registry.lookup(blockId);
   window.__turboWasmGpuKernelLookup = fn;
+}
+
+function uninstallDispatcher(): void {
+  if (typeof window === 'undefined') return;
+  delete window.__turboWasmGpuKernelDispatch;
 }
 
 function uninstallLookup(): void {
@@ -127,4 +176,17 @@ function uninstallLookup(): void {
   delete window.__turboWasmGpuKernelLookup;
 }
 
-export type { GpuLikeDispatchDevice };
+/**
+ * Minimal runtime adapter used when the caller doesn't supply one.
+ * Reads return zero/empty; writes are no-ops. Real bootstrap always
+ * passes a fully-wired adapter.
+ */
+function makeNullRuntime(): RuntimeAdapter {
+  return {
+    readList: (_name, len) => new Float32Array(len),
+    writeList: () => undefined,
+    readScalar: () => 0,
+    writeScalar: () => false,
+    listLength: () => 0,
+  };
+}

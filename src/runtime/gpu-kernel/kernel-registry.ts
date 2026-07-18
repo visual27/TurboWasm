@@ -33,6 +33,14 @@ export interface Kernel {
    * tests construct a mock and assign directly.
    */
   pipeline: unknown | null;
+  /** Resolved (post-clamp) workgroup size for this region. */
+  workgroupSize: { x: number; y: number; z: number };
+  /**
+   * Structured dispatch plan. Single source of truth for runtime:
+   * `// dispatchWorkgroups(...)` inside the WGSL is documentary, and
+   * `__dispatch-kernel-sync` reads this to size the call.
+   */
+  dispatchPlan: { x: string; y: string; z: string };
   /**
    * The verdict that produced this kernel. Held for diagnostics and for
    * re-register scenarios (project reload, device-lost).
@@ -79,6 +87,13 @@ export class KernelRegistry {
       wgsl,
       pipeline: null,
       regionVerdict,
+      // workgroupSize / dispatchPlan are filled in by the caller (the
+      // initializer) once `emitRegion` returns — we don't have the
+      // resolved shape until then. Default to a `(1,1,1)` placeholder so
+      // the interface stays non-optional; the initializer overwrites
+      // both fields right after `register`.
+      workgroupSize: { x: 1, y: 1, z: 1 },
+      dispatchPlan: { x: '1', y: '1', z: '1' },
       jsOnly: false,
       jsOnlyReason: '',
     };

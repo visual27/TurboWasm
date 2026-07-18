@@ -10,10 +10,25 @@
  *     reachable anywhere in the body → region-level D1.
  *
  * "Reachable" is determined by the region's `bodyBlockIds` plus a
- * recursive scan of `inputs` to catch sub-stacks of nested control
- * blocks. The block-subsetter operates on the already-walked body, so
- * nesting detection here is structural (looking for inner `@compute`
- * comments), not subtree-based.
+ * recursive scan of `inputs.SUBSTACK / SUBSTACK2 / CONDITION` to catch
+ * sub-stacks of nested control blocks. The block-subsetter operates on
+ * the already-walked body, so nesting detection here is structural
+ * (looking for inner `@compute` comments), not subtree-based.
+ *
+ * List-write opcodes
+ * -------------------
+ * `data_replaceitemoflist` is **deliberately allowed** — the WGSL
+ * emitter emits a `scratch_list_write_f32(&name, idx, len, value)`
+ * statement for it (wgsl-emitter.ts). Removing the listing here is
+ * load-bearing for the GPU write-back path; without it, every list
+ * write falls back to the JS path even when the project only uses
+ * data_replaceitemoflist (which is the canonical Scratch 3.0 idiom
+ * for `set <list> item <i> to <value>`).
+ *
+ * Other list mutations (`data_addtolist`, `data_deleteoflist`,
+ * `data_insertatlist`, `data_deletealloflist`,
+ * `data_changevariableoflist`) touch the host list shape and are
+ * still D1 demoted.
  */
 
 import type {
@@ -38,7 +53,6 @@ const GPU_UNSAFE_OPCODES: ReadonlySet<string> = new Set([
   'operator_stringLength',
   'operator_stringContains',
   'operator_stringIndex',
-  'operator_stringLength',
   'data_stringindex',
   'data_stringlength',
   'data_stringcontains',
@@ -80,20 +94,23 @@ const GPU_UNSAFE_OPCODES: ReadonlySet<string> = new Set([
   'sensing_keypressed',
   'sensing_setdragmode',
 
-  // List mutations that touch the host. Per spec §5.2, `data_addtolist` is
-  // explicitly D1.
+  // List mutations that touch the host (resize / append / insert /
+  // delete). `data_replaceitemoflist` is intentionally absent — it
+  // becomes `scratch_list_write_f32` in the WGSL emitter (see
+  // emitListWrite in wgsl-emitter.ts).
   'data_addtolist',
   'data_deleteoflist',
   'data_insertatlist',
   'data_deletealloflist',
-  'data_replaceitemoflist',
+  'data_changevariableoflist',
 
   // Custom block calls (we don't trace `procedure_prototype` arg shapes).
   'procedure_call',
   'argument_reporter_string',
 ]);
 
-const HOOK_OPCODE_KEYS = ['SUBSTACK', 'SUBSTACK2', 'CONDITION'];
+/** Sub-keys of `inputs` we walk when collecting body blocks. */
+const HOOK_OPCODE_KEYS = ['SUBSTACK', 'SUBSTACK2', 'CONDITION'] as const;
 
 export interface ClassifyBlockSubsetInput {
   region: ExtractedRegion;
@@ -114,8 +131,9 @@ export function classifyBlockSubset(
 
   // Build a flat list of blocks reachable inside the body. region.bodyBlockIds
   // already covers the entry substack via `next`. We additionally walk
-  // `inputs.SUBSTACK` of nested control blocks (control_if / nested control_repeat)
-  // because `region-extractor` only walked the entry substack.
+  // `inputs.SUBSTACK / SUBSTACK2 / CONDITION` of nested control blocks
+  // (control_if / nested control_repeat) because `region-extractor`
+  // only walked the entry substack.
   const bodyBlocks: RawBlock[] = [];
   const visited = new Set<string>();
   const queue: string[] = [...region.bodyBlockIds];
@@ -130,7 +148,11 @@ export function classifyBlockSubset(
     for (const key of HOOK_OPCODE_KEYS) {
       const sub = block.inputs[key];
       if (typeof sub === 'string') queue.push(sub);
-      else if (sub && typeof sub === 'object' && typeof (sub as { id?: unknown }).id === 'string') {
+      else if (
+        sub &&
+        typeof sub === 'object' &&
+        typeof (sub as { id?: unknown }).id === 'string'
+      ) {
         queue.push((sub as { id: string }).id);
       }
     }

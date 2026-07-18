@@ -396,6 +396,24 @@ describe('player.ts: bootstrapGpuKernels wiring (source-inspection)', () => {
     expect(src).toMatch(/__turbowasm\s*=\s*{[\s\S]*kernelRegistry/);
     expect(src).toMatch(/__getGpuKernelForBrowserVerify\(\s*activeGpuRegistry\s*\)/);
   });
+
+  it('bootstrap installs __turboWasmGpuKernelDispatch when enabled and WASM are both on', () => {
+    const src = readPlayerSource();
+    // The vendored scratch-vm hook reads this global; the player must
+    // install it before the first `control_repeat` runs.
+    expect(src).toMatch(/applyGpuKernels\([\s\S]*?pipelines:\s*activeGpuPipelines/);
+    expect(src).toMatch(/applyGpuKernels\([\s\S]*?runtime:\s*activeRuntimeAdapter/);
+  });
+
+  it('tearDownActiveGpuState clears pool + pipelines + dispatcher on project reload', () => {
+    const src = readPlayerSource();
+    // The teardown helper must run before any new bootstrap to prevent
+    // leaks (per spec §7.1 "no spam" + §6.3 "device-lost" semantics).
+    expect(src).toMatch(/function\s+tearDownActiveGpuState\s*\(/);
+    expect(src).toMatch(/activeGpuPool\.clear\(\)/);
+    expect(src).toMatch(/activeGpuPipelines\?\.clear\(\)/);
+    expect(src).toMatch(/__setGpuKernelDispatcher\(null\)/);
+  });
 });
 
 describe('gpu-kernel pipeline: end-to-end on a @compute fixture', () => {

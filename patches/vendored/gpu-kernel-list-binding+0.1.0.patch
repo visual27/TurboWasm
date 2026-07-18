@@ -1,103 +1,186 @@
 diff --git a/src/engine/runtime.js b/src/engine/runtime.js
-index 321836a..4f58f6a 100644
+index 4f58f6a..925a6a3 100644
 --- a/src/engine/runtime.js
 +++ b/src/engine/runtime.js
-@@ -3554,6 +3554,98 @@ class Runtime extends EventEmitter {
+@@ -3559,25 +3559,27 @@ class Runtime extends EventEmitter {
+     // pipeline (see gpu-kernel-spec-summary.md ﾂｧ6.1). These are non-
+     // breaking additions: callers without @compute regions simply never
+     // call them. They return a `{data, length, dtype}` triple where data
+-    // is a freshly-allocated Float32Array / Int32Array view mirroring the
+-    // scratch-vm list, so the GPU side can call syncToHost after the
+-    // dispatch. The `dtype` matches the @bind directive's dtype.
++    // is a freshly-allocated Float32Array / Int32Array / Uint8Array view
++    // mirroring the scratch-vm list, so the GPU side can call syncToHost
++    // after the dispatch. The `dtype` matches the @bind directive's dtype.
  
-         return callback().then(onSuccess, onError);
+     /**
+-     * Look up a list by name (case-sensitive, lower-cased before lookup to
+-     * match scratch-vm's own convention) and return a typed-array-backed
+-     * view of its current contents.
++     * Look up a list by name (case-insensitive, lower-cased to match
++     * scratch-vm's storage convention) and return a typed-array-backed
++     * view of its current contents in the requested dtype.
+      * @param {string} name list name.
+-     * @return {{data: Float32Array|Int32Array, length: number, dtype: 'f32'|'i32'} | null}
++     * @param {'f32'|'i32'|'byte'} [dtype='f32'] ABI dtype.
++     * @return {{data: Float32Array|Int32Array|Uint8Array, length: number, dtype: string} | null}
+      */
+-    __getListBuffer (name) {
++    __getListBuffer (name, dtype) {
+         const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const wantDtype = dtype || 'f32';
+         for (const target of this.targets) {
+             if (!target || !target.variables) continue;
+             for (const varId of Object.keys(target.variables)) {
+                 const v = target.variables[varId];
+                 if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
+-                    return this.__getListBufferById(varId);
++                    return this.__getListBufferById(varId, wantDtype);
+                 }
+             }
+         }
+@@ -3585,18 +3587,38 @@ class Runtime extends EventEmitter {
      }
-+
-+    // TurboWasm: list / scalar buffer accessors for the GPU compute kernel
-+    // pipeline (see gpu-kernel-spec-summary.md §6.1). These are non-
-+    // breaking additions: callers without @compute regions simply never
-+    // call them. They return a `{data, length, dtype}` triple where data
-+    // is a freshly-allocated Float32Array / Int32Array view mirroring the
-+    // scratch-vm list, so the GPU side can call syncToHost after the
-+    // dispatch. The `dtype` matches the @bind directive's dtype.
-+
-+    /**
-+     * Look up a list by name (case-sensitive, lower-cased before lookup to
-+     * match scratch-vm's own convention) and return a typed-array-backed
-+     * view of its current contents.
+ 
+     /**
+-     * Look up a list by id and return a typed-array-backed view.
+-     * @param {string} id
+-     * @return {{data: Float32Array, length: number, dtype: 'f32'} | null}
++     * Look up a list by id and return a typed-array-backed view in the
++     * requested dtype.
++     * @param {string} id scratch-vm variable id.
++     * @param {'f32'|'i32'|'byte'} [dtype='f32'] ABI dtype.
++     * @return {{data: Float32Array|Int32Array|Uint8Array, length: number, dtype: string} | null}
+      */
+-    __getListBufferById (id) {
++    __getListBufferById (id, dtype) {
++        const wantDtype = dtype || 'f32';
+         for (const target of this.targets) {
+             if (!target || !target.variables) continue;
+             const v = target.variables[id];
+             if (v && v.type === 'list' && Array.isArray(v.value)) {
++                if (wantDtype === 'i32') {
++                    const data = new Int32Array(v.value.length);
++                    for (let i = 0; i < v.value.length; i++) {
++                        const n = Number(v.value[i]);
++                        data[i] = Number.isFinite(n) ? (n | 0) : 0;
++                    }
++                    return {data, length: v.value.length, dtype: 'i32'};
++                }
++                if (wantDtype === 'byte') {
++                    const data = new Uint8Array(v.value.length);
++                    for (let i = 0; i < v.value.length; i++) {
++                        const n = Number(v.value[i]);
++                        data[i] = Number.isFinite(n) ? (n & 0xff) : 0;
++                    }
++                    return {data, length: v.value.length, dtype: 'byte'};
++                }
+                 const data = new Float32Array(v.value.length);
+                 for (let i = 0; i < v.value.length; i++) {
+-                    data[i] = Number(v.value[i]) || 0;
++                    const n = Number(v.value[i]);
++                    data[i] = Number.isFinite(n) ? n : 0;
+                 }
+                 return {data, length: v.value.length, dtype: 'f32'};
+             }
+@@ -3605,9 +3627,57 @@ class Runtime extends EventEmitter {
+     }
+ 
+     /**
+-     * Read a scalar variable by name (case-sensitive via scratch-vm's lower-case
+-     * convention). Returns the numeric value or 0 when missing.
+-     * @param {string} name
++     * Write back a typed array into the host list identified by name
++     * (case-insensitive, lower-cased to match scratch-vm's storage
++     * convention).
 +     * @param {string} name list name.
-+     * @return {{data: Float32Array|Int32Array, length: number, dtype: 'f32'|'i32'} | null}
++     * @param {Float32Array|Int32Array|Uint8Array} value data to write.
++     * @return {boolean}
 +     */
-+    __getListBuffer (name) {
++    __setListBuffer (name, value) {
 +        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const arr = value && value.length !== undefined ? value : null;
++        if (!arr) return false;
 +        for (const target of this.targets) {
 +            if (!target || !target.variables) continue;
 +            for (const varId of Object.keys(target.variables)) {
 +                const v = target.variables[varId];
 +                if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
-+                    return this.__getListBufferById(varId);
-+                }
-+            }
-+        }
-+        return null;
-+    }
-+
-+    /**
-+     * Look up a list by id and return a typed-array-backed view.
-+     * @param {string} id
-+     * @return {{data: Float32Array, length: number, dtype: 'f32'} | null}
-+     */
-+    __getListBufferById (id) {
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            const v = target.variables[id];
-+            if (v && v.type === 'list' && Array.isArray(v.value)) {
-+                const data = new Float32Array(v.value.length);
-+                for (let i = 0; i < v.value.length; i++) {
-+                    data[i] = Number(v.value[i]) || 0;
-+                }
-+                return {data, length: v.value.length, dtype: 'f32'};
-+            }
-+        }
-+        return null;
-+    }
-+
-+    /**
-+     * Read a scalar variable by name (case-sensitive via scratch-vm's lower-case
-+     * convention). Returns the numeric value or 0 when missing.
-+     * @param {string} name
-+     * @return {number}
-+     */
-+    __getScalarValue (name) {
-+        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            for (const varId of Object.keys(target.variables)) {
-+                const v = target.variables[varId];
-+                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
-+                    return Number(v.value) || 0;
-+                }
-+            }
-+        }
-+        return 0;
-+    }
-+
-+    /**
-+     * Write a scalar variable by name (case-sensitive). Returns true when
-+     * the variable was found and updated, false otherwise. Mirrors how the
-+     * VM's `setVariableValue` writes to a target.
-+     * @param {string} name
-+     * @param {number} value
-+     * @return {boolean}
-+     */
-+    __setScalarValue (name, value) {
-+        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            for (const varId of Object.keys(target.variables)) {
-+                const v = target.variables[varId];
-+                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
-+                    v.value = Number(value) || 0;
-+                    return true;
++                    return this.__setListBufferById(varId, arr);
 +                }
 +            }
 +        }
 +        return false;
 +    }
- }
++
++    /**
++     * Write back a typed array into the host list identified by id.
++     * Truncates to the existing list length so we don't accidentally
++     * grow a list (scratch-vm list growth goes through `data_addtolist`).
++     * @param {string} id scratch-vm variable id.
++     * @param {Float32Array|Int32Array|Uint8Array} value data to write.
++     * @return {boolean}
++     */
++    __setListBufferById (id, value) {
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            const v = target.variables[id];
++            if (v && v.type === 'list' && Array.isArray(v.value)) {
++                const n = Math.min(v.value.length, value.length);
++                for (let i = 0; i < n; i++) {
++                    v.value[i] = Number(value[i]);
++                }
++                v._monitorUpToDate = false;
++                return true;
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Read a scalar variable by name (case-insensitive via scratch-vm's
++     * lower-cased storage). Returns the numeric value or 0 when missing.
++     * @param {string} name scalar variable name.
+      * @return {number}
+      */
+     __getScalarValue (name) {
+@@ -3617,7 +3687,8 @@ class Runtime extends EventEmitter {
+             for (const varId of Object.keys(target.variables)) {
+                 const v = target.variables[varId];
+                 if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
+-                    return Number(v.value) || 0;
++                    const n = Number(v.value);
++                    return Number.isFinite(n) ? n : 0;
+                 }
+             }
+         }
+@@ -3625,21 +3696,23 @@ class Runtime extends EventEmitter {
+     }
  
- /**
+     /**
+-     * Write a scalar variable by name (case-sensitive). Returns true when
+-     * the variable was found and updated, false otherwise. Mirrors how the
+-     * VM's `setVariableValue` writes to a target.
+-     * @param {string} name
+-     * @param {number} value
++     * Write a scalar variable by name (case-insensitive). Returns true
++     * when the variable was found and updated.
++     * @param {string} name scalar variable name.
++     * @param {number} value numeric value to write.
+      * @return {boolean}
+      */
+     __setScalarValue (name, value) {
+         const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const n = Number(value);
++        const safe = Number.isFinite(n) ? n : 0;
+         for (const target of this.targets) {
+             if (!target || !target.variables) continue;
+             for (const varId of Object.keys(target.variables)) {
+                 const v = target.variables[varId];
+                 if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
+-                    v.value = Number(value) || 0;
++                    v.value = safe;
++                    v._monitorUpToDate = false;
+                     return true;
+                 }
+             }

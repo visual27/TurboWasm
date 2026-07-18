@@ -5,9 +5,10 @@
  * subset).
  *
  * The dependency graph is built by tokenising each `@map` formula and
- * noting which `@map` names it references. A naive identifier scan is
- * good enough here; the WGSL emitter does the actual reference scan in
- * M4 — at the cost of cascading only *true* cycles here.
+ * noting which `@map` names it references. The tokeniser only yields
+ * identifiers — numeric literals, operators, and WGSL reserved keywords
+ * are dropped so the DAG reflects actual variable references. The WGSL
+ * emitter does the deeper reference scan in M4.
  */
 
 import type {
@@ -116,7 +117,12 @@ export function analyzeCascade(input: CascadeAnalysisInput): CascadeVerdict {
     const refSet = new Set<string>();
     const tokens = tokeniseFormula(m.formula);
     for (const t of tokens) {
-      if (names.has(t) && t !== m.var) refSet.add(t);
+      if (t === m.var) continue;
+      if (!names.has(t)) continue;
+      // Reserved keywords are never declared as @map names, but defend
+      // against future name overlap by skipping them here too.
+      if (RESERVED_DSL_KEYWORDS.has(t) || RESERVED_WGSL_KEYWORDS.has(t)) continue;
+      refSet.add(t);
     }
     referencedBy.set(m.var, refSet);
   }
@@ -130,7 +136,12 @@ export function analyzeCascade(input: CascadeAnalysisInput): CascadeVerdict {
       message: `region '${region.regionId}' has a @map cycle (${cycle.join(' -> ')}); D3 demote, falling back to JS`,
       regionId: region.regionId,
     };
-    return { valid: false, demoteReason: 'd3', diagnostics: [diag, ...diagnostics], topoOrder: [] };
+    return {
+      valid: false,
+      demoteReason: 'd3',
+      diagnostics: [diag, ...diagnostics],
+      topoOrder: [],
+    };
   }
 
   // Each `@repeat Ri:<axis>` (where `axis` survived D2) must have an `@map Ri`.
@@ -144,7 +155,12 @@ export function analyzeCascade(input: CascadeAnalysisInput): CascadeVerdict {
         message: `region '${region.regionId}' has @repeat '${r.name}' without @map '${r.name}'; D3 demote, falling back to JS`,
         regionId: region.regionId,
       };
-      return { valid: false, demoteReason: 'd3', diagnostics: [diag, ...diagnostics], topoOrder: [] };
+      return {
+        valid: false,
+        demoteReason: 'd3',
+        diagnostics: [diag, ...diagnostics],
+        topoOrder: [],
+      };
     }
   }
 
@@ -154,11 +170,27 @@ export function analyzeCascade(input: CascadeAnalysisInput): CascadeVerdict {
   return { valid: true, diagnostics, topoOrder };
 }
 
+/**
+ * Tokenize an `@map` formula into identifier tokens. Drops:
+ *   - numeric literals (e.g. `0`, `1.5`, `-3`, `6.022e23`)
+ *   - WGSL keywords (`sqrt`, `floor`, `let`, `var`, ...)
+ *   - DSL keywords (`global_invocation_id`, ...)
+ *
+ * Numeric and keyword tokens never participate in the `@map` DAG, so
+ * including them produced false references (e.g. `@map a <- b + 1`
+ * used to treat `1` as a candidate dependency).
+ */
 function tokeniseFormula(formula: string): string[] {
-  // Split on anything that isn't an identifier character, keep
-  // everything else verbatim. This means `foo.bar` becomes
-  // `['foo', 'bar']`, `idx0` stays `idx0`, etc.
-  return formula.split(/[^A-Za-z0-9_]+/).filter((s) => s.length > 0);
+  const tokens: string[] = [];
+  const re = /[A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(formula)) !== null) {
+    const tok = match[0];
+    // Drop numeric literals: leading digit → skip.
+    if (/^[0-9]/.test(tok)) continue;
+    tokens.push(tok);
+  }
+  return tokens;
 }
 
 /**

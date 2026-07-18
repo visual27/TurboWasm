@@ -1,67 +1,126 @@
 diff --git a/src/blocks/scratch3_control.js b/src/blocks/scratch3_control.js
-index ebf1951..97dcb0b 100644
+index 97dcb0b..0a362f1 100644
 --- a/src/blocks/scratch3_control.js
 +++ b/src/blocks/scratch3_control.js
-@@ -52,6 +52,27 @@ class Scratch3ControlBlocks {
- 
-     repeat (args, util) {
-         const times = Math.round(Cast.toNumber(args.TIMES));
-+        // TurboWasm: optional GPU compute kernel hook (gpu-kernel-spec.md §7.2).
-+        // When a kernel has been registered for the block id of this `repeat`
-+        // (i.e. an @compute region), the hook short-circuits to the JS path:
-+        //   * reads loopCounter, runs the GPU dispatch,
-+        //   * writes the kernel result back into the bound buffers,
-+        //   * advances loopCounter to skip remaining JS iterations so the
-+        //     entire region completes in a single frame.
-+        // Returning `false` from the lookup signals "kernel handled it",
-+        // in which case we leave the loopCounter alone and yield.
-+        const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
-+        if (typeof __twGpuBlockId === 'string') {
-+            const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
-+            if (typeof __twGpuHook === 'function') {
-+                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
-+                if (__twGpuHandled) {
-+                    // Skip the JS path entirely. The kernel ran end-to-end
-+                    // and the loopCounter / state is already consistent.
+@@ -54,21 +54,43 @@ class Scratch3ControlBlocks {
+          const times = Math.round(Cast.toNumber(args.TIMES));
+         // TurboWasm: optional GPU compute kernel hook (gpu-kernel-spec.md §7.2).
+         // When a kernel has been registered for the block id of this `repeat`
+-        // (i.e. an @compute region), the hook short-circuits to the JS path:
+-        //   * reads loopCounter, runs the GPU dispatch,
++        // (i.e. an @compute region), the hook short-circuits to the GPU path:
++        //   * reads loopCounter, runs the GPU dispatch (await),
+         //   * writes the kernel result back into the bound buffers,
+-        //   * advances loopCounter to skip remaining JS iterations so the
+-        //     entire region completes in a single frame.
+-        // Returning `false` from the lookup signals "kernel handled it",
+-        // in which case we leave the loopCounter alone and yield.
++        //   * returns a DispatchResult; `{ ok: true, demoted: false }` means
++        //     "handled, skip the JS path"; any other shape (including
++        //     `{ ok: false, demoted: true }` from a D4 demote, or `false`)
++        //     means "fall through to the JS path".
++        // Async (Promise<DispatchResult>) dispatches are awaited via the
++        // vendored sequencer's Promise support, so the dispatcher can
++        // safely do `await queue.onSubmittedWorkDone()` + `mapAsync`.
++        // NOTE: we MUST inspect `handled.ok && !handled.demoted` rather
++        // than just `handled` — a `{ ok:false, demoted:true }` object is
++        // truthy, so a bare `if (handled) skip-body` would silently drop
++        // the JS body on D4 demote.
+         const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
+         if (typeof __twGpuBlockId === 'string') {
+             const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
+             if (typeof __twGpuHook === 'function') {
+-                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
+-                if (__twGpuHandled) {
+-                    // Skip the JS path entirely. The kernel ran end-to-end
+-                    // and the loopCounter / state is already consistent.
++                const __twGpuResult = __twGpuHook(__twGpuBlockId);
++                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
++                    // Async dispatch — yield the thread so the Promise
++                    // can resolve. On resolution we run the JS path
++                    // manually if the dispatcher fell through.
++                    if (util && typeof util.yield === 'function') {
++                        util.yield();
++                    }
++                    __twGpuResult.then(function (handled) {
++                        // D4-safe judgment: only treat as handled when the
++                        // dispatcher explicitly says so. `null`/`undefined`/
++                        // `false` and any failure shape all fall through
++                        // to the JS body.
++                        if (!handled || !handled.ok || handled.demoted) {
++                            // Dispatcher fell back. Run the JS path
++                            // manually for this iteration.
++                            if (typeof util.stackFrame.loopCounter === 'undefined') {
++                                util.stackFrame.loopCounter = times;
++                            }
++                            util.stackFrame.loopCounter--;
++                            if (util.stackFrame.loopCounter >= 0) {
++                                util.startBranch(1, true);
++                            }
++                        }
++                    });
 +                    return;
 +                }
-+            }
-+        }
-         // Initialize loop
-         if (typeof util.stackFrame.loopCounter === 'undefined') {
-             util.stackFrame.loopCounter = times;
-@@ -69,6 +90,18 @@ class Scratch3ControlBlocks {
- 
++                // Sync return path. Boolean false → fall through; any
++                // other truthy non-`{ok:true,demoted:false}` shape is
++                // conservatively also a fall-through.
++                if (__twGpuResult === true) {
+                     return;
+                 }
+             }
+@@ -90,16 +112,23 @@ class Scratch3ControlBlocks {
+
      repeatUntil (args, util) {
          const condition = Cast.toBoolean(args.CONDITION);
-+        // TurboWasm: identical hook to `repeat` above. @compute regions may
-+        // not start at repeat_until entrances (D1 demote), but the global
-+        // hook stays installed for code symmetry. The hook short-circuits
-+        // when this block id is registered.
-+        const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
-+        if (typeof __twGpuBlockId === 'string') {
-+            const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
-+            if (typeof __twGpuHook === 'function') {
-+                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
-+                if (__twGpuHandled) return;
-+            }
-+        }
+-        // TurboWasm: identical hook to `repeat` above. @compute regions may
+-        // not start at repeat_until entrances (D1 demote), but the global
+-        // hook stays installed for code symmetry. The hook short-circuits
+-        // when this block id is registered.
++        // TurboWasm: identical hook to `repeat` above. See `repeat` for
++        // the sync/async dispatch contract.
+         const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
+         if (typeof __twGpuBlockId === 'string') {
+             const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
+             if (typeof __twGpuHook === 'function') {
+-                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
+-                if (__twGpuHandled) return;
++                const __twGpuResult = __twGpuHook(__twGpuBlockId);
++                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
++                    if (util && typeof util.yield === 'function') util.yield();
++                    __twGpuResult.then(function (handled) {
++                        if (!handled || !handled.ok || handled.demoted) {
++                            if (!condition) util.startBranch(1, true);
++                        }
++                    });
++                    return;
++                }
++                if (__twGpuResult === true) return;
+             }
+         }
          // If the condition is false (repeat UNTIL), start the branch.
-         if (!condition) {
-             util.startBranch(1, true);
-@@ -77,6 +110,15 @@ class Scratch3ControlBlocks {
- 
+@@ -110,13 +139,22 @@ class Scratch3ControlBlocks {
+
      repeatWhile (args, util) {
          const condition = Cast.toBoolean(args.CONDITION);
-+        // TurboWasm: GPU hook. See `repeat` for semantics.
-+        const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
-+        if (typeof __twGpuBlockId === 'string') {
-+            const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
-+            if (typeof __twGpuHook === 'function') {
-+                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
-+                if (__twGpuHandled) return;
-+            }
-+        }
+-        // TurboWasm: GPU hook. See `repeat` for semantics.
++        // TurboWasm: GPU hook. See `repeat` for sync/async semantics.
+         const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
+         if (typeof __twGpuBlockId === 'string') {
+             const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
+             if (typeof __twGpuHook === 'function') {
+-                const __twGpuHandled = __twGpuHook(__twGpuBlockId, this, util);
+-                if (__twGpuHandled) return;
++                const __twGpuResult = __twGpuHook(__twGpuBlockId);
++                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
++                    if (util && typeof util.yield === 'function') util.yield();
++                    __twGpuResult.then(function (handled) {
++                        if (!handled || !handled.ok || handled.demoted) {
++                            if (condition) util.startBranch(1, true);
++                        }
++                    });
++                    return;
++                }
++                if (__twGpuResult === true) return;
+             }
+         }
          // If the condition is true (repeat WHILE), start the branch.
-         if (condition) {
-             util.startBranch(1, true);

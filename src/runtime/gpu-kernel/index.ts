@@ -26,7 +26,9 @@ export {
   renameIdentifiers,
 } from './wgsl-emitter';
 export type {
+  DispatchPlan,
   EmitInput,
+  EmitResult,
   IdentifierRenameResult,
   WorkgroupLimits,
   WorkgroupSize,
@@ -40,6 +42,7 @@ export {
 export type { BufferAccessEntry, DispatchOutcome, Kernel } from './kernel-registry';
 export {
   BYTES_PER_ELEMENT,
+  DEFAULT_MAX_BUFFER_ELEMENTS,
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_COPY_SRC,
   GPU_BUFFER_USAGE_STORAGE,
@@ -54,8 +57,12 @@ export type {
   ListBufferPoolOptions,
 } from './list-buffer-binding';
 export {
+  clampDispatchExtent,
   completeReadback,
+  dispatchKernel,
   dispatchKernelSync,
+  MAX_BUFFER_LENGTH,
+  MAX_COMPUTE_WORKGROUPS_PER_DIMENSION_DEFAULT,
 } from './__dispatch-kernel-sync';
 export type {
   DispatchContext,
@@ -64,19 +71,22 @@ export type {
   GpuLikeCommandEncoder,
   GpuLikeComputePassEncoder,
   GpuLikeDispatchDevice,
+  GpuLikeShaderModule,
+  RuntimeAdapter,
 } from './__dispatch-kernel-sync';
 export {
   applyGpuKernels,
   __getGpuKernelForBrowserVerify,
   __installGpuKernelRegistryForTesting,
-  __setGpuKernelLookup,
+  __setGpuKernelDispatcher,
   __uninstallGpuKernelRegistryForTesting,
 } from './apply-gpu-kernels';
+export type { DispatchFn } from './apply-gpu-kernels';
 export type {
   ApplyGpuKernelsOptions,
   ApplyGpuKernelsResult,
   LookupFn,
-} from './apply-gpu-kernels';
+} from './apply-gpu-kernels-types';
 export {
   initializeGpuKernels,
   __resetAdapterUnavailableWarningForTesting,

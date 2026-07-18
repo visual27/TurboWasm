@@ -3,6 +3,7 @@ import {
   applyGpuKernels,
   __getGpuKernelForBrowserVerify,
   __installGpuKernelRegistryForTesting,
+  __setGpuKernelDispatcher,
   __uninstallGpuKernelRegistryForTesting,
 } from '@/runtime/gpu-kernel/apply-gpu-kernels';
 import { KernelRegistry } from '@/runtime/gpu-kernel/kernel-registry';
@@ -35,6 +36,7 @@ function verdict(): RegionVerdict {
 
 afterEach(() => {
   __uninstallGpuKernelRegistryForTesting();
+  __setGpuKernelDispatcher(null);
 });
 
 describe('applyGpuKernels', () => {
@@ -51,6 +53,7 @@ describe('applyGpuKernels', () => {
     expect(result.installed).toBe(false);
     expect(result.reason).toBe('wasm-disabled');
     expect(window.__turboWasmGpuKernelLookup).toBeUndefined();
+    expect(window.__turboWasmGpuKernelDispatch).toBeUndefined();
   });
 
   it('short-circuits with reason "disabled" when enabled is false', () => {
@@ -66,9 +69,10 @@ describe('applyGpuKernels', () => {
     expect(result.installed).toBe(false);
     expect(result.reason).toBe('disabled');
     expect(window.__turboWasmGpuKernelLookup).toBeUndefined();
+    expect(window.__turboWasmGpuKernelDispatch).toBeUndefined();
   });
 
-  it('installs the lookup hook when enabled and enableWasm is true', () => {
+  it('installs both dispatcher and lookup when enabled and enableWasm are true', () => {
     const registry = new KernelRegistry();
     const pool = new ListBufferPool({ device: null });
     registry.register(verdict(), 'wgsl');
@@ -82,9 +86,18 @@ describe('applyGpuKernels', () => {
     expect(result.installed).toBe(true);
     expect(result.reason).toBeUndefined();
     expect(typeof window.__turboWasmGpuKernelLookup).toBe('function');
+    expect(typeof window.__turboWasmGpuKernelDispatch).toBe('function');
     const found = window.__turboWasmGpuKernelLookup?.('b1');
     expect(found).toBeDefined();
     expect(found?.id).toBe('region:test:b1');
+  });
+
+  it('dispatcher returns falsy when the kernel is not registered', async () => {
+    const registry = new KernelRegistry();
+    const pool = new ListBufferPool({ device: null });
+    applyGpuKernels({ enabled: true, enableWasm: true, registry, pool, device: null });
+    const result = await window.__turboWasmGpuKernelDispatch?.('unknown-block');
+    expect(result).toBe(false);
   });
 
   it('__installGpuKernelRegistryForTesting round-trips with __uninstall', () => {

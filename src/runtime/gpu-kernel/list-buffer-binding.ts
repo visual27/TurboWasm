@@ -13,21 +13,25 @@
  * `queue: { writeBuffer, submit, ... }` and the rest of the pipeline
  * works.
  *
- * Host-side mirror
- * ----------------
- * `dispatchKernelSync` calls `syncFromHost` before the GPU dispatch and
- * `syncToHost` after. On a real device the post-dispatch step would
- * `mapAsync` the buffer and await the readback; in M5 we keep a host-side
- * mirror that is updated on every `syncFromHost` so that:
+ * # byte dtype ABI
  *
- *   1. `syncToHost` can be synchronous and jsdom-friendly.
- *   2. Subsequent dispatches that re-read the same data can avoid a
- *      `queue.writeBuffer` call (caller is responsible for that; the pool
- *      does not cache dirty state).
+ * `byte` is host-side `Uint8Array` (N bytes). The WGSL emitter emits
+ * `array<u32>` storage with N cells, one per byte. Each u32 holds the
+ * byte value in its low 8 bits; the high 24 bits are zero. The physical
+ * GPU buffer is therefore `N * 4` bytes wide. `syncFromHost` packs the
+ * Uint8Array into a Uint32Array before upload; `syncToHost` unpacks on
+ * readback. This keeps the host API semantically clean (a list of
+ * bytes) while letting WGSL operate on a host-shareable type without
+ * requiring the `array<u8>` type, which is not host-shareable in WGSL
+ * without `enable chromium_experimental_pixel_local`.
  *
- * The mirror is the source of truth for what the host sees; the GPU
- * buffer is the source of truth for what the shader sees. Both must be
- * kept in step before / after every dispatch.
+ * # Cache invalidation on size change
+ *
+ * If a list grew between dispatches, the existing GPU buffer may be
+ * too small to hold the new data. `syncFromHost` reallocates the GPU
+ * buffer in that case; the dispatcher also re-creates the bind group
+ * because the underlying `GPUBuffer` reference changes (see
+ * `__dispatch-kernel-sync.ts`).
  */
 import type { BindDirective } from './types';
 
@@ -68,6 +72,10 @@ export interface GpuLikeQueue {
 export interface GpuLikeDevice {
   readonly queue: GpuLikeQueue;
   createBuffer(desc: { size: number; usage: number }): GpuLikeBuffer;
+  /** Optional `limits` for devices that expose them. */
+  readonly limits?: {
+    maxStorageBufferBindingSize?: number;
+  };
 }
 
 /** GPU buffer usage flags the pool combines when allocating. */
@@ -79,7 +87,9 @@ export const GPU_BUFFER_USAGE_COPY_SRC = 0x0001;
 export const BYTES_PER_ELEMENT: Readonly<Record<ListBufferDtype, number>> = {
   f32: 4,
   i32: 4,
-  byte: 1,
+  // `byte` is host-side Uint8Array but storage is array<u32>; one u32
+  // per byte. See the module doc comment.
+  byte: 4,
 };
 
 /**
@@ -335,6 +345,15 @@ function rebindMethods(binding: ListBufferBinding, device: GpuLikeDevice | null)
   binding.destroy = () => destroyBinding(internal);
 }
 
+/**
+ * Maximum buffer length we will allocate. The default of 1 Mi elements
+ * is large enough for almost any project; callers may override via
+ * `device.limits.maxStorageBufferBindingSize` when available. The runtime
+ * dispatcher (`__dispatch-kernel-sync.ts`) consults this ceiling to cap
+ * `@max length=` values.
+ */
+export const DEFAULT_MAX_BUFFER_ELEMENTS = 1 << 20;
+
 function syncFromHostImpl(
   binding: MutableBinding,
   device: GpuLikeDevice | null,
@@ -348,8 +367,8 @@ function syncFromHostImpl(
     setHostMirror(binding, data);
     return;
   }
-  const bytes = data.byteLength;
-  if (binding.gpuBuffer && binding.gpuBuffer.size < bytes) {
+  const physicalBytes = data.length * BYTES_PER_ELEMENT[binding.dtype];
+  if (binding.gpuBuffer && binding.gpuBuffer.size < physicalBytes) {
     try {
       binding.gpuBuffer.destroy();
     } catch {
@@ -359,21 +378,27 @@ function syncFromHostImpl(
   }
   if (!binding.gpuBuffer) {
     binding.gpuBuffer = device.createBuffer({
-      size: Math.max(bytes, BYTES_PER_ELEMENT[binding.dtype]),
+      size: Math.max(physicalBytes, BYTES_PER_ELEMENT[binding.dtype]),
       usage:
         GPU_BUFFER_USAGE_STORAGE |
         GPU_BUFFER_USAGE_COPY_DST |
         GPU_BUFFER_USAGE_COPY_SRC,
     });
   }
-  device.queue.writeBuffer(binding.gpuBuffer, 0, data);
+  // For `byte` we need to upload a Uint32 view, not the raw Uint8Array
+  // (otherwise WebGPU sees 1 byte per element instead of 4). We pack
+  // into a fresh Uint32Array so the source buffer is not constrained
+  // to a multiple of 4.
+  const uploadView: ArrayBufferView =
+    binding.dtype === 'byte' ? packBytesToU32(data as Uint8Array) : data;
+  device.queue.writeBuffer(binding.gpuBuffer, 0, uploadView);
   setHostMirror(binding, data);
 }
 
 function syncToHostImpl(binding: MutableBinding): Float32Array | Int32Array | Uint8Array {
-  // The host mirror is the source of truth in M5. Real WebGPU would do
-  // an async mapAsync readback here and copy the result into a typed
-  // array; we keep the mirror in step on every syncFromHost instead.
+  // The host mirror is the source of truth in M5. Real WebGPU would
+  // `mapAsync` here and copy the result into a typed array; we keep
+  // the mirror in step on every syncFromHost instead.
   return cloneHostMirror(binding);
 }
 
@@ -408,6 +433,19 @@ function coerceToTypedArray(
     arr[i] = v & 0xff;
   }
   return arr;
+}
+
+/**
+ * Pack a Uint8Array into a Uint32Array view, one byte per cell. The
+ * resulting array's `byteLength` is `data.length * 4`, matching the
+ * physical buffer width and the WGSL `array<u32>` storage layout.
+ */
+function packBytesToU32(data: Uint8Array): Uint32Array {
+  const out = new Uint32Array(data.length);
+  for (let i = 0; i < data.length; i += 1) {
+    out[i] = data[i] ?? 0;
+  }
+  return out;
 }
 
 function emptyTypedArray(dtype: ListBufferDtype): Float32Array | Int32Array | Uint8Array {

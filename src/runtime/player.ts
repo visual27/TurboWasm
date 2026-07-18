@@ -32,11 +32,13 @@ import { initWasmCollision } from '@/runtime/tw-wasm/wasm-collision-client';
 import {
   applyGpuKernels,
   __getGpuKernelForBrowserVerify,
+  __setGpuKernelDispatcher,
   __uninstallGpuKernelRegistryForTesting,
 } from '@/runtime/gpu-kernel/apply-gpu-kernels';
 import { initializeGpuKernels } from '@/runtime/gpu-kernel/initialize-gpu-kernels';
 import { KernelRegistry } from '@/runtime/gpu-kernel/kernel-registry';
 import { ListBufferPool } from '@/runtime/gpu-kernel/list-buffer-binding';
+import type { RuntimeAdapter } from '@/runtime/gpu-kernel/__dispatch-kernel-sync';
 import { useErrorLogStore } from '@/stores/useErrorLogStore';
 import {
   collectRegionVerdictsFromArrayBuffer,
@@ -1493,6 +1495,17 @@ export function isAttached(): boolean {
 let activeGpuRegistry: KernelRegistry | null = null;
 let activeGpuPool: ListBufferPool | null = null;
 /**
+ * Pipeline cache keyed by canonical key. Survives across dispatches
+ * within a project; cleared on project reload.
+ */
+let activeGpuPipelines: Map<string, unknown> | null = null;
+/**
+ * Long-lived runtime adapter wired to the vendored scratch-vm. Built
+ * once per project so the dispatcher closure has stable references to
+ * the live VM.
+ */
+let activeRuntimeAdapter: RuntimeAdapter | null = null;
+/**
  * Test-only handle to inspect the active GPU pool. Production code
  * consumes `activeGpuPool` indirectly via `applyGpuKernels`; tests
  * reach into the pool to validate rebind behaviour after a list
@@ -1513,12 +1526,7 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   // dispatcher into `window.__turboWasmGpuKernelLookup`. Without
   // this reset, kernels from project A would persist into B until
   // the page reloads.
-  if (activeGpuRegistry) {
-    activeGpuRegistry.clearForProjectReload();
-  }
-  __uninstallGpuKernelRegistryForTesting();
-  activeGpuRegistry = null;
-  activeGpuPool = null;
+  tearDownActiveGpuState();
 
   const settings = useSettingsStore.getState();
   const enableWasm = settings.enableWasm;
@@ -1586,6 +1594,8 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   });
   activeGpuRegistry = result.registry;
   activeGpuPool = result.pool;
+  activeGpuPipelines = new Map();
+  activeRuntimeAdapter = buildRuntimeAdapter(attachedScaffolding);
   // The M5 contract uses `GpuLikeDispatchDevice` (a wider shape than
   // `GpuLikeDevice`), but `initializeGpuKernels` only constrains it to
   // the narrower `GpuLikeDevice` so test doubles can populate just the
@@ -1604,6 +1614,8 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
     registry: result.registry,
     pool: result.pool,
     device: dispatchDevice,
+    pipelines: activeGpuPipelines,
+    runtime: activeRuntimeAdapter,
   });
 
   // eslint-disable-next-line no-console
@@ -1611,6 +1623,101 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
     `[gpu-kernel] bootstrapped ${verdicts.length} region(s); ${allDirectives.length} directive(s); ` +
       `device=${result.device ? 'available' : 'null'}; canonicalKeys=${result.registry.list().map((k) => k.canonicalKey).join(',') || '(none)'}`,
   );
+}
+
+/**
+ * Drop every module-local reference to the previous project's GPU
+ * state, free GPU buffers, and uninstall the vendored dispatcher
+ * global. Safe to call when no project is active (no-op).
+ */
+function tearDownActiveGpuState(): void {
+  if (activeGpuRegistry) {
+    activeGpuRegistry.clearForProjectReload();
+  }
+  if (activeGpuPool) {
+    activeGpuPool.clear();
+  }
+  activeGpuPipelines?.clear();
+  __setGpuKernelDispatcher(null);
+  __uninstallGpuKernelRegistryForTesting();
+  activeGpuRegistry = null;
+  activeGpuPool = null;
+  activeGpuPipelines = null;
+  activeRuntimeAdapter = null;
+}
+
+/**
+ * Build the RuntimeAdapter that the GPU dispatcher uses to read/write
+ * host lists and scalars. Production wires this to the vendored
+ * scratch-vm runtime's `__getListBuffer` / `__setListBuffer` etc.
+ * helpers added by the gpu-kernel-list-binding patch.
+ */
+function buildRuntimeAdapter(
+  scaffolding: ScaffoldingInstance | null,
+): RuntimeAdapter {
+  const getRuntime = (): unknown => {
+    const vm = (scaffolding as { vm?: { runtime?: unknown } } | null)?.vm;
+    return vm?.runtime ?? null;
+  };
+  const readBuffer = (
+    name: string,
+    len: number,
+    dtype: 'f32' | 'i32' | 'byte',
+  ): Float32Array | Int32Array | Uint8Array | null => {
+    const runtime = getRuntime() as
+      | {
+          __getListBuffer?: (
+            n: string,
+            d: 'f32' | 'i32' | 'byte',
+          ) => { data: Float32Array | Int32Array | Uint8Array } | null;
+        }
+      | null;
+    if (!runtime || typeof runtime.__getListBuffer !== 'function') {
+      if (dtype === 'i32') return new Int32Array(len);
+      if (dtype === 'byte') return new Uint8Array(len);
+      return new Float32Array(len);
+    }
+    const result = runtime.__getListBuffer(name, dtype);
+    if (!result) {
+      if (dtype === 'i32') return new Int32Array(len);
+      if (dtype === 'byte') return new Uint8Array(len);
+      return new Float32Array(len);
+    }
+    return result.data;
+  };
+  return {
+    readList: readBuffer,
+    writeList: (name, value) => {
+      const runtime = getRuntime() as
+        | {
+            __setListBuffer?: (
+              n: string,
+              v: Float32Array | Int32Array | Uint8Array,
+            ) => boolean;
+          }
+        | null;
+      if (!runtime || typeof runtime.__setListBuffer !== 'function') return;
+      runtime.__setListBuffer(name, value);
+    },
+    readScalar: (name) => {
+      const runtime = getRuntime() as
+        | { __getScalarValue?: (n: string) => number }
+        | null;
+      if (!runtime || typeof runtime.__getScalarValue !== 'function') return 0;
+      return runtime.__getScalarValue(name);
+    },
+    writeScalar: (name, value) => {
+      const runtime = getRuntime() as
+        | { __setScalarValue?: (n: string, v: number) => boolean }
+        | null;
+      if (!runtime || typeof runtime.__setScalarValue !== 'function') return false;
+      return runtime.__setScalarValue(name, value);
+    },
+    listLength: (name) => {
+      const data = readBuffer(name, 0, 'f32');
+      return data ? data.length : 0;
+    },
+  };
 }
 
 async function parseProjectJsonFromArrayBuffer(
