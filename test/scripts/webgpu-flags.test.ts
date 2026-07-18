@@ -86,7 +86,7 @@ describe('webgpu-flags', () => {
     it('attaches the WebGPU flag array by default', () => {
       const opts = getWebgpuLaunchOptions();
       expect(opts.headless).toBe(true);
-      expect(opts.args).toEqual(expect.arrayContaining(WEBGPU_LAUNCH_FLAGS));
+      expect(opts.args).toEqual(expect.arrayContaining([...WEBGPU_LAUNCH_FLAGS]));
       expect(opts.args).toHaveLength(WEBGPU_LAUNCH_FLAGS.length);
     });
 
