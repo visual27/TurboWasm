@@ -160,4 +160,76 @@ describe('parseComputeComment', () => {
     expect(result.directives.filter((d) => d.kind === 'workgroup_size')).toHaveLength(0);
     expect(result.diagnostics.some((d) => d.message.includes('@workgroup_size'))).toBe(true);
   });
+
+  describe('quoted names (Phase E, parser-package mirror)', () => {
+    it('parses @bind "my list"(0) rw f32 with hashed internalName', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind "my list"(0) rw f32'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({
+        kind: 'bind',
+        name: 'my list',
+        slot: 0,
+        readOnly: false,
+        dtype: 'f32',
+      });
+      expect((bind as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it('keeps an unquoted @bind name without internalName (backwards compat)', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind tmp0(0) rw f32'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({ kind: 'bind', name: 'tmp0', slot: 0, dtype: 'f32' });
+      expect((bind as { internalName?: string }).internalName).toBeUndefined();
+    });
+
+    it('escapes \\" and \\\\ inside a quoted @bind name', () => {
+      const quoteResult = parseComputeComment(
+        mkComment('@compute\n@bind "weird\\"name"(0) ro'),
+        REGION,
+      );
+      expect(quoteResult.directives.find((d) => d.kind === 'bind')).toMatchObject({
+        kind: 'bind',
+        name: 'weird"name',
+      });
+
+      const slashResult = parseComputeComment(
+        mkComment('@compute\n@bind "back\\\\slash"(0) ro'),
+        REGION,
+      );
+      expect(slashResult.directives.find((d) => d.kind === 'bind')).toMatchObject({
+        kind: 'bind',
+        name: 'back\\slash',
+      });
+    });
+
+    it('reports an empty quoted @bind name as a diagnostic', () => {
+      const result = parseComputeComment(mkComment('@compute\n@bind ""(0) ro'), REGION);
+      expect(result.directives.find((d) => d.kind === 'bind')).toBeUndefined();
+      expect(result.diagnostics.some((d) => d.message.includes('empty quoted name'))).toBe(true);
+    });
+
+    it('parses @map "idx with space" <- 0', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@map "idx with space" <- 0'),
+        REGION,
+      );
+      const map = result.directives.find((d) => d.kind === 'map');
+      expect(map).toMatchObject({ kind: 'map', var: 'idx with space', formula: '0' });
+      expect((map as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
+    });
+
+    it('parses an unquoted @map var without internalName (backwards compat)', () => {
+      const result = parseComputeComment(mkComment('@compute\n@map idx <- 0'), REGION);
+      const map = result.directives.find((d) => d.kind === 'map');
+      expect(map).toMatchObject({ kind: 'map', var: 'idx', formula: '0' });
+      expect((map as { internalName?: string }).internalName).toBeUndefined();
+    });
+  });
 });

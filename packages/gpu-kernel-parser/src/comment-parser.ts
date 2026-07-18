@@ -142,9 +142,13 @@ function parseBind(
   regionId: string,
   blockId: string,
 ): LineParse {
-  // Pattern: name(slot) ro|rw [f32|i32|byte]
+  // Pattern: <name>(<slot>) ro|rw [f32|i32|byte]
+  // `<name>` is either an identifier (`tmp0`) or a quoted string (`"my list"`).
+  // Quoted names carry an `internalName` (FNV-1a hash) used by the WGSL
+  // emitter to derive a valid identifier; unquoted names go through the
+  // existing reserved-keyword rename pass (no `internalName` set here).
   const m = tail.match(
-    /^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(\d+)\s*\)\s+(ro|rw)(?:\s+(f32|i32|byte))?\s*$/i,
+    /^("[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(\d+)\s*\)\s+(ro|rw)(?:\s+(f32|i32|byte))?\s*$/i,
   );
   if (!m) {
     return {
@@ -158,16 +162,24 @@ function parseBind(
       ),
     };
   }
-  const name = m[1] ?? '';
+  const nameToken = m[1] ?? '';
   const slotStr = m[2] ?? '0';
   const slot = Number.parseInt(slotStr, 10);
   const rw = (m[3] ?? '').toLowerCase() === 'rw';
   const dtypeRaw = (m[4] ?? 'f32').toLowerCase();
   const dtype: BindDirective['dtype'] =
     dtypeRaw === 'i32' ? 'i32' : dtypeRaw === 'byte' ? 'byte' : 'f32';
+  const parsed = parseNameToken(nameToken);
+  if (parsed.diagnostic) {
+    return {
+      directive: null,
+      diagnostic: { ...parsed.diagnostic, regionId, blockId, line },
+    };
+  }
   const directive: BindDirective = {
     kind: 'bind',
-    name,
+    name: parsed.name,
+    ...(parsed.internalName ? { internalName: parsed.internalName } : {}),
     slot,
     readOnly: !rw,
     dtype,
@@ -351,6 +363,10 @@ function parseMap(
   blockId: string,
 ): LineParse {
   // Pattern: <var> <- <formula>
+  // `<var>` is either an identifier or a quoted string. Quoted names
+  // carry an `internalName` so the WGSL emitter can derive a valid
+  // `let` binding name without disturbing the canonical key (which is
+  // keyed on `var`/`name`).
   const arrow = tail.indexOf('<-');
   if (arrow === -1) {
     return {
@@ -364,18 +380,13 @@ function parseMap(
       ),
     };
   }
-  const varName = tail.slice(0, arrow).trim();
+  const varToken = tail.slice(0, arrow).trim();
   const formula = tail.slice(arrow + 2).trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) {
+  const parsed = parseNameToken(varToken);
+  if (parsed.diagnostic) {
     return {
       directive: null,
-      diagnostic: makeDiag(
-        `malformed @map var name: expected identifier, got '${truncate(varName, 24)}'`,
-        regionId,
-        blockId,
-        line,
-        0,
-      ),
+      diagnostic: { ...parsed.diagnostic, regionId, blockId, line },
     };
   }
   if (formula.length === 0) {
@@ -392,13 +403,106 @@ function parseMap(
   }
   const directive: MapDirective = {
     kind: 'map',
-    var: varName,
+    var: parsed.name,
+    ...(parsed.internalName ? { internalName: parsed.internalName } : {}),
     formula,
     blockId,
     line,
     column: 0,
   };
   return { directive, diagnostic: null };
+}
+
+/**
+ * FNV-1a 32-bit hash, formatted as `__tw_<8 hex digits>`. Identical
+ * to `wgsl-emitter.ts:hashedIdentifier` — duplicated here so the
+ * parser does not depend on the emitter and so a parser-only build
+ * (this package) can still derive `internalName`. The two functions
+ * are expected to agree byte-for-byte because they share the same
+ * scratch name lookup contract.
+ */
+function hashedIdentifier(identifier: string, salt: number): string {
+  let hash = 0x811c9dc5;
+  const input = salt === 0 ? identifier : `${identifier}:${salt}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `__tw_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+interface ParsedNameToken {
+  name: string;
+  internalName: string | undefined;
+  diagnostic: Omit<Diagnostic, 'regionId' | 'blockId' | 'line'> | null;
+}
+
+/**
+ * Parse a name token that may be a plain identifier (`tmp0`) or a
+ * double-quoted string (`"my list"`, `"weird\"name"`). The quoted form
+ * (Phase E) lets users `@bind` Scratch lists that have spaces or
+ * punctuation in their names without violating WGSL's identifier
+ * grammar.
+ *
+ * Escape sequences inside quoted strings:
+ *   - `\"` → `"`
+ *   - `\\` → `\`
+ *   - any other `\X` → `X` (literal)
+ *
+ * On empty quoted names the helper returns a diagnostic. The caller
+ * propagates `regionId` / `blockId` / `line` into the final
+ * diagnostic.
+ */
+function parseNameToken(token: string): ParsedNameToken {
+  if (token.length >= 2 && token.startsWith('"') && token.endsWith('"')) {
+    const raw = token.slice(1, -1);
+    let unescaped = '';
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (ch === '\\' && i + 1 < raw.length) {
+        const next = raw[i + 1];
+        if (next === '"' || next === '\\') {
+          unescaped += next;
+          i += 1;
+          continue;
+        }
+        unescaped += next;
+        i += 1;
+        continue;
+      }
+      unescaped += ch;
+    }
+    if (unescaped.length === 0) {
+      return {
+        name: '',
+        internalName: undefined,
+        diagnostic: {
+          severity: 'warn',
+          code: 'gpu.dsl_syntax_error',
+          message: `empty quoted name in directive (got '${truncate(token, 32)}')`,
+          column: 0,
+        },
+      };
+    }
+    return {
+      name: unescaped,
+      internalName: hashedIdentifier(unescaped, 0),
+      diagnostic: null,
+    };
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(token)) {
+    return {
+      name: '',
+      internalName: undefined,
+      diagnostic: {
+        severity: 'warn',
+        code: 'gpu.dsl_syntax_error',
+        message: `expected identifier or quoted name, got '${truncate(token, 32)}'`,
+        column: 0,
+      },
+    };
+  }
+  return { name: token, internalName: undefined, diagnostic: null };
 }
 
 function normalizeAxis(raw: string): AxisFinal {

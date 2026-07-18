@@ -56,6 +56,12 @@ export type Dtype = 'f32' | 'i32' | 'byte';
 export interface BindDirective {
   kind: 'bind';
   name: string;
+  /**
+   * `__tw_<hash>` for quoted names that contain characters not legal in
+   * a WGSL identifier (spaces, punctuation). `undefined` for plain
+   * identifiers — the existing reserved-keyword rename pass handles those.
+   */
+  internalName?: string;
   slot: number;
   readOnly: boolean;
   dtype: Dtype;
@@ -94,6 +100,11 @@ export interface RepeatDirective {
 export interface MapDirective {
   kind: 'map';
   var: string;
+  /**
+   * `__tw_<hash>` for quoted names that contain characters not legal in
+   * a WGSL identifier. `undefined` for plain identifiers.
+   */
+  internalName?: string;
   formula: string;
   blockId: string;
   line: number;
