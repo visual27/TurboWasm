@@ -249,11 +249,17 @@ function parseBind(
   regionId: string,
   blockId: string,
 ): LineParse {
-  // Pattern: <name>(<slot>) ro|rw [f32|i32|byte]
+  // Pattern: <name>(<slot>) ro|rw [f32|i32|byte][, scalar|list]
   // `<name>` accepts either an identifier (`tmp0`) or a quoted string
   // (`"my list"`). Quoted names carry an `internalName` (FNV-1a hash)
   // used by the WGSL emitter to derive a valid identifier; unquoted
   // names go through the existing reserved-keyword rename pass.
+  //
+  // The trailing `, scalar` (or `, list`) suffix (§Phase 3, scalar
+  // uniform binding) selects the binding's storage kind. `, list` is
+  // the default (storage buffer); `, scalar` routes the binding through
+  // `@group(1) @binding(0)` as a single-number uniform. Omission of the
+  // suffix yields `storageKind: 'list'` (set explicitly below).
   //
   // We split on the first `(` so the name token can be quoted (a quoted
   // name may legally contain parentheses in future DSL extensions, so we
@@ -265,7 +271,7 @@ function parseBind(
     return {
       directive: null,
       diagnostic: makeDiag(
-        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte]', got '${truncate(tail, 32)}'`,
+        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte][, scalar]', got '${truncate(tail, 32)}'`,
         regionId,
         blockId,
         line,
@@ -275,12 +281,18 @@ function parseBind(
   }
   const nameToken = tail.slice(0, splitAt).trim();
   const after = tail.slice(splitAt + 1);
-  const m = after.match(/^\s*(\d+)\s*\)\s+(ro|rw)(?:\s+(f32|i32|byte))?\s*$/i);
+  // §Phase 3: trailing `, scalar|list` is optional. Capture group 4
+  // (when present) selects the storage kind; capture group 3 captures
+  // the dtype (default `f32`); group 2 captures ro|rw; group 1 captures
+  // the slot.
+  const m = after.match(
+    /^\s*(\d+)\s*\)\s+(ro|rw)(?:\s+(f32|i32|byte))?(?:\s*,\s*(scalar|list))?\s*$/i,
+  );
   if (!m) {
     return {
       directive: null,
       diagnostic: makeDiag(
-        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte]', got '${truncate(tail, 32)}'`,
+        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte][, scalar]', got '${truncate(tail, 32)}'`,
         regionId,
         blockId,
         line,
@@ -292,6 +304,12 @@ function parseBind(
   const rw = (m[2] ?? '').toLowerCase() === 'rw';
   const dtypeRaw = (m[3] ?? 'f32').toLowerCase();
   const dtype = (dtypeRaw === 'i32' || dtypeRaw === 'byte') ? dtypeRaw : 'f32';
+  const storageKindRaw = (m[4] ?? '').toLowerCase();
+  // Default ('list' / omitted) is encoded as 'list' to keep the field
+  // shape uniform; `undefined` only appears via direct object
+  // construction in tests / fixtures. The WGSL emitter treats
+  // `storageKind !== 'scalar'` as the list path.
+  const storageKind: 'list' | 'scalar' = storageKindRaw === 'scalar' ? 'scalar' : 'list';
   const parsed = parseNameToken(nameToken);
   if (parsed.diagnostic) {
     return { directive: null, diagnostic: { ...parsed.diagnostic, regionId, blockId, line } };
@@ -303,6 +321,7 @@ function parseBind(
     slot,
     readOnly: !rw,
     dtype: dtype === 'i32' ? 'i32' : dtype === 'byte' ? 'byte' : 'f32',
+    storageKind,
     line,
     column: 0,
   };

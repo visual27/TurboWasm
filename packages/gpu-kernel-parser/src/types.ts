@@ -63,6 +63,12 @@ export interface BindDirective {
   slot: number;
   readOnly: boolean;
   dtype: 'f32' | 'i32' | 'byte';
+  /**
+   * §Phase 3 — `'list'` is the default storage-buffer binding; `'scalar'`
+   * routes the binding through the scratch global-variable uniform path.
+   * `undefined` is treated as `'list'` everywhere downstream.
+   */
+  storageKind?: 'list' | 'scalar';
   line: number;
   column: number;
 }

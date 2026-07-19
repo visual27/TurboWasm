@@ -234,6 +234,18 @@ function stripVolatile(verdict: RegionVerdict): VolatileStrippedVerdict {
  * `effectivePatterns` は `BlockSubsetVerdict.effectivePatterns` 経由で
  * `RegionVerdict.blockSubset` に格納されるが、`stripVolatile` 側は
  * `blockSubset` を一切見ないので、これも自然に除外される。
+ *
+ * §Phase 3 (scalar uniform binding): `storageKind` is *kept* on the
+ * canonical key when set to `'scalar'` because the WGSL emitter
+ * produces a structurally different output (uniform-buffer path vs.
+ * storage-buffer path). The default `'list'` value is also kept for
+ * forward compatibility with old fixtures that may have been authored
+ * before the field was introduced; the parser writes `'list'`
+ * explicitly, but downstream code must not assume omission means
+ * anything other than `'list'`. The two legacy shapes (`storageKind:
+ * 'list'` vs. `storageKind: undefined`) remain distinguished here, but
+ * callers should treat them as semantically equivalent — see
+ * `test/runtime/gpu-kernel/kernel-registry.test.ts`.
  */
 function stripDirectiveVolatile(
   d: RegionVerdict['directives'][number],
@@ -246,6 +258,8 @@ function stripDirectiveVolatile(
         slot: d.slot,
         readOnly: d.readOnly,
         dtype: d.dtype,
+        // storageKind is *kept* (scalar vs list differs in WGSL output).
+        storageKind: d.storageKind ?? 'list',
       };
     case 'max':
       return { kind: d.kind, name: d.name, value: d.value };

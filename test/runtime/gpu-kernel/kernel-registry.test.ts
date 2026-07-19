@@ -225,4 +225,49 @@ describe('KernelRegistry', () => {
     const vDifferentId = makeVerdict('region:r1:b1', 'b1', [mapWithBound('idx1', 'scratch_block_B')]);
     expect(canonicalKeyOf(vWith)).toBe(canonicalKeyOf(vDifferentId));
   });
+
+  describe('canonical key storageKind (§Phase 3, scalar uniform binding)', () => {
+    function bindList(name: string, slot: number): BindDirective {
+      return { kind: 'bind', name, slot, readOnly: true, dtype: 'f32', storageKind: 'list', line: 0, column: 0 };
+    }
+    function bindScalar(name: string, slot: number): BindDirective {
+      return { kind: 'bind', name, slot, readOnly: true, dtype: 'f32', storageKind: 'scalar', line: 0, column: 0 };
+    }
+    function bindLegacy(name: string, slot: number): BindDirective {
+      // No storageKind field — represents a fixture authored before §Phase 3.
+      return { kind: 'bind', name, slot, readOnly: true, dtype: 'f32', line: 0, column: 0 };
+    }
+
+    it("treats omitted storageKind as 'list' for canonicalisation", () => {
+      // Legacy fixture (no storageKind) and explicit 'list' must share
+      // the same canonical key — both produce the storage-buffer path.
+      const vLegacy = makeVerdict('region:r1:b1', 'b1', [bindLegacy('buff_r', 0)]);
+      const vList = makeVerdict('region:r1:b1', 'b1', [bindList('buff_r', 0)]);
+      expect(canonicalKeyOf(vLegacy)).toBe(canonicalKeyOf(vList));
+    });
+
+    it("explicit ', list' suffix produces the same canonical key as omitted", () => {
+      const vList = makeVerdict('region:r1:b1', 'b1', [bindList('buff_r', 0)]);
+      const vLegacy = makeVerdict('region:r1:b1', 'b1', [bindLegacy('buff_r', 0)]);
+      expect(canonicalKeyOf(vList)).toBe(canonicalKeyOf(vLegacy));
+    });
+
+    it("scalar storageKind produces a different canonical key from list", () => {
+      // WGSL output differs: scalar takes the uniform-buffer path while
+      // list takes the storage-buffer path. The canonical key MUST
+      // distinguish them so a kernel isn't reused across the two paths.
+      const vList = makeVerdict('region:r1:b1', 'b1', [bindList('aabb_idx0', 4)]);
+      const vScalar = makeVerdict('region:r1:b1', 'b1', [bindScalar('aabb_idx0', 4)]);
+      expect(canonicalKeyOf(vList)).not.toBe(canonicalKeyOf(vScalar));
+    });
+
+    it("scalar storageKind is canonicalised consistently across fixture reloads", () => {
+      // Two separately authored fixtures with the same scalar binding
+      // (identical name/slot/dtype/storageKind) must share a canonical
+      // key.
+      const v1 = makeVerdict('region:r1:b1', 'b1', [bindScalar('screen_w', 8)]);
+      const v2 = makeVerdict('region:r1:b1', 'b1', [bindScalar('screen_w', 8)]);
+      expect(canonicalKeyOf(v1)).toBe(canonicalKeyOf(v2));
+    });
+  });
 });

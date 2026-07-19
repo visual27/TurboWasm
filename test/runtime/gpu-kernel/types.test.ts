@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type {
+  BindDirective,
   ExtractedRegion,
   MapDirective,
   RepeatDirective,
@@ -126,6 +127,49 @@ describe('types (§Phase 0)', () => {
         'gpu.multiple_compute_regions',
       );
       expect(GPU_DIAGNOSTIC_CODES.AXIS_AUTO_DETECTED).toBe('gpu.axis_auto_detected');
+    });
+  });
+
+  describe('BindDirective.storageKind (§Phase 3, scalar uniform binding)', () => {
+    it('is optional — a directive without it is still well-typed', () => {
+      const d: BindDirective = {
+        kind: 'bind',
+        name: 'tmp0',
+        slot: 0,
+        readOnly: false,
+        dtype: 'f32',
+        line: 0,
+        column: 0,
+      };
+      expect(d.storageKind).toBeUndefined();
+    });
+
+    it("accepts storageKind='list' explicitly", () => {
+      const d: BindDirective = {
+        kind: 'bind',
+        name: 'buff_r',
+        slot: 1,
+        readOnly: false,
+        dtype: 'f32',
+        storageKind: 'list',
+        line: 0,
+        column: 0,
+      };
+      expect(d.storageKind).toBe('list');
+    });
+
+    it("accepts storageKind='scalar' for scratch variable uniform path", () => {
+      const d: BindDirective = {
+        kind: 'bind',
+        name: 'aabb_idx0',
+        slot: 4,
+        readOnly: true,
+        dtype: 'i32',
+        storageKind: 'scalar',
+        line: 0,
+        column: 0,
+      };
+      expect(d.storageKind).toBe('scalar');
     });
   });
 });

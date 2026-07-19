@@ -410,4 +410,134 @@ describe('comment-parser', () => {
       expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
     });
   });
+
+  describe('storageKind suffix (§Phase 3, scalar uniform binding)', () => {
+    it("parses @bind x(0) ro i32, scalar as storageKind='scalar'", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind aabb_idx0(4) ro i32, scalar'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({
+        kind: 'bind',
+        name: 'aabb_idx0',
+        slot: 4,
+        readOnly: true,
+        dtype: 'i32',
+        storageKind: 'scalar',
+      });
+      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+    });
+
+    it("parses @bind x(0) ro f32, scalar as storageKind='scalar'", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind screen_w(8) ro f32, scalar'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({
+        kind: 'bind',
+        name: 'screen_w',
+        slot: 8,
+        dtype: 'f32',
+        storageKind: 'scalar',
+      });
+    });
+
+    it("parses explicit ', list' suffix as storageKind='list'", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind buff_r(1) rw f32, list'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({
+        kind: 'bind',
+        name: 'buff_r',
+        slot: 1,
+        readOnly: false,
+        dtype: 'f32',
+        storageKind: 'list',
+      });
+    });
+
+    it("omitted suffix defaults to storageKind='list' (legacy behavior)", () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind buff_r(1) rw f32'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({
+        kind: 'bind',
+        name: 'buff_r',
+        slot: 1,
+        dtype: 'f32',
+        storageKind: 'list',
+      });
+    });
+
+    it('storageKind suffix is case-insensitive on the keyword', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind x(0) ro f32, SCALAR'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({ storageKind: 'scalar' });
+    });
+
+    it('rejects an unknown storageKind keyword as malformed', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind x(0) ro f32, bogus'),
+        REGION,
+      );
+      expect(result.directives.find((d) => d.kind === 'bind')).toBeUndefined();
+      expect(result.diagnostics.some((d) => d.message.includes('@bind'))).toBe(true);
+    });
+
+    it('quoted name + scalar suffix produces internalName + storageKind', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind "my var"(0) ro f32, scalar'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({
+        kind: 'bind',
+        name: 'my var',
+        storageKind: 'scalar',
+      });
+      expect((bind as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
+    });
+
+    it('combines storageKind suffix with no dtype (defaults to f32)', () => {
+      const result = parseComputeComment(
+        mkComment('@compute\n@bind tmp0(0) ro, scalar'),
+        REGION,
+      );
+      const bind = result.directives.find((d) => d.kind === 'bind');
+      expect(bind).toMatchObject({
+        kind: 'bind',
+        name: 'tmp0',
+        slot: 0,
+        readOnly: true,
+        dtype: 'f32',
+        storageKind: 'scalar',
+      });
+    });
+
+    it('multiple scalar binds in one comment produce individual storageKinds', () => {
+      const text = [
+        '@compute',
+        '@bind aabb_idx0(4) ro i32, scalar',
+        '@bind screen_w(8) ro f32, scalar',
+        '@bind aabb_tmp0(10) ro f32, scalar',
+        '@bind buff_r(1) rw f32',
+      ].join('\n');
+      const result = parseComputeComment(mkComment(text), REGION);
+      const binds = result.directives.filter((d) => d.kind === 'bind');
+      expect(binds).toHaveLength(4);
+      expect(binds[0]).toMatchObject({ name: 'aabb_idx0', storageKind: 'scalar' });
+      expect(binds[1]).toMatchObject({ name: 'screen_w', storageKind: 'scalar' });
+      expect(binds[2]).toMatchObject({ name: 'aabb_tmp0', storageKind: 'scalar' });
+      expect(binds[3]).toMatchObject({ name: 'buff_r', storageKind: 'list' });
+    });
+  });
 });

@@ -249,11 +249,17 @@ function parseBind(
   regionId: string,
   blockId: string,
 ): LineParse {
-  // Pattern: <name>(<slot>) ro|rw [f32|i32|byte]
+  // Pattern: <name>(<slot>) ro|rw [f32|i32|byte][, scalar|list]
   // `<name>` accepts either an identifier (`tmp0`) or a quoted string
   // (`"my list"`). Quoted names carry an `internalName` (FNV-1a hash)
   // used by the WGSL emitter to derive a valid identifier; unquoted
   // names go through the existing reserved-keyword rename pass.
+  //
+  // The trailing `, scalar` (or `, list`) suffix (§Phase 3, scalar
+  // uniform binding) selects the binding's storage kind. `, list` is
+  // the default (storage buffer); `, scalar` routes the binding through
+  // `@group(1) @binding(0)` as a single-number uniform. Omission of the
+  // suffix yields `storageKind: 'list'` (set explicitly below).
   //
   // We split on the first `(` so the name token can be quoted (a quoted
   // name may legally contain parentheses in future DSL extensions, so we
@@ -265,7 +271,7 @@ function parseBind(
     return {
       directive: null,
       diagnostic: makeDiag(
-        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte]', got '${truncate(tail, 32)}'`,
+        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte][, scalar]', got '${truncate(tail, 32)}'`,
         regionId,
         blockId,
         line,
@@ -275,12 +281,18 @@ function parseBind(
   }
   const nameToken = tail.slice(0, splitAt).trim();
   const after = tail.slice(splitAt + 1);
-  const m = after.match(/^\s*(\d+)\s*\)\s+(ro|rw)(?:\s+(f32|i32|byte))?\s*$/i);
+  // §Phase 3: trailing `, scalar|list` is optional. Capture group 4
+  // (when present) selects the storage kind; capture group 3 captures
+  // the dtype (default `f32`); group 2 captures ro|rw; group 1 captures
+  // the slot.
+  const m = after.match(
+    /^\s*(\d+)\s*\)\s+(ro|rw)(?:\s+(f32|i32|byte))?(?:\s*,\s*(scalar|list))?\s*$/i,
+  );
   if (!m) {
     return {
       directive: null,
       diagnostic: makeDiag(
-        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte]', got '${truncate(tail, 32)}'`,
+        `malformed @bind: expected '<name>(<slot>) ro|rw [f32|i32|byte][, scalar]', got '${truncate(tail, 32)}'`,
         regionId,
         blockId,
         line,
@@ -292,6 +304,12 @@ function parseBind(
   const rw = (m[2] ?? '').toLowerCase() === 'rw';
   const dtypeRaw = (m[3] ?? 'f32').toLowerCase();
   const dtype = (dtypeRaw === 'i32' || dtypeRaw === 'byte') ? dtypeRaw : 'f32';
+  const storageKindRaw = (m[4] ?? '').toLowerCase();
+  // Default ('list' / omitted) is encoded as 'list' to keep the field
+  // shape uniform; `undefined` only appears via direct object
+  // construction in tests / fixtures. The WGSL emitter treats
+  // `storageKind !== 'scalar'` as the list path.
+  const storageKind: 'list' | 'scalar' = storageKindRaw === 'scalar' ? 'scalar' : 'list';
   const parsed = parseNameToken(nameToken);
   if (parsed.diagnostic) {
     return { directive: null, diagnostic: { ...parsed.diagnostic, regionId, blockId, line } };
@@ -303,6 +321,7 @@ function parseBind(
     slot,
     readOnly: !rw,
     dtype: dtype === 'i32' ? 'i32' : dtype === 'byte' ? 'byte' : 'f32',
+    storageKind,
     line,
     column: 0,
   };
@@ -329,6 +348,38 @@ function findUnquotedOpenParen(s: string): number {
       continue;
     }
     if (!inQuote && ch === '(') return i;
+  }
+  return -1;
+}
+
+/**
+ * Find the index of the *last* unquoted `,` in `s`. Quoted segments
+ * (between matching `"` characters) are skipped so a quoted name or a
+ * `name[idx]` formula containing a comma does not break the split.
+ * Returns -1 when no unquoted `,` is found.
+ *
+ * §Phase 0 — used by `parseTrailingBlockId` to detect the boundary
+ * between the formula and the trailing `, blockId="<id>"` argument
+ * without misreading commas inside `len(my_list)` / `"a,b"` etc.
+ *
+ * Scans from the end so a formula written as `expr, max=64, blockId="x"`
+ * finds the comma immediately before `blockId="x"` rather than the
+ * earlier comma before `max=64`.
+ */
+function findLastUnquotedComma(s: string): number {
+  let inQuote = false;
+  for (let i = s.length - 1; i >= 0; i -= 1) {
+    const ch = s[i];
+    if (ch === '\\' && inQuote && i - 1 >= 0) {
+      // Skip escaped char inside a quoted string.
+      i -= 1;
+      continue;
+    }
+    if (ch === '"') {
+      inQuote = !inQuote;
+      continue;
+    }
+    if (!inQuote && ch === ',') return i;
   }
   return -1;
 }
@@ -414,6 +465,64 @@ function findUnquotedEq(s: string): number {
   return -1;
 }
 
+/**
+ * §Phase 0 — strip a trailing `, blockId="<id>"` argument off a directive
+ * tail. Returns the trimmed tail with the suffix removed plus the parsed
+ * id, or `{ tail }` if no suffix was found. When `blockId=` is present in
+ * a malformed form (unquoted, missing closing quote, etc.) a
+ * `gpu.dsl_syntax_error` diagnostic is emitted and the suffix is dropped
+ * silently — the directive still parses without `boundBlockId`.
+ */
+function parseTrailingBlockId(
+  tail: string,
+  line: number,
+  regionId: string,
+  blockId: string,
+  diagnostics: Diagnostic[],
+): { tail: string; boundBlockId?: string } {
+  // Look at the *last* unquoted `,` and check whether what follows is a
+  // well-formed `blockId="..."` argument. This keeps the regex scope tight
+  // so a `len(my_list)` style formula with a trailing comma does not
+  // accidentally match.
+  const lastComma = findLastUnquotedComma(tail);
+  if (lastComma < 0) return { tail };
+  const head = tail.slice(0, lastComma).trimEnd();
+  const suffix = tail.slice(lastComma + 1).trim();
+  const m = suffix.match(/^blockId\s*=\s*"([^"]*)"\s*$/);
+  if (!m) {
+    // Either `blockId=` appears with malformed shape, or the trailing
+    // comma is not part of a `blockId=` suffix (e.g. formula ends with
+    // `, `). Only complain when `blockId=` is recognisable.
+    if (/^blockId\s*=/.test(suffix)) {
+      diagnostics.push({
+        severity: 'warn',
+        code: 'gpu.dsl_syntax_error',
+        message: `malformed blockId=... in directive: expected trailing ', blockId="<id>"' (got '${truncate(tail, 32)}')`,
+        regionId,
+        blockId,
+        line,
+        column: 0,
+      });
+      return { tail: head };
+    }
+    return { tail };
+  }
+  const id = m[1] ?? '';
+  if (id.length === 0) {
+    diagnostics.push({
+      severity: 'warn',
+      code: 'gpu.dsl_syntax_error',
+      message: `empty blockId="..." in directive (got '${truncate(tail, 32)}')`,
+      regionId,
+      blockId,
+      line,
+      column: 0,
+    });
+    return { tail: head };
+  }
+  return { tail: head, boundBlockId: id };
+}
+
 function parseWorkgroupSize(
   tail: string,
   line: number,
@@ -462,11 +571,12 @@ function parseRepeat(
   blockId: string,
   repeatBlockId: string,
 ): LineParse {
-  // Pattern: <name>[:<axis>] = <formula>[, max=<uint>]
+  // Pattern: <name>[:<axis>] = <formula>[, max=<uint>][, blockId="<id>"]
   // Both `<name>` and `<axis>` accept either an identifier or a quoted
   // string (§Phase E+). The formula may contain anything up to a trailing
-  // `, max=...`. We split on the first *unquoted* `=` so a quoted name
-  // containing future-extension characters does not break the parse.
+  // `, max=...` and/or `, blockId="..."`. We split on the first *unquoted*
+  // `=` so a quoted name containing future-extension characters does not
+  // break the parse.
   const eq = findUnquotedEq(tail);
   if (eq < 0) {
     return {
@@ -483,12 +593,38 @@ function parseRepeat(
   const head = tail.slice(0, eq).trim();
   let right = tail.slice(eq + 1).trim();
 
-  // Optional trailing `, max=<uint>`.
+  // Optional trailing `, max=<uint>` and/or `, blockId="<id>"` (§Phase 0).
+  // The two may appear in either order, so we iterate the suffix scan
+  // up to a small fixed budget. Each pass strips one recognisable
+  // suffix; the loop breaks when neither pattern matches the tail.
   let max: number | undefined;
-  const maxMatch = right.match(/,\s*max\s*=\s*(\d+)\s*$/);
-  if (maxMatch) {
-    max = Number.parseInt(maxMatch[1] ?? '0', 10);
-    right = right.slice(0, right.length - maxMatch[0].length).trim();
+  let boundBlockId: string | undefined;
+  const suffixDiagnostics: Diagnostic[] = [];
+  for (let pass = 0; pass < 4; pass += 1) {
+    const maxMatch = right.match(/,\s*max\s*=\s*(\d+)\s*$/);
+    if (maxMatch) {
+      max = Number.parseInt(maxMatch[1] ?? '0', 10);
+      right = right.slice(0, right.length - maxMatch[0].length).trim();
+      continue;
+    }
+    const beforeLen = right.length;
+    const blockIdSuffix = parseTrailingBlockId(
+      right,
+      line,
+      regionId,
+      blockId,
+      suffixDiagnostics,
+    );
+    if (blockIdSuffix.boundBlockId !== undefined) {
+      boundBlockId = blockIdSuffix.boundBlockId;
+      right = blockIdSuffix.tail;
+      continue;
+    }
+    // `parseTrailingBlockId` shrinks the tail only when it stripped
+    // something (malformed blockId= suffix with a diagnostic). When
+    // nothing matched the loop is done.
+    if (blockIdSuffix.tail.length === beforeLen) break;
+    right = blockIdSuffix.tail;
   }
 
   // Head: `<name>` or `<name>:<axis>`. Find the unquoted `:` between
@@ -533,9 +669,15 @@ function parseRepeat(
     formula: right,
     max,
     blockId: repeatBlockId,
+    ...(boundBlockId ? { boundBlockId } : {}),
     line,
     column: 0,
   };
+  // Surface the trailing-blockId diagnostics alongside the directive so
+  // the caller can fold them into the region's diagnostic list.
+  if (suffixDiagnostics.length > 0) {
+    return { directive, diagnostic: suffixDiagnostics[0] ?? null };
+  }
   return { directive, diagnostic: null };
 }
 
@@ -562,7 +704,7 @@ function parseMap(
   regionId: string,
   blockId: string,
 ): LineParse {
-  // Pattern: <var> <- <formula>
+  // Pattern: <var> <- <formula>[, blockId="<id>"]
   // `<var>` is either an identifier or a quoted string. Quoted names
   // carry an `internalName` so the WGSL emitter can derive a valid
   // `let` binding name without disturbing the canonical key (which is
@@ -581,7 +723,7 @@ function parseMap(
     };
   }
   const varToken = tail.slice(0, arrow).trim();
-  const formula = tail.slice(arrow + 2).trim();
+  let formula = tail.slice(arrow + 2).trim();
   const parsed = parseNameToken(varToken);
   if (parsed.diagnostic) {
     return { directive: null, diagnostic: { ...parsed.diagnostic, regionId, blockId, line } };
@@ -598,15 +740,26 @@ function parseMap(
       ),
     };
   }
+
+  // Optional trailing `, blockId="<id>"` (§Phase 0).
+  const diagnostics: Diagnostic[] = [];
+  const blockIdSuffix = parseTrailingBlockId(formula, line, regionId, blockId, diagnostics);
+  formula = blockIdSuffix.tail;
+  const boundBlockId = blockIdSuffix.boundBlockId;
+
   const directive: MapDirective = {
     kind: 'map',
     var: parsed.name,
     ...(parsed.internalName ? { internalName: parsed.internalName } : {}),
     formula,
     blockId,
+    ...(boundBlockId ? { boundBlockId } : {}),
     line,
     column: 0,
   };
+  if (diagnostics.length > 0) {
+    return { directive, diagnostic: diagnostics[0] ?? null };
+  }
   return { directive, diagnostic: null };
 }
 

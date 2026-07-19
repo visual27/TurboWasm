@@ -84,12 +84,24 @@ export const ALL_AXES: readonly AxisFinal[] = [
 export const HOOK_OPCODE_KEYS = ['SUBSTACK', 'SUBSTACK2', 'CONDITION'] as const;
 
 /**
- * `@bind <name>(<slot>) ro|rw [f32|i32|byte]`.
+ * `@bind <name>(<slot>) ro|rw [f32|i32|byte][, scalar]`.
  *
  * `dtype` defaults to `'f32'` when the directive omits it. `slot` is the
- * GPU `@group(0) @binding(N)` index that the WGSL emitter assigns.
- * `rw` is true for storage buffers that the body writes to, false for
- * read-only storage (which the kernel-registry can dispatch concurrently).
+ * GPU `@group(0) @binding(N)` index that the WGSL emitter assigns for
+ * list bindings. `rw` is true for storage buffers that the body writes
+ * to, false for read-only storage (which the kernel-registry can
+ * dispatch concurrently).
+ *
+ * `storageKind` (§Phase 3, scalar uniform binding): when `'scalar'`,
+ * the binding is read once at dispatch time as a single number from the
+ * scratch global-variable space (`@group(1) @binding(0)` uniform
+ * buffer); scalar uniforms do not consume a `slot` index (they share one
+ * slot 0). `'list'` is the default for `@bind <name>(N) ...` — it
+ * selects the storage-buffer path. The trailing `, scalar` suffix in
+ * the DSL maps to `storageKind: 'scalar'`; the trailing `, list` suffix
+ * (or omission) maps to `storageKind: 'list'` or `undefined`.
+ * `undefined` and `'list'` are equivalent for canonicalisation (see
+ * `kernel-registry.ts:stripDirectiveVolatile`).
  *
  * `internalName` (§Phase E): when the user writes a quoted name like
  * `@bind "my list"(0) rw f32`, the directive carries `name = 'my list'`
@@ -108,6 +120,12 @@ export interface BindDirective {
   slot: number;
   readOnly: boolean;
   dtype: 'f32' | 'i32' | 'byte';
+  /**
+   * §Phase 3 — `'list'` is the default storage-buffer binding; `'scalar'`
+   * routes the binding through the scratch global-variable uniform path.
+   * `undefined` is treated as `'list'` everywhere downstream.
+   */
+  storageKind?: 'list' | 'scalar';
   line: number;
   column: number;
 }
