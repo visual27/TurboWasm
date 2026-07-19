@@ -101,6 +101,17 @@ export interface RepeatDirective {
   formula: string;
   max?: number;
   blockId: string;
+  /**
+   * §Phase 0 (nested-parallelization-00-overview §1.1) — optional
+   * trailing `, blockId="<id>"` argument naming the scratch block the
+   * directive is pointing at (typically a `data_changevariableby` /
+   * `data_itemoflist`). Volatile: excluded from canonical key.
+   *
+   * Mirrors the runtime `RepeatDirective.boundBlockId?` field on
+   * `src/runtime/gpu-kernel/types.ts`. Added in Phase 2 §15.12 so the
+   * parser package surface matches the Viewer runtime DTO.
+   */
+  boundBlockId?: string;
   line: number;
   column: number;
 }
@@ -115,6 +126,11 @@ export interface MapDirective {
   internalName?: string;
   formula: string;
   blockId: string;
+  /**
+   * §Phase 0 — see `RepeatDirective.boundBlockId?` above. Mirrors the
+   * runtime field on `src/runtime/gpu-kernel/types.ts` (Phase 2 §15.12).
+   */
+  boundBlockId?: string;
   line: number;
   column: number;
 }
