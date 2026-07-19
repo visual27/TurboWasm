@@ -28,6 +28,7 @@
  */
 import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
 import { scratchBlockToWgslExpr, type ScratchBlockExprContext } from './scratch-block-expr';
+import { extractBlockReference } from './block-reference';
 import type { Diagnostic, ImplicitAxis, ParsedDirective, RawBlock, RepeatDirective } from './types';
 
 export interface CollectImplicitAxesResult {
@@ -185,6 +186,10 @@ export function axisToRepeatDirective(axis: ImplicitAxis): RepeatDirective {
  *
  * Returns `null` when the TIMES slot is empty / unsupported opcode / recursion
  * depth > 32 — caller demotes the axis to sequential.
+ *
+ * §Phase 1: TIMES extraction delegates to the shared
+ * `extractBlockReference` helper so SB3 raw shapes (`[2, blockId]`,
+ * `{ id }`, bare string, ...) are all accepted.
  */
 function deriveFormulaFromRepeat(
   repeat: RawBlock,
@@ -193,39 +198,11 @@ function deriveFormulaFromRepeat(
 ): string | null {
   if (repeat.opcode !== 'control_repeat') return null;
   const timesInput = repeat.inputs['TIMES'];
-  const blockId = extractBlockIdFromTimes(timesInput);
+  const blockId = extractBlockReference(timesInput);
   if (!blockId) return null;
   const shadow = blocks[blockId];
   if (!shadow) return null;
   return scratchBlockToWgslExpr(shadow, blocks, context, 0);
-}
-
-function extractBlockIdFromTimes(input: unknown): string | null {
-  if (input === undefined || input === null) return null;
-  if (typeof input === 'string') return input;
-  if (Array.isArray(input)) {
-    for (const item of input) {
-      if (typeof item === 'string') return item;
-      if (Array.isArray(item)) {
-        for (const inner of item) {
-          if (typeof inner === 'string') return inner;
-        }
-      }
-      if (item && typeof item === 'object') {
-        const objValue = item as { id?: unknown; block?: unknown };
-        if (typeof objValue.id === 'string') return objValue.id;
-        if (typeof objValue.block === 'string') return objValue.block;
-      }
-    }
-    return null;
-  }
-  if (input && typeof input === 'object') {
-    const value = input as { id?: unknown; block?: unknown; shadow?: unknown };
-    if (typeof value.id === 'string') return value.id;
-    if (typeof value.block === 'string') return value.block;
-    if (value.shadow !== undefined) return extractBlockIdFromTimes(value.shadow);
-  }
-  return null;
 }
 
 function collectExplicitRepeatNames(directives: readonly ParsedDirective[]): Set<string> {

@@ -34,6 +34,7 @@ import {
   type RawBlock,
   type RepeatDirective,
 } from './types';
+import { extractBlockReference } from './block-reference';
 
 export interface AxisAnalysisResult {
   /** Keyed by `repeatName` (e.g. `'R0'`). */
@@ -234,6 +235,13 @@ const VARIABLE_WRITE_OPCODES: ReadonlySet<string> = new Set([
  * Walk every body block's `fields` / `inputs` and collect the names
  * referenced by `data_setvariableto` / `data_changevariableby` opcodes.
  * We use this to detect (c).
+ *
+ * §Phase 1: `fields.VARIABLE` is fed through `extractBlockReference`
+ * so the union of accept-shapes (`{ id }`, `{ id, name }`, bare string,
+ * `[name, null]`-style primitive field, ...) all resolve uniformly. The
+ * `[name, null]` array shape (SB3 primitive field) returns the first
+ * element via the helper's per-element scan, matching the legacy
+ * `{ id }.id`-style id we used to read here.
  */
 function findVariableWrites(bodyBlocks: RawBlock[]): Set<string> {
   const writes = new Set<string>();
@@ -241,12 +249,9 @@ function findVariableWrites(bodyBlocks: RawBlock[]): Set<string> {
     if (!VARIABLE_WRITE_OPCODES.has(block.opcode)) continue;
     const fields = block.fields;
     const variable = fields['VARIABLE'];
-    if (
-      variable &&
-      typeof variable === 'object' &&
-      typeof (variable as { id?: unknown }).id === 'string'
-    ) {
-      writes.add(((variable as { id: string }).id ?? '').toLowerCase());
+    const refId = extractBlockReference(variable);
+    if (refId) {
+      writes.add(refId.toLowerCase());
     }
     // Some blocks carry the variable name as a top-level field.
     const variable2 = fields['FIELD_LIST'];
@@ -401,16 +406,12 @@ function collectBodyBlocks(
     if (!block) continue;
     out.push(block);
     if (typeof block.next === 'string') queue.push(block.next);
+    // §Phase 1: route every hook (SUBSTACK / SUBSTACK2 / CONDITION)
+    // through `extractBlockReference` so this walker shares its accept
+    // criteria with region-extractor / block-subset.
     for (const key of HOOK_OPCODE_KEYS) {
-      const sub = block.inputs[key];
-      if (typeof sub === 'string') queue.push(sub);
-      else if (
-        sub &&
-        typeof sub === 'object' &&
-        typeof (sub as { id?: unknown }).id === 'string'
-      ) {
-        queue.push((sub as { id: string }).id);
-      }
+      const refId = extractBlockReference(block.inputs[key]);
+      if (refId) queue.push(refId);
     }
   }
   return out;

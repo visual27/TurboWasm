@@ -26,6 +26,7 @@
  */
 import type { BindDirective, ParsedDirective, RawBlock } from './types';
 import type { ScalarUniformBinding } from './scalar-uniform-binding';
+import { extractBlockReference } from './block-reference';
 
 /**
  * Backwards-compatible alias for the Phase 2 structural subset. Now that
@@ -216,10 +217,9 @@ function resolveItemOfList(
 }
 
 /**
- * Resolve a scratch-vm `inputs.<key>` reference to its block. The reference
- * can be either a bare block-id string or a shadow tuple
- * `[1, blockId]` / `[2, blockId]`. Returns `null` when the slot is empty
- * or the referenced block is missing.
+ * Resolve a scratch-vm `inputs.<key>` reference to its block. §Phase 1:
+ * delegates to the shared `extractBlockReference` helper so every
+ * downstream site accepts the same union of shapes.
  */
 function resolveInput(
   block: RawBlock,
@@ -228,38 +228,9 @@ function resolveInput(
 ): RawBlock | null {
   const input = block.inputs[key];
   if (input === undefined || input === null) return null;
-  const blockId = extractBlockIdFromInput(input);
+  const blockId = extractBlockReference(input);
   if (!blockId) return null;
   return blocks[blockId] ?? null;
-}
-
-function extractBlockIdFromInput(input: unknown): string | null {
-  if (typeof input === 'string') return input;
-  if (Array.isArray(input)) {
-    for (const item of input) {
-      if (typeof item === 'string') {
-        return item;
-      }
-      if (Array.isArray(item)) {
-        for (const inner of item) {
-          if (typeof inner === 'string') return inner;
-        }
-      }
-      if (item && typeof item === 'object') {
-        const objValue = item as { id?: unknown; block?: unknown };
-        if (typeof objValue.id === 'string') return objValue.id;
-        if (typeof objValue.block === 'string') return objValue.block;
-      }
-    }
-    return null;
-  }
-  if (input && typeof input === 'object') {
-    const value = input as { id?: unknown; block?: unknown; shadow?: unknown };
-    if (typeof value.id === 'string') return value.id;
-    if (typeof value.block === 'string') return value.block;
-    if (value.shadow !== undefined) return extractBlockIdFromInput(value.shadow);
-  }
-  return null;
 }
 
 function literalToString(input: unknown): string | null {

@@ -41,6 +41,7 @@ import {
   type ParsedProject,
   type RawBlock,
 } from './types';
+import { extractBlockReference } from './block-reference';
 import { collectIterationAdvancePatterns } from './iteration-advance-pattern';
 import { collectIndirectAccessPatterns } from './indirect-access-pattern';
 import { validateBoundBlockIds } from './bound-block-validator';
@@ -242,16 +243,12 @@ function collectReachableBlocks(project: ParsedProject, bodyBlockIds: readonly s
     if (!block) continue;
     bodyBlocks.push(block);
     if (typeof block.next === 'string') queue.push(block.next);
+    // §Phase 1: route every hook (SUBSTACK / SUBSTACK2 / CONDITION)
+    // through `extractBlockReference` so the union of accept-shapes is
+    // shared with `region-extractor.ts` and `axis-analysis.ts`.
     for (const key of HOOK_OPCODE_KEYS) {
-      const sub = block.inputs[key];
-      if (typeof sub === 'string') queue.push(sub);
-      else if (
-        sub &&
-        typeof sub === 'object' &&
-        typeof (sub as { id?: unknown }).id === 'string'
-      ) {
-        queue.push((sub as { id: string }).id);
-      }
+      const refId = extractBlockReference(block.inputs[key]);
+      if (refId) queue.push(refId);
     }
   }
   return bodyBlocks;
@@ -275,14 +272,13 @@ function findBlock(project: ParsedProject, id: string): RawBlock | undefined {
   return undefined;
 }
 
+/**
+ * §Phase 1: SUBSTACK id extraction is a thin wrapper around the shared
+ * `extractBlockReference` helper so all callers across the gpu-kernel
+ * pipeline accept the same union of shapes.
+ */
 function readSubstackId(block: RawBlock): string | null {
-  const sub = block.inputs['SUBSTACK'];
-  if (typeof sub === 'string') return sub;
-  if (sub && typeof sub === 'object') {
-    const id = (sub as { id?: unknown }).id;
-    if (typeof id === 'string') return id;
-  }
-  return null;
+  return extractBlockReference(block.inputs['SUBSTACK']);
 }
 
 function findCommentByBlockId(

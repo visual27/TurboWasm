@@ -103,6 +103,51 @@ describe('region-extractor', () => {
     expect(regions[0]?.firstSubstackBlockId).toBe('a');
   });
 
+  it('reads SUBSTACK from [2, blockId] array shape (real SB3 layout, §15.1)', () => {
+    // Real SB3 wraps block references in arrays where `input[0]` is the
+    // shadow kind (2 = `INPUT_BLOCK_NO_SHADOW`) and `input[1]` is the
+    // referenced block id. Phase 1 unifies all shapes through
+    // `extractBlockReference` so this works without per-call-site
+    // branching.
+    const repeat = mkBlock('repeat0', 'control_repeat', {
+      inputs: { SUBSTACK: [2, 'a'] },
+    });
+    const a = mkBlock('a', 'data_setvariableto');
+    const project = mkProject([repeat, a], [
+      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+    ]);
+    const { regions } = extractRegions(project);
+    expect(regions).toHaveLength(1);
+    expect(regions[0]?.firstSubstackBlockId).toBe('a');
+    expect(regions[0]?.bodyBlockIds).toEqual(['a']);
+  });
+
+  it('reads SUBSTACK from [1, blockId] INPUT_SAME_BLOCK_SHADOW shape (§15.1)', () => {
+    const repeat = mkBlock('repeat0', 'control_repeat', {
+      inputs: { SUBSTACK: [1, 'a'] },
+    });
+    const a = mkBlock('a', 'data_setvariableto');
+    const project = mkProject([repeat, a], [
+      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+    ]);
+    const { regions } = extractRegions(project);
+    expect(regions).toHaveLength(1);
+    expect(regions[0]?.firstSubstackBlockId).toBe('a');
+  });
+
+  it('reads SUBSTACK from nested array [2, [2, "a"]] recursively (§15.1)', () => {
+    const repeat = mkBlock('repeat0', 'control_repeat', {
+      inputs: { SUBSTACK: [2, [2, 'a']] },
+    });
+    const a = mkBlock('a', 'data_setvariableto');
+    const project = mkProject([repeat, a], [
+      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+    ]);
+    const { regions } = extractRegions(project);
+    expect(regions).toHaveLength(1);
+    expect(regions[0]?.firstSubstackBlockId).toBe('a');
+  });
+
   describe('kernel container promotion (§Phase 0, nested parallelization)', () => {
     it("'@compute' on outer control_repeat (legacy) returns the candidate as kernel container", () => {
       // Layout: control_repeat('outer') { a -> b }

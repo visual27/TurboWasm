@@ -1747,7 +1747,13 @@ function buildRuntimeAdapter(
   };
 }
 
-async function parseProjectJsonFromArrayBuffer(
+/**
+ * §Phase 1 (§15.1): exported for unit tests so the loader's comments
+ * merge contract can be pinned without re-implementing the SB3 reader.
+ * Not part of the public runtime API — `bootstrapGpuKernels` is the only
+ * in-tree caller.
+ */
+export async function parseProjectJsonFromArrayBuffer(
   buf: ArrayBuffer,
 ): Promise<ParsedProjectShape | null> {
   // Lightweight SB3 parser: read the first zip entry matching project.json,
@@ -1756,16 +1762,27 @@ async function parseProjectJsonFromArrayBuffer(
   // block tree + comments.
   try {
     const jszipModule = await import('jszip');
-    const JSZipCtor: new (b: ArrayBuffer) => {
-      file(name: string): { async(type: 'string'): Promise<string> } | null;
+    // §Phase 1 fix: the previous implementation called `new JSZip(buf)`,
+    // which throws "The constructor with parameters has been removed in
+    // JSZip 3.0" against the project's pinned `jszip@3.10.1`. JSZip 3.x
+    // requires the async static `JSZip.loadAsync(buf)`. Same pattern is
+    // used by `src/runtime/extension-urls.ts` and `src/runtime/twconfig.ts`.
+    const JSZipCtor: {
+      loadAsync(b: ArrayBuffer): Promise<{
+        file(name: string): { async(type: 'string'): Promise<string> } | null;
+      }>;
     } =
-      ((jszipModule as { default?: unknown }).default as new (b: ArrayBuffer) => {
-        file(name: string): { async(type: 'string'): Promise<string> } | null;
+      ((jszipModule as { default?: unknown }).default as {
+        loadAsync(b: ArrayBuffer): Promise<{
+          file(name: string): { async(type: 'string'): Promise<string> } | null;
+        }>;
       }) ??
-      (jszipModule as unknown as new (b: ArrayBuffer) => {
-        file(name: string): { async(type: 'string'): Promise<string> } | null;
+      (jszipModule as unknown as {
+        loadAsync(b: ArrayBuffer): Promise<{
+          file(name: string): { async(type: 'string'): Promise<string> } | null;
+        }>;
       });
-    const zip = new JSZipCtor(buf);
+    const zip = await JSZipCtor.loadAsync(buf);
     const projectJson = (await zip.file('project.json')?.async('string')) ?? null;
     if (!projectJson) return null;
     const json = JSON.parse(projectJson) as {
@@ -1778,20 +1795,29 @@ async function parseProjectJsonFromArrayBuffer(
       comments?: Record<string, { blockId: string; text: string }>;
     };
     const targets = json.targets ?? [];
-    const comments = json.comments ?? {};
-    return { json, targets, comments };
+    // §Phase 1 (§15.1): real SB3 puts comments on each target
+    // (`target.comments`), not at the project root. The root
+    // `json.comments` is allowed by the spec but is rarely populated by
+    // the official Scratch editor. Forward the raw `json` so
+    // `toParsedProject` can do the per-target + root merge with the
+    // documented priority (= root wins on duplicate ids).
+    return { json, targets };
   } catch {
     return null;
   }
 }
 
-interface ParsedProjectShape {
+/**
+ * §Phase 1 (§15.1): exported for unit tests.
+ */
+export interface ParsedProjectShape {
   json: {
     targets?: Array<{
       id?: string;
       name?: string;
       isStage?: boolean;
       blocks?: Record<string, unknown>;
+      comments?: Record<string, { blockId: string; text: string }>;
     }>;
     comments?: Record<string, { blockId: string; text: string }>;
   };
@@ -1801,7 +1827,6 @@ interface ParsedProjectShape {
     isStage?: boolean;
     blocks?: Record<string, unknown>;
   }>;
-  comments: Record<string, { blockId: string; text: string }>;
 }
 
 /**
@@ -1809,13 +1834,42 @@ interface ParsedProjectShape {
  * scratch-vm-style comments and blocks into the `ParsedProject`
  * shape defined in `types.ts` so `extractRegions` / `analyzeAxes` /
  * etc. work without depending on vendored scratch-vm at runtime.
+ *
+ * §Phase 1 (§15.1): comments are merged from every target's
+ * `target.comments`, with the root `json.comments` taking precedence on
+ * id collision (= the official Scratch editor stores them per-target;
+ * root was the only source we used before, so e.g. `expo-fixture.sb3`
+ * had `comments: undefined` and we extracted zero regions).
  */
-function toParsedProject(shape: ParsedProjectShape): ParsedProject {
+/**
+ * §Phase 1 (§15.1): exported for unit tests. See the comment on
+ * `parseProjectJsonFromArrayBuffer` for context.
+ */
+export function toParsedProject(shape: ParsedProjectShape): ParsedProject {
   const parsedComments: Record<string, { blockId: string; text: string }> = {};
-  for (const [cid, c] of Object.entries(shape.comments)) {
-    if (!c) continue;
-    if (typeof c.blockId !== 'string' || typeof c.text !== 'string') continue;
-    parsedComments[cid] = { blockId: c.blockId, text: c.text };
+  // 1. Seed with per-target comments. Order matters: we walk targets in
+  //    declaration order, so earlier targets win on duplicate ids. The
+  //    root pass below then overrides for ids the root actually carries.
+  for (const target of shape.json.targets ?? []) {
+    const tc = target.comments;
+    if (!tc) continue;
+    for (const [cid, c] of Object.entries(tc)) {
+      if (!c) continue;
+      if (typeof c.blockId !== 'string' || typeof c.text !== 'string') continue;
+      parsedComments[cid] = { blockId: c.blockId, text: c.text };
+    }
+  }
+  // 2. Apply root `json.comments`, overriding per-target entries on the
+  //    same id. Real SB3 producers rarely emit root comments, but the
+  //    spec allows them — root takes priority so the legacy "root is
+  //    the truth" assumption (when both happen to coexist) is preserved.
+  const rootComments = shape.json.comments;
+  if (rootComments) {
+    for (const [cid, c] of Object.entries(rootComments)) {
+      if (!c) continue;
+      if (typeof c.blockId !== 'string' || typeof c.text !== 'string') continue;
+      parsedComments[cid] = { blockId: c.blockId, text: c.text };
+    }
   }
 
   const targets = shape.targets

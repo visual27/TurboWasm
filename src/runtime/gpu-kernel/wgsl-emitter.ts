@@ -7,6 +7,7 @@ import {
   createScalarUniformBindings,
   type ScalarUniformBinding,
 } from './scalar-uniform-binding';
+import { extractBlockReference } from './block-reference';
 import type {
   AxisFinal,
   BindDirective,
@@ -1257,25 +1258,22 @@ function emitInput(input: unknown, context: EmitterContext): string {
   return '0.0';
 }
 
+/**
+ * §Phase 1: split block-id extraction from `blocks`-map lookup.
+ *
+ * `extractBlockReference` resolves any of the documented SB3 raw shapes
+ * to a candidate block id (string or null). `blockReference` then
+ * validates that the id actually exists in the project's `blocks` map
+ * before returning it — keeping the emitter's "block exists" invariant
+ * intact while routing shape acceptance through the shared helper.
+ */
 function blockReference(
   input: unknown,
   blocks: Readonly<Record<string, RawBlock>>,
 ): string | null {
-  if (typeof input === 'string' && blocks[input]) return input;
-  if (Array.isArray(input)) {
-    for (const item of input.slice(1)) {
-      const reference = blockReference(item, blocks);
-      if (reference) return reference;
-    }
-    return null;
-  }
-  if (!input || typeof input !== 'object') return null;
-  const value = input as Record<string, unknown>;
-  for (const key of ['id', 'block', 'shadow']) {
-    const candidate = value[key];
-    if (typeof candidate === 'string' && blocks[candidate]) return candidate;
-  }
-  return blockReference(value['value'], blocks);
+  const candidate = extractBlockReference(input);
+  if (candidate && blocks[candidate]) return candidate;
+  return null;
 }
 
 function inputLiteral(

@@ -26,6 +26,7 @@
  */
 
 import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
+import { extractBlockReference } from './block-reference';
 import type {
   Diagnostic,
   ExtractedRegion,
@@ -194,18 +195,15 @@ function findKernelContainer(
 
 /**
  * Read the SUBSTACK input id off a `control_repeat` block. The vendored
- * VM stores it under `inputs.SUBSTACK` and the value is either a block
- * id string or `{ id: '...', name: '...' }` (the standard scratch-vm
- * block reference shape).
+ * VM stores it under `inputs.SUBSTACK` as a scratch-vm block reference,
+ * which can take any of the raw shapes documented in
+ * `block-reference.ts`. §Phase 1 unifies the accept logic on the shared
+ * `extractBlockReference` helper so loader-emitted array shapes
+ * (`[2, blockId]`) and the hand-built `{ id }` / bare-string shapes both
+ * resolve to the same id.
  */
 function readSubstackId(block: RawBlock): string | null {
-  const sub = block.inputs['SUBSTACK'];
-  if (typeof sub === 'string') return sub;
-  if (sub && typeof sub === 'object') {
-    const id = (sub as { id?: unknown }).id;
-    if (typeof id === 'string') return id;
-  }
-  return null;
+  return extractBlockReference(block.inputs['SUBSTACK']);
 }
 
 /**
@@ -237,16 +235,13 @@ function walkSubstackBody(
     }
     // Walk into any sub-stacks (control_if / control_if_else /
     // control_repeat) so the block-subsetter sees their bodies too.
+    // §Phase 1: route every input value through `extractBlockReference`
+    // so the union of accept-shapes (`[2, id]`, `{ id }`, `{ block,
+    // shadow }`, bare string, ...) is handled identically here and in
+    // `readSubstackId`.
     for (const [, value] of Object.entries(current.inputs)) {
       if (value === null || value === undefined) continue;
-      // shape: { id, name } | string | BlockShadowArray
-      let id: string | null = null;
-      if (typeof value === 'string') {
-        id = value;
-      } else if (typeof value === 'object') {
-        const objValue = value as { id?: unknown };
-        if (typeof objValue.id === 'string') id = objValue.id;
-      }
+      const id = extractBlockReference(value);
       if (id && blocks[id] && !visited.has(id)) {
         const child = blocks[id];
         if (child) stack.push(child);
