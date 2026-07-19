@@ -87,6 +87,29 @@ export interface AdvancedSettings {
    * toggle, leaving the WebGPU path as a separate, independent switch).
    */
   enableWebgpu: boolean;
+  /**
+   * Phase 4 (nested-parallelization-05-phase4 §3.5): opt-in switch for
+   * the GPU compute kernel pipeline when a project's `@compute` marker
+   * sits on a **nested** `control_repeat` (i.e. the kernel container is
+   * the candidate's nearest ancestor `control_repeat`, not the candidate
+   * itself — see `src/runtime/gpu-kernel/region-extractor.ts`).
+   *
+   * `false` (default): nested layouts fall through to the JS path, which
+   * matches the legacy single-axis `fn expo` fixture output exactly. New
+   * users start here so an older project behaves the same as before the
+   * nested-parallelization work landed.
+   *
+   * `true`: `bootstrapGpuKernels` (player.ts) lets the kernel pipeline
+   * attempt GPU dispatch for nested layouts, with the same D1/D2/D3/D4
+   * demote-and-fallback contract that outer layouts already use. Phase 4
+   * introduces the Settings toggle that flips this field.
+   *
+   * Persisted across reloads. Like `enableWebgpu`, this is a power-user
+   * toggle; `saveAdvancedAsDefault()` does NOT force it back to `true`
+   * (unlike `enableWebgpu`) because users who want to lock nested layouts
+   * to the JS path should be able to do so via "Set as default".
+   */
+  nestedParallelizationEnabled: boolean;
 }
 
 /**

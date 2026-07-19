@@ -1,6 +1,6 @@
 {
   "name": "@turbowasm/gpu-kernel-parser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Parser and formatter for the TurboWasm @compute kernel DSL used by `.scgpu` files.",
   "license": "GPL-3.0-only",
   "type": "module",

@@ -55,6 +55,13 @@ export const FIXTURE_GENERATORS = {
   'stage-size-sprite-repro.sb3': () =>
     import('./make-stage-size-sprite-repro.mjs').then((m) => m.writeStageSizeSpriteRepro()),
   'expo-fixture.sb3': () => import('./make-expo-fixture.mjs').then((m) => m.makeExpoFixture()),
+  // Phase 4 (nested-parallelization-05-phase4 §3.2): the nested
+  // variant shares the legacy `make-expo-fixture.mjs` module but uses a
+  // different scratch layout (kernel container = ancestor control_repeat,
+  // not the @compute candidate itself). Registered here so
+  // `npm run fixtures:setup` produces both fixtures in one pass.
+  'expo-fixture-nested.sb3': () =>
+    import('./make-expo-fixture.mjs').then((m) => m.makeNestedExpoFixture()),
 };
 
 /**

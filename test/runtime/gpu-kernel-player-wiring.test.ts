@@ -388,6 +388,23 @@ describe('player.ts: bootstrapGpuKernels wiring (source-inspection)', () => {
     expect(src).toMatch(/enableWasm\s*=\s*false\s*;\s*skipping\s+@compute/);
   });
 
+  it('nestedParallelizationEnabled=false filters nested regions (Phase 4 gate)', () => {
+    // Phase 4 (nested-parallelization-05-phase4 §3.7): the gate must
+    //   1. read `currentAdvanced?.nestedParallelizationEnabled` from the
+    //      runtime advanced settings
+    //   2. drop every verdict whose `nestedRepeatContainerBlockIds`
+    //      array is non-empty (= kernel container promoted to an
+    //      ancestor control_repeat)
+    //   3. log a skip line carrying the dropped count when ALL regions
+    //      were filtered out
+    const src = readPlayerSource();
+    expect(src).toMatch(/currentAdvanced\?\.nestedParallelizationEnabled/);
+    expect(src).toMatch(/nestedRepeatContainerBlockIds\.length\s*===\s*0/);
+    // The skip log line is matched by the verify-gpu-kernel harness —
+    // it must mention the gate name and the dropped count.
+    expect(src).toMatch(/nestedParallelizationEnabled\s*=\s*false\s*;\s*skipping/);
+  });
+
   it("__exposeForBrowserVerify publishes `kernelRegistry` (size/jsOnly/canonicalKeys) under window.__turbowasm", () => {
     const src = readPlayerSource();
     // The harness reads `window.__turbowasm.kernelRegistry.size` (and

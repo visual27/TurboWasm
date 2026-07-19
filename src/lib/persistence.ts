@@ -114,6 +114,15 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
         ? r.turboWasmAccelerationEnabled
         : base.turboWasmAccelerationEnabled,
     enableWebgpu: rawEnableWebgpu,
+    // v8 → v9 migration: seed `nestedParallelizationEnabled` with `false`
+    // (the safe default) for any payload that lacks the field. Existing
+    // users keep the legacy outer-only behaviour until they explicitly
+    // opt in via the Settings toggle — see
+    // nested-parallelization-05-phase4.md §3.5.
+    nestedParallelizationEnabled:
+      typeof r.nestedParallelizationEnabled === 'boolean'
+        ? r.nestedParallelizationEnabled
+        : base.nestedParallelizationEnabled,
   };
 }
 
@@ -200,9 +209,10 @@ export function readSettings(): SettingsStoreShape {
     // `'force-webgpu'` performance mode. v7 added
     // `advanced.enableGpuKernels`. v8 collapsed the top-level
     // `performanceMode` union into `enableWasm: boolean` and renamed
-    // `advanced.enableGpuKernels` to `advanced.enableWebgpu`. Anything
-    // outside this range (including untagged / wrong-version / corrupt
-    // blobs) resets to defaults.
+    // `advanced.enableGpuKernels` to `advanced.enableWebgpu`. v9 added
+    // `advanced.nestedParallelizationEnabled` for the Phase 4 nested
+    // `@compute` work. Anything outside this range (including untagged /
+    // wrong-version / corrupt blobs) resets to defaults.
     if (
       typeof parsed.version !== 'number' ||
       parsed.version < 1 ||

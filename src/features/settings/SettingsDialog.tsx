@@ -397,6 +397,18 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
           ariaLabel="Enable WASM toggle"
         />
       </FieldRow>
+      <FieldRow
+        id="nested-parallelization"
+        label="Nested @compute (Experimental)"
+        description="Allow @compute markers on nested control_repeat blocks for pixel-level parallelism. Off keeps the legacy outer-only @compute layout (kernel container == the @compute candidate itself) — older fn expo fixtures load with bit-identical outputs. On promotes the kernel container to the candidate's nearest ancestor control_repeat and emits an implicit 2D dispatch from the surrounding loop counts. Requires WebGPU; falls back to the JS path when WebGPU is unavailable or when D1/D2/D3 demote the region."
+      >
+        <SwitchField
+          id="nested-parallelization"
+          checked={advanced.nestedParallelizationEnabled}
+          onChange={(v) => patch({ nestedParallelizationEnabled: v })}
+          ariaLabel="Nested @compute toggle"
+        />
+      </FieldRow>
     </SettingsSection>
   );
 });

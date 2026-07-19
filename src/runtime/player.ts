@@ -667,6 +667,7 @@ function getCurrentAdvanced(): AdvancedSettings {
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
     enableWebgpu: true,
+    nestedParallelizationEnabled: false,
   };
 }
 
@@ -686,6 +687,7 @@ function defaultAdvanced(): AdvancedSettings {
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
     enableWebgpu: true,
+    nestedParallelizationEnabled: false,
   };
 }
 
@@ -1555,8 +1557,33 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   }
 
   const parsed = toParsedProject(parsedProject);
-  const { verdicts, allDirectives } = collectRegionVerdictsFromArrayBuffer(parsed);
-  if (verdicts.length === 0) return;
+  const { verdicts: allVerdicts } = collectRegionVerdictsFromArrayBuffer(parsed);
+  // Phase 4 (nested-parallelization-05-phase4 §3.7): gate the nested
+  // `@compute` path behind `advanced.nestedParallelizationEnabled`. When
+  // `false` (the v8 → v9 default), drop every region whose kernel
+  // container was promoted to an ancestor `control_repeat`
+  // (`nestedRepeatContainerBlockIds.length > 0`) so the GPU pipeline only
+  // handles the legacy outer-only layout. Nested regions then fall
+  // through to the JS path — preserving the pre-Phase-4 baseline output
+  // for existing projects.
+  const nestedParallelizationEnabled =
+    currentAdvanced?.nestedParallelizationEnabled ?? false;
+  const verdicts = nestedParallelizationEnabled
+    ? allVerdicts
+    : allVerdicts.filter((v) => v.nestedRepeatContainerBlockIds.length === 0);
+  // Re-derive `allDirectives` from the filtered verdict set so the
+  // `[gpu-kernel] bootstrapped ... directives` log line never mentions
+  // directives from regions that were skipped.
+  const allDirectives = verdicts.flatMap((v) => v.directives);
+  if (verdicts.length === 0) {
+    if (allVerdicts.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[gpu-kernel] nestedParallelizationEnabled=false; skipping ${allVerdicts.length} nested region(s)`,
+      );
+    }
+    return;
+  }
 
   // Surface M3 diagnostics. Cap to avoid log spam on heavily demoted
   // projects (defaultMaxLogs=5).

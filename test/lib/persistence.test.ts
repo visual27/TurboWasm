@@ -159,9 +159,10 @@ describe('persistence', () => {
     const settings = readSettings();
     expect(settings.theme).toBe('dark');
     // The legacy field is no longer part of the typed shape — verify
-    // the surviving keys are exactly the post-v8 ones (the retired
+    // the surviving keys are exactly the post-v9 ones (the retired
     // `svgAccelerationMode` and `enableGpuKernels` are no longer
-    // present, replaced by `enableWebgpu`).
+    // present, replaced by `enableWebgpu`; `nestedParallelizationEnabled`
+    // was added in v9).
     expect(Object.keys(settings.advanced).sort()).toEqual(
       [
         'disableCompiler',
@@ -171,6 +172,7 @@ describe('persistence', () => {
         'highQualityPen',
         'infiniteClones',
         'interpolation',
+        'nestedParallelizationEnabled',
         'removeFencing',
         'removeMiscLimits',
         'stageHeight',
@@ -478,6 +480,97 @@ describe('persistence', () => {
       );
       const settings = readSettings();
       expect(settings.enableWasm).toBe(true);
+    });
+  });
+
+  describe('v8 → v9 migration (nestedParallelizationEnabled opt-in)', () => {
+    it('seeds advanced.nestedParallelizationEnabled=false on a v8 payload that lacks the field', () => {
+      // A user upgrading from v8 must not silently see nested
+      // parallelization enabled. The migration seeds the field with the
+      // safe default `false` so the legacy outer-only `@compute`
+      // behaviour is preserved until they opt in via Settings.
+      // We strip the new field from DEFAULT_ADVANCED_SETTINGS to emulate
+      // a true v8 payload shape.
+      const v8AdvancedBase = (() => {
+        const { nestedParallelizationEnabled: _ignored, ...rest } = DEFAULT_ADVANCED_SETTINGS;
+        return rest;
+      })();
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: v8AdvancedBase,
+            defaultAdvanced: v8AdvancedBase,
+            enableWasm: true,
+          },
+          version: 8,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.advanced.nestedParallelizationEnabled).toBe(false);
+      expect(settings.defaultAdvanced.nestedParallelizationEnabled).toBe(false);
+    });
+
+    it('honours an explicit nestedParallelizationEnabled=true from a v9 payload', () => {
+      // A user who already opted in on a previous session must see the
+      // toggle re-enable itself on the next read.
+      localStorage.setItem(
+        STORAGE_KEYS.settings,
+        JSON.stringify({
+          state: {
+            theme: 'system',
+            volume: 100,
+            lastNonMuteVolume: 100,
+            advanced: { ...DEFAULT_ADVANCED_SETTINGS, nestedParallelizationEnabled: true },
+            defaultAdvanced: {
+              ...DEFAULT_ADVANCED_SETTINGS,
+              nestedParallelizationEnabled: true,
+            },
+            enableWasm: true,
+          },
+          version: 9,
+        }),
+      );
+      const settings = readSettings();
+      expect(settings.advanced.nestedParallelizationEnabled).toBe(true);
+      expect(settings.defaultAdvanced.nestedParallelizationEnabled).toBe(true);
+    });
+
+    it('round-trips nestedParallelizationEnabled through writeSettings', () => {
+      writeSettings({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS, nestedParallelizationEnabled: true },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS, nestedParallelizationEnabled: true },
+        allowedExtensionUrls: [],
+        enableWasm: true,
+        userExplicitFps: null,
+      });
+      const settings = readSettings();
+      expect(settings.advanced.nestedParallelizationEnabled).toBe(true);
+      expect(settings.defaultAdvanced.nestedParallelizationEnabled).toBe(true);
+    });
+
+    it('the new field appears in the post-v8 advanced key set', () => {
+      // Guards the docs/UI contract that the Settings dialog field is
+      // actually persisted (otherwise the toggle would silently no-op
+      // across reloads).
+      writeSettings({
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        allowedExtensionUrls: [],
+        enableWasm: true,
+        userExplicitFps: null,
+      });
+      const settings = readSettings();
+      expect(Object.keys(settings.advanced).sort()).toContain('nestedParallelizationEnabled');
     });
   });
 });

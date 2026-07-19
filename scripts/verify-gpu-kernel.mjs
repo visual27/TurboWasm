@@ -2,8 +2,8 @@
 /**
  * GPU compute kernel browser-verify harness (M7).
  *
- * Boots `vite preview`, then drives Playwright Chromium through two
- * passes against the same fixture (`test/.test-fixtures/expo-fixture.sb3`):
+ * Boots `vite preview`, then drives Playwright Chromium through a
+ * series of passes against the demo fixtures:
  *
  *   1. **GPU pass** — `enableWasm: true` (the v8 default). The vendored
  *      VM tries to obtain a WebGPU device via
@@ -26,6 +26,19 @@
  * else is a regression in the dispatcher or in the WGSL emitter's
  * host-side data sync.
  *
+ * Phase 4 (nested-parallelization-05-phase4 §3.3) extended the harness
+ * with two fixture variants:
+ *
+ *   - `legacy` — `expo-fixture.sb3` (Phase 0 outer-only `@compute`).
+ *   - `nested` — `expo-fixture-nested.sb3` (Phase 4 nested `@compute`).
+ *
+ * Each variant is exercised twice (GPU pass + JS pass). The nested
+ * variant additionally seeds `advanced.nestedParallelizationEnabled`
+ * so the v9 Phase 4 gate (player.ts:bootstrapGpuKernels) lets the
+ * nested `@compute` region through to the GPU pipeline. The legacy
+ * variant keeps the gate OFF (= default) so a regression on legacy
+ * fixtures is observable independently of the new path.
+ *
  * Output (always): ./logs/turbowarp-equivalent-gpu-{default,parity}.png
  * (the comparison diff image, even on a skip; size 1×1 PNG when no
  * comparison ran).
@@ -33,6 +46,10 @@
  * Usage: `node scripts/verify-gpu-kernel.mjs` (requires `npm run
  * build` so `dist/` is up to date). The `TURBOWASM_PREVIEW_PORT`
  * env var overrides the default port (4176).
+ *
+ * `TURBOWASM_VARIANT=legacy|nested|both` (default `both`) restricts
+ * the harness to a single variant — useful when only one path has
+ * WebGPU and the other is CI-skipped.
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -41,7 +58,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { makeExpoFixture } from './make-expo-fixture.mjs';
+import { makeExpoFixture, makeNestedExpoFixture } from './make-expo-fixture.mjs';
 import { getWebgpuLaunchOptions } from './webgpu-flags.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -112,7 +129,8 @@ async function killPreview(proc) {
   }
 }
 
-async function captureForMode(browser, mode, fixturePath) {
+async function captureForMode(browser, mode, fixturePath, options = {}) {
+  const { nestedParallelizationEnabled = false } = options;
   const context = await browser.newContext({
     viewport: { width: 800, height: 600 },
   });
@@ -130,22 +148,27 @@ async function captureForMode(browser, mode, fixturePath) {
 
   // Pre-seed localStorage with the requested mode BEFORE first paint.
   // `mode` is parsed as a boolean: `'true'` → `true`, anything else →
-  // `false`. The persisted version is the current STORAGE_VERSION (8).
+  // `false`. The persisted version is the current STORAGE_VERSION (9
+  // since Phase 4). When `nestedParallelizationEnabled` is set, the
+  // Phase 4 gate (player.ts:bootstrapGpuKernels) lets nested
+  // `@compute` regions through to the GPU pipeline.
   const enableWasm = mode === 'true';
   await context.addInitScript(
-    ({ key, enableWasm }) => {
+    ({ key, enableWasm, nestedParallelizationEnabled }) => {
       const existingRaw = localStorage.getItem(key);
       let parsed;
       try {
-        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 8 };
+        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 9 };
       } catch {
-        parsed = { state: {}, version: 8 };
+        parsed = { state: {}, version: 9 };
       }
       parsed.state.enableWasm = enableWasm;
-      parsed.version = 8;
+      parsed.state.advanced = parsed.state.advanced || {};
+      parsed.state.advanced.nestedParallelizationEnabled = nestedParallelizationEnabled;
+      parsed.version = 9;
       localStorage.setItem(key, JSON.stringify(parsed));
     },
-    { key: SETTINGS_KEY, enableWasm },
+    { key: SETTINGS_KEY, enableWasm, nestedParallelizationEnabled },
   );
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
@@ -306,8 +329,20 @@ function writeComparisonImage(name) {
 }
 
 async function main() {
-  // Ensure the fixture exists. Idempotent.
-  const fixturePath = await makeExpoFixture();
+  // Phase 4 (nested-parallelization-05-phase4 §3.3): two fixture
+  // variants — legacy and nested. Each variant runs the GPU + JS pass
+  // pair. The `TURBOWASM_VARIANT` env var narrows the run to a single
+  // variant for CI subsetting.
+  const variantArg = (process.env.TURBOWASM_VARIANT ?? 'both').toLowerCase();
+  const requestedVariants = [
+    { name: 'legacy', generator: makeExpoFixture, nestedParallelizationEnabled: false },
+    { name: 'nested', generator: makeNestedExpoFixture, nestedParallelizationEnabled: true },
+  ].filter((v) => variantArg === 'both' || v.name === variantArg);
+  if (requestedVariants.length === 0) {
+    // eslint-disable-next-line no-console
+    console.error(`[gpu-kernel-verify] unknown TURBOWASM_VARIANT=${variantArg}`);
+    process.exit(2);
+  }
 
   let chromium;
   try {
@@ -327,72 +362,109 @@ async function main() {
 
     const browser = await chromium.launch(getWebgpuLaunchOptions());
     try {
-      const captureEnabled = await captureForMode(browser, 'true', fixturePath);
-      const captureDisabled = await captureForMode(browser, 'false', fixturePath);
+      let webgpuSeen = null;
+      let allVariantsOk = true;
+      const variantResults = {};
+      for (const variant of requestedVariants) {
+        const fixturePath = await variant.generator();
+        const captureEnabled = await captureForMode(
+          browser,
+          'true',
+          fixturePath,
+          { nestedParallelizationEnabled: variant.nestedParallelizationEnabled },
+        );
+        const captureDisabled = await captureForMode(
+          browser,
+          'false',
+          fixturePath,
+          { nestedParallelizationEnabled: variant.nestedParallelizationEnabled },
+        );
 
-      const webgpu = inferWebgpuAvailable(captureEnabled.gpuKernelLines);
+        const webgpu = inferWebgpuAvailable(captureEnabled.gpuKernelLines);
+        if (webgpuSeen === null && webgpu !== null) webgpuSeen = webgpu;
+
+        variantResults[variant.name] = {
+          webgpuObserved: webgpu,
+          enabled: {
+            ...captureEnabled,
+            dataUrl: '<elided>',
+            gpuKernelLines: captureEnabled.gpuKernelLines,
+          },
+          disabled: {
+            ...captureDisabled,
+            dataUrl: '<elided>',
+            gpuKernelLines: captureDisabled.gpuKernelLines,
+          },
+        };
+
+        if (!captureEnabled.ok || !captureDisabled.ok) {
+          // eslint-disable-next-line no-console
+          console.error(`[gpu-kernel-verify] capture failed for variant=${variant.name}:`, {
+            captureEnabled,
+            captureDisabled,
+          });
+          allVariantsOk = false;
+          continue;
+        }
+
+        if (webgpu === null || webgpu === false) {
+          // No WebGPU observed — emit the placeholder PNG and continue
+          // to the next variant. The harness is happy when at least one
+          // variant reports the absence of WebGPU (CI without a GPU).
+          // eslint-disable-next-line no-console
+          console.log(
+            `[gpu-kernel-verify] variant=${variant.name}: no WebGPU adapter (webgpu=${webgpu}); skipping GPU/JS pixel comparison.`,
+          );
+          writeComparisonImage(`${variant.name}-default`);
+          writeComparisonImage(`${variant.name}-parity`);
+          continue;
+        }
+
+        // WebGPU WAS available — run the pixel comparison.
+        const comparison = await compareCaptures(browser, captureEnabled, captureDisabled);
+        log(`comparison-${variant.name}`, JSON.stringify(comparison, null, 2));
+
+        if (!comparison.match) {
+          // eslint-disable-next-line no-console
+          console.error(`[gpu-kernel-verify] variant=${variant.name} MISMATCH:`, comparison);
+          allVariantsOk = false;
+          writeComparisonImage(`${variant.name}-default`);
+          writeComparisonImage(`${variant.name}-parity`);
+          continue;
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[gpu-kernel-verify] variant=${variant.name} OK: enableWasm=true and enableWasm=false renderings agree within 1e-6 (maxAbsDiff=${comparison.maxAbsDiff}, width=${comparison.width}, height=${comparison.height}).`,
+        );
+        writeComparisonImage(`${variant.name}-default`);
+        writeComparisonImage(`${variant.name}-parity`);
+      }
 
       log(
         'summary',
         JSON.stringify(
           {
-            webgpuObserved: webgpu,
-            enabled: {
-              ...captureEnabled,
-              dataUrl: '<elided>',
-              gpuKernelLines: captureEnabled.gpuKernelLines,
-            },
-            disabled: {
-              ...captureDisabled,
-              dataUrl: '<elided>',
-              gpuKernelLines: captureDisabled.gpuKernelLines,
-            },
+            webgpuObserved: webgpuSeen,
+            variants: variantResults,
           },
           null,
           2,
         ),
       );
 
-      if (!captureEnabled.ok || !captureDisabled.ok) {
-        // eslint-disable-next-line no-console
-        console.error('[gpu-kernel-verify] capture failed:', {
-          captureEnabled,
-          captureDisabled,
-        });
-        writeComparisonImage('default');
-        writeComparisonImage('parity');
+      if (!allVariantsOk) {
         process.exit(1);
       }
-
-      if (webgpu === null || webgpu === false) {
-        // No WebGPU observed — emit the placeholders and exit 0. This is
-        // expected on CI machines without a GPU; the harness is happy.
+      // When WebGPU is available we expect every variant to report
+      // pixel-level agreement; when WebGPU is absent, the per-variant
+      // "skip" branch handled the placeholder PNG emission and we exit
+      // 0 here.
+      if (webgpuSeen === null) {
         // eslint-disable-next-line no-console
         console.log(
-          `[gpu-kernel-verify] no WebGPU adapter (webgpu=${webgpu}); skipping GPU/JS pixel comparison. See ./logs/gpu-kernel-verify-*.log for the bootstrap log lines.`,
+          '[gpu-kernel-verify] no WebGPU adapter observed across any variant; emitting placeholder PNGs.',
         );
-        writeComparisonImage('default');
-        writeComparisonImage('parity');
-        return;
       }
-
-      // WebGPU WAS available — run the pixel comparison.
-      const comparison = await compareCaptures(browser, captureEnabled, captureDisabled);
-      log('comparison', JSON.stringify(comparison, null, 2));
-
-      if (!comparison.match) {
-        // eslint-disable-next-line no-console
-        console.error('[gpu-kernel-verify] MISMATCH:', comparison);
-        writeComparisonImage('default');
-        writeComparisonImage('parity');
-        process.exit(1);
-      }
-      // eslint-disable-next-line no-console
-      console.log(
-        `[gpu-kernel-verify] OK: enableWasm=true and enableWasm=false renderings agree within 1e-6 (maxAbsDiff=${comparison.maxAbsDiff}, width=${comparison.width}, height=${comparison.height}).`,
-      );
-      writeComparisonImage('default');
-      writeComparisonImage('parity');
     } finally {
       await browser.close();
     }

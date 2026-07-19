@@ -42,9 +42,9 @@ describe('useSettingsStore — basic', () => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
     expect(raw).toBeTruthy();
     expect(JSON.parse(raw as string).state.theme).toBe('dark');
-    // The persisted payload is tagged with the v8 schema so future
+    // The persisted payload is tagged with the v9 schema so future
     // schema bumps can read it back correctly.
-    expect(JSON.parse(raw as string).version).toBe(8);
+    expect(JSON.parse(raw as string).version).toBe(9);
   });
 
   it('clamps volume on setVolume', () => {
@@ -202,9 +202,9 @@ describe('useSettingsStore — enableWasm', () => {
       version: number;
     };
     expect(parsed.state.enableWasm).toBe(false);
-    // The persisted payload is tagged with the v8 schema so future
+    // The persisted payload is tagged with the v9 schema so future
     // schema bumps can read it back correctly.
-    expect(parsed.version).toBe(8);
+    expect(parsed.version).toBe(9);
   });
 
   it('setEnableWasm toggles both directions', () => {
@@ -564,7 +564,7 @@ describe('useSettingsStore.cycleFpsShortcut', () => {
       version: number;
     };
     expect(parsed.state.userExplicitFps).toBe(60);
-    expect(parsed.version).toBe(8);
+    expect(parsed.version).toBe(9);
   });
 
 it('patchAdvanced with a non-30 fps updates the latch even when advanced.fps matches defaultAdvanced.fps', () => {

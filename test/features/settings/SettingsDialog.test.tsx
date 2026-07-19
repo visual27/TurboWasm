@@ -105,6 +105,7 @@ describe('SettingsDialog — layout', () => {
     expect(within(turboSection).getByText('TurboWasm Acceleration')).toBeInTheDocument();
     expect(within(turboSection).getByText('Enable WebGPU')).toBeInTheDocument();
     expect(within(turboSection).getByText('Enable WASM')).toBeInTheDocument();
+    expect(within(turboSection).getByText('Nested @compute (Experimental)')).toBeInTheDocument();
   });
 
   it('does NOT render the retired GPU Kernels row', () => {
@@ -288,6 +289,69 @@ describe('SettingsDialog — Enable WebGPU toggle (renamed from GPU Kernels)', (
     const s = useSettingsStore.getState();
     expect(s.advanced.enableWebgpu).toBe(false);
     expect(s.defaultAdvanced.enableWebgpu).toBe(true);
+  });
+});
+
+describe('SettingsDialog — Nested @compute toggle (Phase 4 opt-in)', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+      enableWasm: true,
+    });
+  });
+
+  it('defaults the toggle to OFF (safe migration default)', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText('Nested @compute toggle') as HTMLButtonElement;
+    expect(toggle.getAttribute('data-state')).toBe('unchecked');
+    expect(useSettingsStore.getState().advanced.nestedParallelizationEnabled).toBe(false);
+  });
+
+  it('flips the toggle ON and propagates to the store', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText('Nested @compute toggle');
+    await user.click(toggle);
+    expect(useSettingsStore.getState().advanced.nestedParallelizationEnabled).toBe(true);
+  });
+
+  it('places the Nested @compute toggle after Enable WASM inside the TurboWasm section', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const turboSection = screen
+      .getByTestId('settings-section-turbowasm')
+      .closest('section') as HTMLElement;
+    const labels = Array.from(turboSection.querySelectorAll('label')).map((el) => el.textContent ?? '');
+    const wasmIdx = labels.findIndex((l) => l === 'Enable WASM');
+    const nestedIdx = labels.findIndex((l) => l?.startsWith('Nested @compute'));
+    expect(wasmIdx).toBeGreaterThanOrEqual(0);
+    expect(nestedIdx).toBeGreaterThan(wasmIdx);
+  });
+
+  it('does NOT force nestedParallelizationEnabled back to true on "Set as default"', async () => {
+    // Unlike `enableWebgpu`, this toggle is a power-user opt-in. Locking
+    // it OFF must survive "Set as default" — see AGENTS.md §GPU Kernels
+    // (M1–M7) and nested-parallelization-05-phase4 §3.7.
+    const user = userEvent.setup();
+    useSettingsStore.getState().patchAdvanced({ nestedParallelizationEnabled: false });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-set-default'));
+    const s = useSettingsStore.getState();
+    expect(s.advanced.nestedParallelizationEnabled).toBe(false);
+    expect(s.defaultAdvanced.nestedParallelizationEnabled).toBe(false);
+  });
+
+  it('persists an opt-in across "Set as default" so a reload keeps it on', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().patchAdvanced({ nestedParallelizationEnabled: true });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-set-default'));
+    const s = useSettingsStore.getState();
+    expect(s.defaultAdvanced.nestedParallelizationEnabled).toBe(true);
   });
 });
 

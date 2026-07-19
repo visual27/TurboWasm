@@ -17,6 +17,19 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   extensionSandboxMode: 'worker',
   turboWasmAccelerationEnabled: true,
   enableWebgpu: true,
+  /**
+   * Phase 4 (nested-parallelization-05-phase4 §3.5). Default `false` —
+   * existing users keep the legacy outer-only `@compute` layout until they
+   * explicitly opt in. The toggle in the Settings dialog (TurboWasm
+   * section) flips the runtime path that
+   * {@link import('@/runtime/player.ts').bootstrapGpuKernels} uses when a
+   * project's `@compute` marker sits on a nested `control_repeat`
+   * (= kernel container is the candidate's nearest `control_repeat`
+   * ancestor, not the candidate itself). `false` keeps the legacy JS path
+   * for nested layouts; `true` lets the new nested-parallelization path
+   * attempt GPU dispatch.
+   */
+  nestedParallelizationEnabled: false,
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
@@ -64,9 +77,15 @@ export const STORAGE_KEYS = {
 // `performanceMode` collapses to `enableWasm` (`auto`/`force-wasm` →
 // `true`, `legacy-only` → `false`), and `advanced.enableGpuKernels`
 // is renamed to `advanced.enableWebgpu` while keeping the same boolean
-// value. Older payloads are read and migrated on the fly — see
-// `src/lib/persistence.ts`.
-export const STORAGE_VERSION = 8;
+// value. Bumped to 9 when `advanced.nestedParallelizationEnabled` was
+// added (Phase 4 of the nested-parallelization plan). The toggle gates
+// the GPU compute path for projects whose `@compute` marker sits on a
+// nested `control_repeat` (kernel container promoted to the candidate's
+// nearest ancestor). v8 → v9 migration seeds the field with `false`
+// so existing users keep the legacy outer-only behaviour until they
+// explicitly opt in. Older payloads are read and migrated on the fly —
+// see `src/lib/persistence.ts`.
+export const STORAGE_VERSION = 9;
 
 /**
  * Default value for `enableWasm` when no user preference has been
