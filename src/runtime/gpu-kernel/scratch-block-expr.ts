@@ -17,13 +17,23 @@
  *
  * 未対応 opcode は `null` を返す (= D2 demote 経路で sequential に降格)。
  *
- * Phase 3 で `@bind ..., scalar` サポートが入る際、Phase 3 で
- * `ScalarUniformBinding` 型を導入し `scalarBindings` に渡す。Phase 2 では
- * 空配列を渡し、`data_variableof` は常に `null` を返す (= `@repeat Rx =
- * aabb_tmp0` のような scratch variable 参照は sequential に降格、これは
- * Phase 3 完了で通る)。
+ * §Phase 3 — `data_variableof` is resolved against `scalarBindings` (built
+ * from `@bind ..., scalar` directives via `createScalarUniformBindings` in
+ * `scalar-uniform-binding.ts`). When the binding list is empty (Phase 2
+ * default), the resolver falls back to `bindingNameBySurface` lookup, and
+ * ultimately returns `null` for scratch-variable references that don't
+ * match a list binding.
  */
 import type { BindDirective, ParsedDirective, RawBlock } from './types';
+import type { ScalarUniformBinding } from './scalar-uniform-binding';
+
+/**
+ * Backwards-compatible alias for the Phase 2 structural subset. Now that
+ * `scalar-uniform-binding.ts` exports the concrete type, this alias
+ * exists only so external callers that imported `ScalarUniformBindingLike`
+ * (e.g. tests) keep compiling.
+ */
+export type ScalarUniformBindingLike = ScalarUniformBinding;
 
 export interface ScratchBlockExprContext {
   /**
@@ -36,26 +46,12 @@ export interface ScratchBlockExprContext {
    * name → WGSL struct field 名。`data_variableof` の解決用。Phase 2 では
    * 空配列を渡す。
    */
-  scalarBindings: readonly ScalarUniformBindingLike[];
+  scalarBindings: readonly ScalarUniformBinding[];
   /**
    * Phase E+ で生成された rename table (surface name → emit name)。
    * bindingNameBySurface の lookup に利用する。
    */
   renameTable: Readonly<Record<string, string>>;
-}
-
-/**
- * Phase 3 で導入予定の `ScalarUniformBinding` 型の最小限の structural
- * subset。Phase 2 ではこの interface だけを参照し、具象型は未実装。
- * Phase 3 で import 経路を実型に切り替える。
- */
-export interface ScalarUniformBindingLike {
-  /** scratch variable name (e.g. 'aabb_idx0', 'screen_w'). */
-  name: string;
-  /** WGSL struct field name (e.g. 'aabb_idx0', 'screen_w'). */
-  wgslName: string;
-  /** Scalar dtype ('f32' | 'i32'). */
-  dtype: 'f32' | 'i32';
 }
 
 const MAX_RECURSION_DEPTH = 32;

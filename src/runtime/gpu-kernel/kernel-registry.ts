@@ -20,6 +20,7 @@
  *     concurrently (both ro) and which need a sync barrier (rw).
  */
 import type { BindDirective, RegionVerdict } from './types';
+import type { ScalarUniformBinding } from './scalar-uniform-binding';
 
 export interface Kernel {
   /** Stable id (`region:<sprite>:<blockId>`); also used in dispatches. */
@@ -41,6 +42,16 @@ export interface Kernel {
    * `__dispatch-kernel-sync` reads this to size the call.
    */
   dispatchPlan: { x: string; y: string; z: string };
+  /**
+   * §Phase 3 — scalar uniform bindings derived from `@bind ..., scalar`
+   * directives. Empty array for kernels with no scalar bindings (the
+   * dispatcher short-circuits the uniform-buffer path in that case).
+   *
+   * The initializer (`initialize-gpu-kernels.ts`) populates this after
+   * `register()` so the dispatcher has direct access without rebuilding
+   * the metadata per dispatch.
+   */
+  scalarBindings: readonly ScalarUniformBinding[];
   /**
    * The verdict that produced this kernel. Held for diagnostics and for
    * re-register scenarios (project reload, device-lost).
@@ -87,13 +98,14 @@ export class KernelRegistry {
       wgsl,
       pipeline: null,
       regionVerdict,
-      // workgroupSize / dispatchPlan are filled in by the caller (the
-      // initializer) once `emitRegion` returns — we don't have the
-      // resolved shape until then. Default to a `(1,1,1)` placeholder so
-      // the interface stays non-optional; the initializer overwrites
-      // both fields right after `register`.
+      // workgroupSize / dispatchPlan / scalarBindings are filled in by
+      // the caller (the initializer) once `emitRegion` returns — we
+      // don't have the resolved shape until then. Default to `(1,1,1)`
+      // placeholders so the interface stays non-optional; the
+      // initializer overwrites these fields right after `register`.
       workgroupSize: { x: 1, y: 1, z: 1 },
       dispatchPlan: { x: '1', y: '1', z: '1' },
+      scalarBindings: [],
       jsOnly: false,
       jsOnlyReason: '',
     };

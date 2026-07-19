@@ -453,3 +453,268 @@ describe('bind group cache invalidation on list growth (D-2)', () => {
     expect(afterGrowBindGroups).toBeGreaterThan(firstBindGroups);
   });
 });
+
+describe('§Phase 3 — scalar uniform path', () => {
+  /**
+   * `scalarBindings` + `dispatchPlan` を渡すと、dispatch 毎に
+   * `evaluateDispatchFormula(plan.*, ...)` がホスト側で評価され、
+   * その数値が `pass.dispatchWorkgroups(...)` に渡されることを検証。
+   *
+   * 動的な scalar (例: `aabb_idx0` が outer scratch loop で増加) でも
+   * dispatch 直前の `runtime.readScalar` の値が反映される。
+   */
+  it('resolves dims via dispatchPlan + scalarBindings', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+    const verdict = makeVerdict('b1', [makeBind('a', 0, false)]);
+    registry.register(verdict, 'wgsl');
+    const kernel = registry.lookupById(verdict.regionId)!;
+    kernel.dispatchPlan = {
+      x: 'ceil(scratch_index_clamp(aabb_idx0, 100) / 64)', // ⇒ 1 (= max(0, min(8, 99)) / 64 ceil)
+      y: '8', // literal
+      z: '1',
+    };
+    let scalarValue = 8;
+    kernel.scalarBindings = [
+      { name: 'aabb_idx0', wgslName: 'aabb_idx0', dtype: 'f32' },
+    ];
+
+    const seenDims: Array<{ x: number; y: number; z: number }> = [];
+    const seenBindGroups = new Set<number>();
+    (
+      device as unknown as {
+        createCommandEncoder: () => {
+          beginComputePass: () => {
+            setPipeline: (p: unknown) => void;
+            setBindGroup: (i: number, g: unknown) => void;
+            dispatchWorkgroups: (x: number, y: number, z: number) => void;
+            end: () => void;
+          };
+          finish: () => unknown;
+          copyBufferToBuffer: (
+            src: unknown,
+            srcOffset: number,
+            dst: unknown,
+            dstOffset: number,
+            size: number,
+          ) => void;
+        };
+      }
+    ).createCommandEncoder = () => ({
+      beginComputePass: () => ({
+        setPipeline: () => undefined,
+        setBindGroup: (i: number, _g: unknown) => {
+          seenBindGroups.add(i);
+        },
+        dispatchWorkgroups: (x, y, z) => {
+          seenDims.push({ x, y, z });
+        },
+        end: () => undefined,
+      }),
+      finish: () => ({}),
+      copyBufferToBuffer: () => undefined,
+    });
+
+    const runtime: RuntimeAdapter = {
+      readList: (_name, len) => new Float32Array(len),
+      writeList: () => undefined,
+      readScalar: () => scalarValue,
+      writeScalar: () => true,
+      listLength: () => 0,
+    };
+
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 1, y: 1, z: 1 }, // scalarBindings 経由なら無視される
+      dispatchPlan: kernel.dispatchPlan,
+      scalarBindings: kernel.scalarBindings,
+      pipelines: new Map(),
+      runtime,
+    };
+
+    scalarValue = 8;
+    const r1 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r1.ok).toBe(true);
+    // scratch_index_clamp(8, 100) → min(8, max(0, 99)) = 8 → ceil(8 / 64) = 1
+    expect(seenDims[0]).toEqual({ x: 1, y: 8, z: 1 });
+    // group(1) bind group が binding されている
+    expect(seenBindGroups.has(1)).toBe(true);
+
+    // scalar 値を変更しても dispatch 毎の readScalar で読み直される
+    scalarValue = 200;
+    const r2 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r2.ok).toBe(true);
+    // scratch_index_clamp(200, 100) → min(200, 99) = 99 → ceil(99 / 64) = 2
+    expect(seenDims[1]).toEqual({ x: 2, y: 8, z: 1 });
+  });
+
+  it('falls back to ctx.dims when scalarBindings is empty', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+    const verdict = makeVerdict('b1', [makeBind('a', 0, false)]);
+    registry.register(verdict, 'wgsl');
+
+    const seenDims: Array<{ x: number; y: number; z: number }> = [];
+    const seenBindGroups = new Set<number>();
+    (
+      device as unknown as {
+        createCommandEncoder: () => {
+          beginComputePass: () => {
+            setPipeline: (p: unknown) => void;
+            setBindGroup: (i: number, g: unknown) => void;
+            dispatchWorkgroups: (x: number, y: number, z: number) => void;
+            end: () => void;
+          };
+          finish: () => unknown;
+          copyBufferToBuffer: (
+            src: unknown,
+            srcOffset: number,
+            dst: unknown,
+            dstOffset: number,
+            size: number,
+          ) => void;
+        };
+      }
+    ).createCommandEncoder = () => ({
+      beginComputePass: () => ({
+        setPipeline: () => undefined,
+        setBindGroup: (i: number, _g: unknown) => {
+          seenBindGroups.add(i);
+        },
+        dispatchWorkgroups: (x, y, z) => {
+          seenDims.push({ x, y, z });
+        },
+        end: () => undefined,
+      }),
+      finish: () => ({}),
+      copyBufferToBuffer: () => undefined,
+    });
+
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 5, y: 5, z: 5 }, // scalarBindings 空 → これがそのまま使われる
+      pipelines: new Map(),
+      runtime: makeMockRuntime(),
+    };
+
+    const result = await dispatchKernel(verdict.regionId, ctx);
+    expect(result.ok).toBe(true);
+    expect(seenDims).toEqual([{ x: 5, y: 5, z: 5 }]);
+    // scalarBindings 空 → group(1) は bind しない
+    expect(seenBindGroups.has(1)).toBe(false);
+  });
+
+  it('allocates uniformBuffer lazily on first dispatch only', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+    // readOnly: true so postDispatch skips the readback staging buffer.
+    // We want to verify that subsequent dispatches do NOT allocate a new
+    // uniform buffer (the values are written into the same buffer).
+    const listBind = makeBind('a', 0, true);
+    const verdict = makeVerdict('b1', [listBind]);
+    registry.register(verdict, 'wgsl');
+    pool.bind(listBind);
+
+    // createBuffer の呼び出し回数を記録
+    let createBufferCount = 0;
+    const originalCreateBuffer = (
+      device as unknown as { createBuffer: (d: { size: number; usage: number }) => unknown }
+    ).createBuffer;
+    (
+      device as unknown as { createBuffer: (d: { size: number; usage: number }) => unknown }
+    ).createBuffer = (d) => {
+      createBufferCount += 1;
+      return originalCreateBuffer(d);
+    };
+
+    const runtime: RuntimeAdapter = {
+      readList: (_name, len) => new Float32Array(len),
+      writeList: () => undefined,
+      readScalar: () => 3,
+      writeScalar: () => true,
+      listLength: () => 0,
+    };
+
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 1, y: 1, z: 1 },
+      dispatchPlan: { x: 'a', y: '1', z: '1' },
+      scalarBindings: [{ name: 'a', wgslName: 'a', dtype: 'f32' }],
+      pipelines: new Map(),
+      runtime,
+    };
+
+    // 1 回目の dispatch — uniform buffer を含めて何かしら buffer が作られる
+    const r1 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r1.ok).toBe(true);
+    const afterFirst = createBufferCount;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    // 2 回目の dispatch — uniform buffer を含む新規 buffer allocation が起きないこと
+    // (= pipeline.uniformBuffer を再利用している lazy allocation の検証)
+    const r2 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r2.ok).toBe(true);
+    expect(createBufferCount).toBe(afterFirst);
+  });
+
+  it('refreshes scalar values on every dispatch', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+    const verdict = makeVerdict('b1', [makeBind('a', 0, false)]);
+    registry.register(verdict, 'wgsl');
+
+    let readScalarCount = 0;
+    let nextScalarValue = 10;
+    const runtime: RuntimeAdapter = {
+      readList: (_name, len) => new Float32Array(len),
+      writeList: () => undefined,
+      readScalar: (name) => {
+        readScalarCount += 1;
+        return name === 'idx' ? nextScalarValue : 0;
+      },
+      writeScalar: () => true,
+      listLength: () => 0,
+    };
+
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 1, y: 1, z: 1 },
+      dispatchPlan: { x: 'idx', y: '1', z: '1' },
+      scalarBindings: [{ name: 'idx', wgslName: 'idx', dtype: 'f32' }],
+      pipelines: new Map(),
+      runtime,
+    };
+
+    // 1 回目の dispatch: readScalar 呼ばれる (値は 10)
+    const r1 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r1.ok).toBe(true);
+    // readScalarValues + clampDispatchExtent 後の評価で少なくとも 1 回ずつ呼ばれる
+    // (resolveDispatchDims 内で readScalarValues を呼び、writeScalarUniformBuffer がもう一度呼び、
+    //  最終的に dispatchWorkgroups の x が `idx` の値になる)
+    const afterFirstDispatch = readScalarCount;
+    expect(afterFirstDispatch).toBeGreaterThan(0);
+
+    // scalar 値を変えて 2 回目の dispatch
+    nextScalarValue = 99;
+    const r2 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r2.ok).toBe(true);
+    // 2 回目の方が readScalar の呼び出し回数が増えている (= refresh されている)
+    expect(readScalarCount).toBeGreaterThan(afterFirstDispatch);
+  });
+});

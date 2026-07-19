@@ -162,6 +162,10 @@ export async function initializeGpuKernels(
     // re-evaluating the emitter.
     kernel.workgroupSize = emitted.workgroupSize;
     kernel.dispatchPlan = emitted.dispatchPlan;
+    // §Phase 3 — forward the scalar uniform bindings so the dispatcher
+    // can allocate the `@group(1) @binding(0)` uniform buffer and
+    // evaluate the dispatch plan against the live scalar snapshot.
+    kernel.scalarBindings = emitted.scalarBindings;
   }
   const result: InitializeResult = {
     registry,

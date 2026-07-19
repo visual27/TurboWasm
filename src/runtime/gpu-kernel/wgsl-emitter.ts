@@ -3,6 +3,10 @@ import { scratchCompatHeader } from './scratch-compat';
 import { buildScratchBlockExprContext } from './scratch-block-expr';
 import { axisToRepeatDirective, collectImplicitAxes } from './implicit-axis';
 import { shouldSkipBlock, type SkipBlockContext } from './skip-block-filter';
+import {
+  createScalarUniformBindings,
+  type ScalarUniformBinding,
+} from './scalar-uniform-binding';
 import type {
   AxisFinal,
   BindDirective,
@@ -97,6 +101,22 @@ export interface EmitResult {
   dispatchPlan: DispatchPlan;
   /** Resolved (post-clamp) workgroup size for this region. */
   workgroupSize: WorkgroupSize;
+  /**
+   * §Phase 3 — scalar uniform bindings derived from `@bind ..., scalar`
+   * directives. Empty array when the kernel has no scalar bindings.
+   * The runtime dispatcher reads this to:
+   *
+   *   1. Allocate a `@group(1) @binding(0)` uniform buffer.
+   *   2. Build the group-1 bind group.
+   *   3. Refresh scalar values per dispatch via
+   *      `runtime.readScalar(...)`.
+   *   4. Evaluate `dispatchPlan.*` WGSL expressions against the live
+   *      scalar snapshot.
+   *
+   * `wgslName` is the field name in the emitted `ScratchUniforms`
+   * struct (= renameTable applied for quoted-name bindings).
+   */
+  scalarBindings: readonly ScalarUniformBinding[];
 }
 
 const DEFAULT_WORKGROUP_SIZE: WorkgroupSize = { x: 64, y: 1, z: 1 };
@@ -472,6 +492,15 @@ export function emitRegion(input: EmitInput): EmitResult {
     lengthNames.set(binding.name, safeIdentifier(`${storageName}_length`));
   }
 
+  // §Phase 3 — Build scalar uniform bindings from `@bind ..., scalar`
+  // directives. These feed `data_variableof` resolution in
+  // `scratchBlockToWgslExpr` and the WGSL `ScratchUniforms` struct emit.
+  const scalarBindings = createScalarUniformBindings(bindings, renamed.renameTable);
+  const scalarFieldNames = new Map<string, string>();
+  for (const scalar of scalarBindings) {
+    scalarFieldNames.set(scalar.name, scalar.wgslName);
+  }
+
   // Phase 2: implicit axis 収集 (kernel container + nested repeats の
   // loop count formula → Ry/Rx<N> axis)。legacy レイアウト
   // (nestedRepeatContainerBlockIds が空) では生成しない。
@@ -482,7 +511,7 @@ export function emitRegion(input: EmitInput): EmitResult {
   const exprContext = buildScratchBlockExprContext(
     regionVerdict.directives,
     renamed.renameTable,
-    [], // Phase 2: scalarBindings は Phase 3 で導入。空配列。
+    scalarBindings,
   );
   const implicitResult = collectImplicitAxes({
     kernelContainerId: regionVerdict.blockId,
@@ -550,8 +579,19 @@ export function emitRegion(input: EmitInput): EmitResult {
     skipContext,
   };
 
-  const lines: string[] = [scratchCompatHeader(), '', emitUniforms(bindings, lengthNames), ''];
-  for (const binding of bindings) lines.push(emitBinding(binding, bindingNames));
+  const lines: string[] = [
+    scratchCompatHeader(),
+    '',
+    emitUniforms(bindings, lengthNames, scalarFieldNames),
+    '',
+  ];
+  for (const binding of bindings) {
+    // §Phase 3 — scalar bindings share one `@group(1) @binding(0)` slot
+    // (= the uniforms buffer); they do NOT consume a `@group(0)
+    // @binding(N)` slot. Skip emitBinding for scalars.
+    if (binding.storageKind === 'scalar') continue;
+    lines.push(emitBinding(binding, bindingNames));
+  }
   if (bindings.length > 0) lines.push('');
 
   const dispatchPlan = computeDispatchPlan(combinedRepeats, allAxisVerdicts, workgroupSize, {
@@ -601,6 +641,7 @@ export function emitRegion(input: EmitInput): EmitResult {
     diagnostics,
     dispatchPlan,
     workgroupSize,
+    scalarBindings,
   };
 }
 
@@ -686,15 +727,35 @@ function createBindingNames(bindings: readonly BindDirective[]): Map<string, str
  * Emit the uniforms struct at `@group(1) @binding(0)` to free `@group(0)`
  * for user storage bindings. Storage bindings then occupy `@group(0)
  * @binding(0) .. N`, and the user is free to use slot 0.
+ *
+ * §Phase 3 — scalar bindings (`storageKind === 'scalar'`) are emitted as
+ * `{wgslName}: {f32|i32}` fields before the list length fields. Scalar
+ * uniforms share one `@group(1) @binding(0)` slot; their values are
+ * written via `__dispatch-kernel-sync.ts:packScalarUniformBuffer`.
  */
 function emitUniforms(
   bindings: readonly BindDirective[],
   lengthNames: ReadonlyMap<string, string>,
+  scalarFieldNames: ReadonlyMap<string, string> = new Map(),
 ): string {
-  const fields = bindings.map((binding) => {
+  const fields: string[] = [];
+  // Scalar fields come first so that the host upload layout (16-byte
+  // header + 16-byte stride) lines up with the WGSL struct field order.
+  for (const binding of bindings) {
+    if (binding.storageKind !== 'scalar') continue;
+    const wgslName = scalarFieldNames.get(binding.name) ?? binding.name;
+    const wgslType = binding.dtype === 'i32' ? 'i32' : 'f32';
+    fields.push(`  ${wgslName}: ${wgslType},`);
+  }
+  // List length fields follow. The trailing underscore prefix avoids
+  // collision with scalar fields when the user names both a list and a
+  // scalar with the same surface name (e.g. `@bind "data"(0) rw f32` +
+  // `@bind "data"(0) ro f32, scalar`).
+  for (const binding of bindings) {
+    if (binding.storageKind === 'scalar') continue;
     const name = lengthNames.get(binding.name) ?? safeIdentifier(`${binding.name}_length`);
-    return `  ${name}: u32,`;
-  });
+    fields.push(`  ${name}: u32,`);
+  }
   if (fields.length === 0) fields.push('  __tw_padding: u32,');
   return `struct ScratchUniforms {\n${fields.join('\n')}\n};\n@group(1) @binding(0) var<uniform> u_scratch: ScratchUniforms;`;
 }

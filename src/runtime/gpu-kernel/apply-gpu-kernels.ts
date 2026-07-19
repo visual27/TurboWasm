@@ -140,10 +140,23 @@ function installDispatcher(options: ApplyGpuKernelsOptions): void {
       registry: options.registry,
       pool: options.pool,
       regionVerdict: kernel.regionVerdict,
+      // Legacy fallback dims (1, 1, 1). With §Phase 3 scalar bindings
+      // present, the dispatcher overrides these per-dispatch from
+      // `kernel.dispatchPlan` + the live scalar snapshot. The fallback
+      // only fires when scalarBindings is empty (= legacy fixture path).
       dims: { x: 1, y: 1, z: 1 },
       pipelines: pipelines as Map<string, unknown> as DispatchContext['pipelines'],
       runtime,
     };
+    // §Phase 3 — wire the WGSL expression dispatch plan and scalar
+    // uniform bindings through to the dispatcher. Both are precomputed
+    // at `initializeGpuKernels` time and stored on the Kernel; we just
+    // forward them here so the dispatcher can evaluate the plan
+    // against live host state per dispatch.
+    if (kernel.dispatchPlan) ctx.dispatchPlan = kernel.dispatchPlan;
+    if (kernel.scalarBindings && kernel.scalarBindings.length > 0) {
+      ctx.scalarBindings = kernel.scalarBindings;
+    }
     try {
       return dispatchKernel(kernel.id, ctx).then(
         (r: DispatchResult): boolean => r.ok && !r.demoted,
