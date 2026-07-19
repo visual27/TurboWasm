@@ -85,7 +85,11 @@ describe('make-expo-fixture.mjs: legacy COMPUTE_COMMENT_TEXT shape', () => {
       c.text.split('\n')[0]?.trim().startsWith('@compute'),
     );
     expect(computeComment, 'no @compute comment found').toBeDefined();
-    expect(computeComment!.text).toContain('@repeat R0:global_x = aabb_w, max=4096');
+    // §Phase 2 (15.3): the inline `, max=<uint>` suffix is removed
+    // alongside the @max directive. The dispatch cap is now derived
+    // from the runtime list length.
+    expect(computeComment!.text).toContain('@repeat R0:global_x = aabb_w');
+    expect(computeComment!.text).not.toContain(', max=');
     expect(computeComment!.text).toContain('@map R0 <- 0');
     // Phase 3 Tier 2 additions must NOT be in the legacy comment
     // (legacy fixture must remain bit-identical with the pre-Phase-4

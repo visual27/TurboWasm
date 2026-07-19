@@ -273,19 +273,22 @@ function stripDirectiveVolatile(
         // storageKind is *kept* (scalar vs list differs in WGSL output).
         storageKind: d.storageKind ?? 'list',
       };
-    case 'max':
-      return { kind: d.kind, name: d.name, value: d.value };
     case 'workgroup_size':
       return { kind: d.kind, x: d.x, y: d.y, z: d.z };
     case 'repeat':
       // Note: `boundBlockId` (Phase 0) は意図的に含めない。scratch block
       // の id が変わっても canonical key は不変。
+      //
+      // §Phase 2 (15.3): the inline `, max=<uint>` field is removed
+      // alongside the `@max` directive. No canonical-key change is
+      // needed because every pre-v9 fixture that carried a `max` field
+      // also carried an `@max` directive that the parser now rejects
+      // (= the region D1-demotes and never reaches the registry).
       return {
         kind: d.kind,
         name: d.name,
         axis: d.axis,
         formula: d.formula,
-        max: d.max,
       };
     case 'map':
       // Note: `boundBlockId` (Phase 0) は意図的に含めない。

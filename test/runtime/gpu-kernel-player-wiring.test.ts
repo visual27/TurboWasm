@@ -84,7 +84,8 @@ const COMPUTE_COMMENT_TEXT = [
   '@bind buff_r(1) rw f32',
   '@bind aabb_w(2) ro f32',
   '@workgroup_size(64)',
-  '@repeat R0:global_x = aabb_w, max=4096',
+  // §Phase 2 (15.3): inline `, max=<uint>` removed alongside @max.
+  '@repeat R0:global_x = aabb_w',
   '@map R0 <- 0',
 ].join('\n');
 

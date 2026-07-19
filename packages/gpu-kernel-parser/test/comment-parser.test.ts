@@ -22,21 +22,19 @@ describe('parseComputeComment', () => {
     expect(packageSource).toBe(runtimeSource);
   });
 
-  it('parses @bind, @max, @workgroup_size, @repeat, @map in a single comment', () => {
+  it('parses @bind, @workgroup_size, @repeat, @map in a single comment (§15.3 — @max removed)', () => {
     const text = [
       '@compute',
       '@bind scratch_list(0) rw f32',
       '@bind tmp0(1) ro',
-      '@max length=1024',
-      '@max aabb_width=128',
       '@workgroup_size(64)',
-      '@repeat R0:global_x = aabb_width, max=1024',
+      '@repeat R0:global_x = aabb_width',
       '@map idx0 <- R0',
     ].join('\n');
 
     const result = parseComputeComment(mkComment(text), REGION);
     expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
-    expect(result.directives).toHaveLength(7);
+    expect(result.directives).toHaveLength(5);
     const binds = result.directives.filter((d) => d.kind === 'bind');
     expect(binds).toHaveLength(2);
     const firstBind = binds[0];
@@ -60,10 +58,36 @@ describe('parseComputeComment', () => {
       kind: 'repeat',
       name: 'R0',
       axis: 'global_x',
-      max: 1024,
     });
+    // §Phase 2 (15.3): the `max` field is gone from RepeatDirective.
+    expect(repeat && 'max' in repeat ? (repeat as { max?: number }).max : undefined).toBeUndefined();
     const map = result.directives.find((d) => d.kind === 'map');
     expect(map).toMatchObject({ kind: 'map', var: 'idx0' });
+  });
+
+  it('rejects @max length=N as a hard error (§Phase 2 §15.3 parser-package mirror)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@max length=1024\n'),
+      REGION,
+    );
+    expect(result.directives.find((d) => d.kind === 'max')).toBeUndefined();
+    const diag = result.diagnostics.find(
+      (d) => d.code === 'gpu.dsl_syntax_error' && d.message.includes('@max'),
+    );
+    expect(diag).toBeDefined();
+    expect(diag?.severity).toBe('error');
+  });
+
+  it('rejects inline ", max=<uint>" on @repeat as a hard error (§15.3)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@repeat R0:global_x = aabb_width, max=4096\n'),
+      REGION,
+    );
+    expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+    const diag = result.diagnostics.find(
+      (d) => d.code === 'gpu.dsl_syntax_error' && d.severity === 'error',
+    );
+    expect(diag).toBeDefined();
   });
 
   it('flags an unknown directive', () => {
@@ -162,10 +186,17 @@ describe('parseComputeComment', () => {
     expect(result.diagnostics.some((d) => d.message.includes('@map'))).toBe(true);
   });
 
-  it('rejects negative @max values', () => {
+  it('rejects @max entirely as a hard error (§15.3 — directive removed)', () => {
+    // The pre-v9 parser accepted `@max length=-1` and rejected the
+    // value as malformed. The post-v9 parser rejects the directive
+    // shape itself (`@max` is no longer recognised), regardless of the
+    // value's sign or form.
     const result = parseComputeComment(mkComment('@compute\n@max length=-1\n'), REGION);
     expect(result.directives.filter((d) => d.kind === 'max')).toHaveLength(0);
-    expect(result.diagnostics.some((d) => d.message.includes('@max'))).toBe(true);
+    const errorDiag = result.diagnostics.find(
+      (d) => d.code === 'gpu.dsl_syntax_error' && d.message.includes('@max') && d.severity === 'error',
+    );
+    expect(errorDiag).toBeDefined();
   });
 
   it('rejects @workgroup_size with zero entries', () => {
@@ -246,17 +277,7 @@ describe('parseComputeComment', () => {
     });
   });
 
-  describe('quoted names in @max / @repeat (§Phase E+ parser-package mirror)', () => {
-    it('parses @max "my group"=64 with internalName', () => {
-      const result = parseComputeComment(
-        mkComment('@compute\n@max "my group"=64'),
-        REGION,
-      );
-      const max = result.directives.find((d) => d.kind === 'max');
-      expect(max).toMatchObject({ kind: 'max', name: 'my group', value: 64 });
-      expect((max as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
-    });
-
+  describe('quoted names in @repeat (§Phase E+ parser-package mirror)', () => {
     it('parses @repeat "R0":"global_x" = 32 with quoted name and quoted axis', () => {
       const result = parseComputeComment(
         mkComment('@compute\n@repeat "R0":"global_x" = 32'),
@@ -266,6 +287,12 @@ describe('parseComputeComment', () => {
       expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'global_x', formula: '32' });
       expect((repeat as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
     });
+
+    // §Phase 2 (15.3): the previous "@max "my group"=64 with
+    // internalName" test was retired — `@max` is gone in v9. The
+    // quoted-formula rename pass is now exclusively exercised via
+    // the `@repeat "R0":...` test above and the `@bind` quoted-name
+    // tests in the parent describe block.
   });
 
   describe('storageKind suffix (§Phase 3 parser-package mirror)', () => {

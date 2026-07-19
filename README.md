@@ -229,7 +229,6 @@ The DSL lives inside a Scratch **block comment** — the textual content of
 ```
 @compute
 @bind ...         ; one or more
-@max ...           ; optional
 @workgroup_size(...) ; optional
 @repeat ...        ; one per parallel axis
 @map ...           ; zero or more
@@ -277,7 +276,7 @@ Example:
 
 Scratch allows variable and list names that contain spaces, such as
 `"my list"`. **Quoting is the recommended form for every identifier
-slot** in the `@compute` DSL — `@bind`, `@max`, `@repeat`, and `@map`
+slot** in the `@compute` DSL — `@bind`, `@repeat`, and `@map`
 all accept either a plain identifier or a double-quoted string. The
 quoted form is unambiguous even when names contain punctuation or
 extend into future DSL extensions; unquoted identifiers continue to
@@ -287,8 +286,7 @@ work for backwards compatibility.
 @compute
 @bind "my list"(0) rw f32      ; @bind with quoted name (recommended)
 @bind tmp0(1) ro f32           ; unquoted names still work
-@max "my group"=64             ; @max.groupName also accepts quoted
-@repeat "R0":global_x = "my group"   ; @repeat name + axis quoted
+@repeat "R0":global_x = aabb_w ; @repeat name + axis quoted
 @map "idx with space" <- 0     ; @map var quoted
 ```
 
@@ -331,7 +329,7 @@ inside the subscript or argument is recursively expanded.
 
 ```
 @bind my_list(0) ro f32
-@repeat R0:global_x = len(my_list), max=64
+@repeat R0:global_x = len(my_list)
 @map flag <- bool(my_list[R0])
 ```
 
@@ -339,21 +337,6 @@ Subscript and `len(...)` targets that do not resolve to a `@bind`
 directive in the same region surface a `gpu.formula_sugar_undeclared_target`
 diagnostic; the formula body is left as-is so the user can fix the
 typo without losing the rest of the WGSL output.
-
-#### `@max <ident>=<uint>`
-
-Caps a dispatch dimension. Two recognised forms:
-
-- `@max length=<uint>` — cap on list buffer length (the GPU-side
-  `list.length` clamp). Reads beyond `length` return `NaN`; writes
-  beyond `length` are no-ops.
-- `@max <groupName>=<uint>` — generic cap for an `@repeat`'s axis.
-  For example `@max aabb_width=64` paired with
-  `@repeat R0:global_x = aabb_width` makes the dispatch size at most
-  `ceil(64/64) = 1` workgroup along `x`.
-
-The `@repeat R:axis = formula, max=<uint>` form's inline `max` field
-takes precedence over any `@max` of the same name.
 
 #### `@workgroup_size(<x> [, <y>] [, <z>])`
 
@@ -364,7 +347,7 @@ If the resolved size exceeds `device.limits.maxComputeWorkgroupSizeX/Y/Z`,
 the runtime clamps the offending axis and emits an `info`-level
 diagnostic (Q19).
 
-#### `@repeat R<i>[:<axis>] = <formula> [, max=<uint>]`
+#### `@repeat R<i>[:<axis>] = <formula> [, blockId="<id>"]`
 
 Declares one dispatch axis. Multiple `@repeat` directives are permitted
 on a single region — each surviving axis runs in parallel; demoted axes
@@ -375,10 +358,13 @@ fall back to sequential.
 | `i` | Index digit (typically `0`, `1`, `2`). |
 | `axis` | One of `global_x`, `global_y`, `global_z`, `local_x`, `local_y`, `local_z`, `workgroup_x`, `workgroup_y`, `workgroup_z`, or `sequential` (the safe fallback). |
 | `formula` | Raw formula text. WGSL-allowed syntax (see [Formula syntax](#formula-syntax)). |
-| `max` | Optional explicit cap (overrides `@max`). |
+| `blockId` | Optional `blockId="<scratch-block-id>"` linking the directive to a specific scratch block in the body (Phase 0 nested parallelization §1.1). |
 
 The dispatch size for a parallel axis is computed at runtime as
-`ceil(max(axis) / workgroup_size_axis)` per spec §3.5.
+`ceil(runtime_list_length / workgroup_size_axis)` per spec §3.5.
+§Phase 2 (15.3) removed the previous `, max=<uint>` suffix and the
+`@max` directive entirely; the dispatch cap is now derived from the
+runtime list length at dispatch time.
 
 #### `@map <var> <- <formula>`
 
@@ -575,10 +561,8 @@ contains:
 @bind aabb_height(1) ro f32
 @bind buff_r(2) rw f32
 @bind tmp0(3) ro f32
-@max length=1024
-@max aabb_height=128
 @workgroup_size(64,1,1)
-@repeat R0:global_x = aabb_w, max=4096
+@repeat R0:global_x = aabb_w
 @repeat R1:global_y = aabb_height
 @repeat R2:global_z = 1
 @map R0 <- 0

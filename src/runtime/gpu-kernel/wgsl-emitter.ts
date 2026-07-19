@@ -14,7 +14,6 @@ import type {
   Diagnostic,
   ExtractedRegion,
   MapDirective,
-  MaxDirective,
   ParsedProject,
   RawBlock,
   RegionVerdict,
@@ -23,16 +22,14 @@ import type {
 } from './types';
 
 /**
- * Structural subset of `MaxDirective` that `renameIdentifiers` reads.
- * Defined as a local type to keep the function signature stable across
- * future field additions.
- */
-export type MaxDirectiveLike = Pick<MaxDirective, 'name' | 'internalName' | 'value'>;
-
-/**
  * Structural subset of `RepeatDirective` that `renameIdentifiers` reads.
  * Defined as a local type to keep the function signature stable across
  * future field additions.
+ *
+ * §Phase 2 (15.3): the `MaxDirectiveLike` companion was removed
+ * alongside the `@max` directive. There is no longer a quoted group
+ * name to alias through `internalName` for `@max`, and the dispatch
+ * cap is now derived from the runtime list length at `emitRegion` time.
  */
 export type RepeatDirectiveLike = Pick<RepeatDirective, 'name' | 'internalName'>;
 
@@ -291,7 +288,6 @@ export function renameIdentifiers(
   maps: readonly MapDirective[],
   bindings: readonly BindDirective[] = [],
   regionId = '',
-  maxes: readonly MaxDirectiveLike[] = [],
   repeats: readonly RepeatDirectiveLike[] = [],
 ): IdentifierRenameResult {
   const renameTable: Record<string, string> = {};
@@ -379,42 +375,14 @@ export function renameIdentifiers(
     });
   }
 
-  // 3. §Phase E+ — @max group names. A quoted `@max "my group"=N`
-  //    carries `internalName`. Any `@repeat`/`@map` formula that
-  //    references the surface name must be rewritten to `internalName`
-  //    for WGSL. Unquoted group names that collide with WGSL keywords
-  //    are renamed through the same collision loop as @map.
-  for (const max of maxes) {
-    if (!max.name) continue;
-    if (max.internalName) {
-      if (renameTable[max.name] === undefined) {
-        renameTable[max.name] = max.internalName;
-        occupied.add(max.internalName);
-      }
-      continue;
-    }
-    if (!RESERVED_IDENTIFIERS.has(max.name)) continue;
-    if (renameTable[max.name] !== undefined) continue;
-    let salt = 0;
-    let renamed = hashedIdentifier(max.name, salt);
-    while (occupied.has(renamed) || RESERVED_IDENTIFIERS.has(renamed)) {
-      salt += 1;
-      renamed = hashedIdentifier(max.name, salt);
-    }
-    occupied.add(renamed);
-    renameTable[max.name] = renamed;
-    diagnostics.push({
-      severity: 'warn',
-      code: 'gpu.identifier_collision',
-      message: `@max name '${max.name}' was renamed to '${renamed}' for WGSL emission`,
-      regionId,
-    });
-  }
-
-  // 4. §Phase E+ — @repeat names. Same collision logic; quoted @repeat
+  // 3. §Phase E+ — @repeat names. Same collision logic; quoted @repeat
   //    names (`@repeat "R0":global_x = ...`) carry `internalName` so the
   //    emitter can rewrite any `@map idx <- "R0"` reference to a valid
   //    WGSL identifier.
+  //
+  //    §Phase 2 (15.3): the previous `@max` group-name rename pass is
+  //    removed alongside the directive. There is no longer a quoted
+  //    group name to alias through `internalName` for `@max`.
   for (const repeat of repeats) {
     if (!repeat.name) continue;
     if (repeat.internalName) {
@@ -456,9 +424,6 @@ export function emitRegion(input: EmitInput): EmitResult {
     .filter((item): item is BindDirective => item.kind === 'bind')
     .slice()
     .sort((a, b) => a.slot - b.slot);
-  const maxes = regionVerdict.directives.filter(
-    (item): item is MaxDirective => item.kind === 'max',
-  );
   const workgroupDirective = regionVerdict.directives.find(
     (item): item is WorkgroupSizeDirective => item.kind === 'workgroup_size',
   );
@@ -478,7 +443,7 @@ export function emitRegion(input: EmitInput): EmitResult {
     });
   }
 
-  const renamed = renameIdentifiers(maps, bindings, regionVerdict.regionId, maxes, repeats);
+  const renamed = renameIdentifiers(maps, bindings, regionVerdict.regionId, repeats);
   diagnostics.push(...renamed.diagnostics);
   const blocks = collectTargetBlocks(input.parsedProject, regionVerdict.spriteId);
   const bindingNames = createBindingNames(bindings);
@@ -956,9 +921,10 @@ function renameFormulaIdentifiers(
   //
   // §Phase E+ — also rewrite quoted-string references (`"my list"`)
   // whose content matches an entry in `renameTable`. This lets the
-  // user reference a quoted @bind/@max/@repeat by its surface name in
+  // user reference a quoted @bind/@repeat by its surface name in
   // formulas. Quoted references resolve to the same `internalName` /
-  // hashed emit name as the unquoted form.
+  // hashed emit name as the unquoted form. (§Phase 2 15.3 — `@max`
+  // removed; no longer in the rename table.)
   const lookup = (key: string): string | undefined => {
     if (bindingRenames && bindingRenames[key] !== undefined) return bindingRenames[key];
     return renameTable[key];

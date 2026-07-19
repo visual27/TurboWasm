@@ -117,13 +117,16 @@ describe('createScalarUniformBindings', () => {
     ]);
   });
 
-  it('does not include non-bind directives (max / repeat / map / workgroup_size)', () => {
+  it('does not include non-bind directives (repeat / map / workgroup_size) — §15.3 removed @max', () => {
     const directives: BindDirective[] = [
       makeBind('a', 0, { kind: 'scalar' }),
+      // Inject a non-bind entry; the helper must filter it out.
       {
-        kind: 'max',
-        name: 'length',
-        value: 1024,
+        kind: 'repeat',
+        name: 'R0',
+        axis: 'global_x',
+        formula: 'N',
+        blockId: 'r0',
         line: 0,
         column: 0,
       } as unknown as BindDirective,

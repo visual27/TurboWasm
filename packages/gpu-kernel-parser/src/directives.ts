@@ -6,19 +6,22 @@
  * derived from the parser body — keeping it as a constant table lets the
  * VSCode extension (completion provider, snippets) reference the same
  * canonical names without importing parser internals.
+ *
+ * §Phase 2 (15.3): the `max` directive was removed in v9 alongside the
+ * inline `, max=<uint>` suffix on `@repeat`. The dispatch cap is now
+ * derived from the runtime list length at dispatch time, so neither
+ * directive name is part of the public surface anymore.
  */
 
 export type DirectiveName =
   | 'compute'
   | 'bind'
-  | 'max'
   | 'workgroup_size'
   | 'repeat'
   | 'map';
 
 export const DIRECTIVE_HEADS: readonly DirectiveName[] = [
   'bind',
-  'max',
   'workgroup_size',
   'repeat',
   'map',
@@ -54,10 +57,9 @@ export const DIRECTIVE_DESCRIPTIONS: Record<DirectiveName, string> = {
   compute:
     'Region marker. Begins a `@compute` block; subsequent directives belong to the same region until the next marker.',
   bind: 'Buffer declaration. Form: `@bind <name>(<slot>) (ro|rw) [f32|i32|byte]`; quote names containing spaces or punctuation. dtype defaults to `f32`.',
-  max: 'Static size hint. Form: `@max <group>=<uint>`. Not read by the emitter; retained as documentation.',
   workgroup_size:
     'Workgroup dimensions. Form: `@workgroup_size(x[,y[,z]])`. Each value must be ≥ 1. Defaults to (64,1,1).',
   repeat:
-    'Repeat loop declaration. Form: `@repeat R<i>[:<axis>] = <formula>[, max=<uint>]`. Requires a matching `@map`.',
-  map: 'WGSL `let` binding. Form: `@map <var> <- <formula>`. The formula may be rewritten to avoid WGSL reserved words.',
+    'Repeat loop declaration. Form: `@repeat R<i>[:<axis>] = <formula>[, blockId="<id>"]`. Requires a matching `@map`.',
+  map: 'WGSL `let` binding. Form: `@map <var> <- <formula>[, blockId="<id>"]`. The formula may be rewritten to avoid WGSL reserved words.',
 };

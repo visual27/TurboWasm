@@ -104,9 +104,6 @@ function formatRegion(region: DocumentRegion, options: RegionFormatOptions): str
   const repeats = sortRepeats(groups.repeats);
   for (const d of repeats) out.push(d.raw.trim());
 
-  const maxes = sortMaxes(groups.maxes);
-  for (const d of maxes) out.push(d.raw.trim());
-
   for (const d of groups.maps) out.push(d.raw.trim());
 
   return out.join(options.lineEnding);
@@ -116,7 +113,6 @@ interface GroupedDirectives {
   binds: DocumentDirective[];
   workgroup: DocumentDirective[];
   repeats: DocumentDirective[];
-  maxes: DocumentDirective[];
   maps: DocumentDirective[];
 }
 
@@ -125,7 +121,6 @@ function groupDirectives(directives: readonly DocumentDirective[]): GroupedDirec
     binds: [],
     workgroup: [],
     repeats: [],
-    maxes: [],
     maps: [],
   };
   for (const d of directives) {
@@ -139,9 +134,6 @@ function groupDirectives(directives: readonly DocumentDirective[]): GroupedDirec
         break;
       case 'repeat':
         groups.repeats.push(d);
-        break;
-      case 'max':
-        groups.maxes.push(d);
         break;
       case 'map':
         groups.maps.push(d);
@@ -181,10 +173,6 @@ function sortRepeats(directives: readonly DocumentDirective[]): DocumentDirectiv
     if (ap !== bp) return ap - bp;
     return aRepeat.name.localeCompare(bRepeat.name);
   });
-}
-
-function sortMaxes(directives: readonly DocumentDirective[]): DocumentDirective[] {
-  return [...directives].sort((a, b) => a.raw.trim().localeCompare(b.raw.trim()));
 }
 
 function alignBinds(

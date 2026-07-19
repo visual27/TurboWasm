@@ -9,22 +9,20 @@ function mkComment(text: string, blockId = 'blk'): ParsedComment {
 }
 
 describe('comment-parser', () => {
-  it('parses @bind, @max, @workgroup_size, @repeat, @map in a single comment', () => {
+  it('parses @bind, @workgroup_size, @repeat, @map in a single comment (§15.3 — @max removed)', () => {
     const text = [
       '@compute',
       '@bind scratch_list(0) rw f32',
       '@bind tmp0(1) ro',
-      '@max length=1024',
-      '@max aabb_width=128',
       '@workgroup_size(64)',
-      '@repeat R0:global_x = aabb_width, max=1024',
+      '@repeat R0:global_x = aabb_width',
       '@map idx0 <- R0',
     ].join('\n');
 
     const result = parseComputeComment(mkComment(text), REGION);
     expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
     // `@compute` is a marker, not a directive — the parser silently skips it.
-    expect(result.directives).toHaveLength(7);
+    expect(result.directives).toHaveLength(5);
     const binds = result.directives.filter((d) => d.kind === 'bind');
     expect(binds).toHaveLength(2);
     const firstBind = binds[0];
@@ -32,9 +30,91 @@ describe('comment-parser', () => {
     const secondBind = binds[1];
     expect(secondBind).toMatchObject({ kind: 'bind', name: 'tmp0', slot: 1, readOnly: true, dtype: 'f32' });
     const repeat = result.directives.find((d) => d.kind === 'repeat');
-    expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'global_x', max: 1024 });
+    expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'global_x' });
+    // §Phase 2 (15.3): the `max` field is gone from RepeatDirective.
+    expect(repeat && 'max' in repeat ? (repeat as { max?: number }).max : undefined).toBeUndefined();
     const map = result.directives.find((d) => d.kind === 'map');
     expect(map).toMatchObject({ kind: 'map', var: 'idx0' });
+  });
+
+  it('rejects @max length=N as a hard error (§Phase 2 §15.3)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@max length=1024\n'),
+      REGION,
+    );
+    // §Phase 2 (15.3): @max is removed in v9 — no MaxDirective in the
+    // union, so we can only assert via the diagnostic surface.
+    expect(result.directives).toHaveLength(0);
+    const diag = result.diagnostics.find(
+      (d) => d.code === 'gpu.dsl_syntax_error' && d.message.includes('@max'),
+    );
+    expect(diag).toBeDefined();
+    // §Phase 2 (15.2): parser rejection uses severity 'error' so the
+    // owning region D1-demotes via buildBlockSubsetVerdict.
+    expect(diag?.severity).toBe('error');
+  });
+
+  it('rejects @max "my group"=64 (quoted group form) as a hard error (§15.3)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@max "my group"=64\n'),
+      REGION,
+    );
+    expect(result.directives).toHaveLength(0);
+    const diag = result.diagnostics.find(
+      (d) => d.code === 'gpu.dsl_syntax_error' && d.severity === 'error',
+    );
+    expect(diag).toBeDefined();
+  });
+
+  it('rejects inline ", max=<uint>" on @repeat as a hard error (§15.3)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@repeat R0:global_x = aabb_width, max=4096\n'),
+      REGION,
+    );
+    // The directive is rejected entirely (no RepeatDirective emitted).
+    expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+    const diag = result.diagnostics.find(
+      (d) => d.code === 'gpu.dsl_syntax_error' && d.severity === 'error',
+    );
+    expect(diag).toBeDefined();
+    expect(diag?.message).toContain('max');
+  });
+
+  it('still rejects inline ", max=<uint>" when combined with blockId= (§15.3)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@repeat R0:global_x = aabb_width, max=4096, blockId="x"\n'),
+      REGION,
+    );
+    expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+    const errorDiag = result.diagnostics.find(
+      (d) => d.severity === 'error' && d.code === 'gpu.dsl_syntax_error',
+    );
+    expect(errorDiag).toBeDefined();
+  });
+
+  it('does NOT reject a formula that contains "max + 1" mid-expression (§15.3)', () => {
+    // `max + 1` is a valid formula — only the trailing `, max=<digits>$`
+    // is rejected. Anchor on `\s*$` keeps this case green.
+    const result = parseComputeComment(
+      mkComment('@compute\n@bind tmp0(0) ro\n@repeat R0 = max + 1\n'),
+      REGION,
+    );
+    expect(result.directives.find((d) => d.kind === 'repeat')).toMatchObject({
+      kind: 'repeat',
+      name: 'R0',
+      formula: 'max + 1',
+    });
+    expect(result.diagnostics.filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('legacy @repeat with no max= suffix continues to work (§15.3 backward compat)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@repeat R0:global_x = aabb_width\n'),
+      REGION,
+    );
+    const repeat = result.directives.find((d) => d.kind === 'repeat');
+    expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'global_x', formula: 'aabb_width' });
+    expect(repeat && 'max' in repeat ? (repeat as { max?: number }).max : undefined).toBeUndefined();
   });
 
   describe('quoted names (§Phase E)', () => {
@@ -147,28 +227,7 @@ describe('comment-parser', () => {
     });
   });
 
-  describe('quoted names in @max / @repeat (§Phase E+)', () => {
-    it('parses @max "my group"=64 with internalName', () => {
-      const result = parseComputeComment(
-        mkComment('@compute\n@max "my group"=64'),
-        REGION,
-      );
-      const max = result.directives.find((d) => d.kind === 'max');
-      expect(max).toMatchObject({ kind: 'max', name: 'my group', value: 64 });
-      expect((max as { internalName?: string }).internalName).toMatch(/^__tw_[0-9a-f]{8}$/);
-      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
-    });
-
-    it('parses @max length=1024 without internalName (backwards compat)', () => {
-      const result = parseComputeComment(
-        mkComment('@compute\n@max length=1024'),
-        REGION,
-      );
-      const max = result.directives.find((d) => d.kind === 'max');
-      expect(max).toMatchObject({ kind: 'max', name: 'length', value: 1024 });
-      expect((max as { internalName?: string }).internalName).toBeUndefined();
-    });
-
+  describe('quoted names in @repeat (§Phase E+)', () => {
     it('parses @repeat "R0":global_x = N with quoted name and quoted axis', () => {
       const result = parseComputeComment(
         mkComment('@compute\n@repeat "R0":"global_x" = 64'),
@@ -190,24 +249,17 @@ describe('comment-parser', () => {
       expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'sequential', formula: '32' });
     });
 
-    it('parses @repeat R0:global_x = "my group" with quoted formula reference', () => {
-      // The formula text "my group" is opaque to the parser; the
-      // @max-renamed reference surfaces in the WGSL emitter, not here.
+    it('parses @repeat R0:global_x = "my list" with quoted formula reference (§15.3 — @max gone)', () => {
+      // §Phase 2 (15.3): the previous @max-renamed reference test was
+      // retired. The quoted formula reference still resolves through
+      // the @bind rename table; we verify the parser accepts the
+      // surface form and preserves the literal in `formula`.
       const result = parseComputeComment(
-        mkComment('@compute\n@max "my group"=64\n@repeat R0 = "my group"'),
+        mkComment('@compute\n@bind "my list"(0) ro\n@repeat R0 = "my list"'),
         REGION,
       );
       const repeat = result.directives.find((d) => d.kind === 'repeat');
-      expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'sequential', formula: '"my group"' });
-    });
-
-    it('reports an empty quoted @max name as a diagnostic', () => {
-      const result = parseComputeComment(
-        mkComment('@compute\n@max ""=64'),
-        REGION,
-      );
-      expect(result.directives.find((d) => d.kind === 'max')).toBeUndefined();
-      expect(result.diagnostics.some((d) => d.message.includes('empty quoted name'))).toBe(true);
+      expect(repeat).toMatchObject({ kind: 'repeat', name: 'R0', axis: 'sequential', formula: '"my list"' });
     });
 
     it('reports an empty quoted @repeat name as a diagnostic', () => {
@@ -296,35 +348,33 @@ describe('comment-parser', () => {
       expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
     });
 
-    it("'@repeat' accepts blockId=\"<id>\" combined with max=", () => {
+    // §Phase 2 (15.3): the `, max=<uint>` suffix was removed alongside
+    // the `@max` directive. The two pre-v9 tests that combined max=
+    // with blockId= are replaced below with rejection coverage.
+
+    it("'@repeat' rejects ', max=<uint>' even when blockId= appears (§15.3)", () => {
       const result = parseComputeComment(
         mkComment('@compute\n@repeat Rx:global_x = N, max=64, blockId="abc"'),
         REGION,
       );
-      const repeat = result.directives.find((d) => d.kind === 'repeat');
-      expect(repeat).toMatchObject({
-        kind: 'repeat',
-        name: 'Rx',
-        axis: 'global_x',
-        formula: 'N',
-        max: 64,
-        boundBlockId: 'abc',
-      });
-      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+      // The directive is rejected entirely — no RepeatDirective emitted.
+      expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+      const errorDiag = result.diagnostics.find(
+        (d) => d.severity === 'error' && d.code === 'gpu.dsl_syntax_error',
+      );
+      expect(errorDiag).toBeDefined();
     });
 
-    it("'@repeat' accepts blockId=\"<id>\" before max=", () => {
+    it("'@repeat' rejects ', max=<uint>' after blockId= (§15.3)", () => {
       const result = parseComputeComment(
         mkComment('@compute\n@repeat Rx:global_x = N, blockId="abc", max=64'),
         REGION,
       );
-      const repeat = result.directives.find((d) => d.kind === 'repeat');
-      expect(repeat).toMatchObject({
-        formula: 'N',
-        max: 64,
-        boundBlockId: 'abc',
-      });
-      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
+      expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+      const errorDiag = result.diagnostics.find(
+        (d) => d.severity === 'error' && d.code === 'gpu.dsl_syntax_error',
+      );
+      expect(errorDiag).toBeDefined();
     });
 
     it("'@repeat' rejects unquoted blockId= as a syntax error", () => {
@@ -394,19 +444,6 @@ describe('comment-parser', () => {
       );
       const repeat = result.directives.find((d) => d.kind === 'repeat');
       expect(repeat).toMatchObject({ formula: '"a,b"', boundBlockId: 'x' });
-      expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
-    });
-
-    it("legacy '@repeat Rx:global_x = N, max=64' keeps boundBlockId undefined", () => {
-      const result = parseComputeComment(
-        mkComment('@compute\n@repeat Rx:global_x = N, max=64'),
-        REGION,
-      );
-      const repeat = result.directives.find((d) => d.kind === 'repeat');
-      expect(repeat).toMatchObject({ formula: 'N', max: 64 });
-      expect(
-        repeat && 'boundBlockId' in repeat ? repeat.boundBlockId : undefined,
-      ).toBeUndefined();
       expect(result.diagnostics.filter((d) => d.severity === 'warn')).toEqual([]);
     });
   });

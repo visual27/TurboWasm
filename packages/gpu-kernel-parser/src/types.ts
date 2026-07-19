@@ -75,15 +75,6 @@ export interface BindDirective {
 
 export type Dtype = BindDirective['dtype'];
 
-export interface MaxDirective {
-  kind: 'max';
-  name: string;
-  internalName?: string;
-  value: number;
-  line: number;
-  column: number;
-}
-
 export interface WorkgroupSizeDirective {
   kind: 'workgroup_size';
   x: number;
@@ -99,7 +90,6 @@ export interface RepeatDirective {
   internalName?: string;
   axis: AxisFinal;
   formula: string;
-  max?: number;
   blockId: string;
   /**
    * §Phase 0 (nested-parallelization-00-overview §1.1) — optional
@@ -137,7 +127,6 @@ export interface MapDirective {
 
 export type ParsedDirective =
   | BindDirective
-  | MaxDirective
   | WorkgroupSizeDirective
   | RepeatDirective
   | MapDirective;

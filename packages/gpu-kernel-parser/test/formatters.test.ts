@@ -38,14 +38,13 @@ describe('formatScratchComment', () => {
 });
 
 describe('formatScgpuDocument', () => {
-  it('orders directives inside a region', () => {
+  it('orders directives inside a region (§15.3 — @max removed)', () => {
     const text = [
       '@compute',
       '@map R0 <- 0',
       '@repeat R0:global_x = R0 + 1',
       '@workgroup_size(64)',
       '@bind tmp0(0) ro',
-      '@max length=1024',
     ].join('\n');
     const out = formatScgpuDocument(text);
     expect(out).toBe(
@@ -54,7 +53,6 @@ describe('formatScgpuDocument', () => {
         '@bind tmp0(0) ro',
         '@workgroup_size(64)',
         '@repeat R0:global_x = R0 + 1',
-        '@max length=1024',
         '@map R0 <- 0',
         '',
       ].join('\n'),
@@ -131,14 +129,13 @@ describe('formatScgpuDocument', () => {
 });
 
 describe('helpers', () => {
-  it('filters by directive kind', () => {
+  it('filters by directive kind (§15.3 — @max removed)', () => {
     const text = [
       '@compute',
       '@bind tmp0(0) ro',
       '@workgroup_size(64)',
       '@repeat R0 = x',
       '@map R0 <- 0',
-      '@max length=8',
     ].join('\n');
     const directives = parseScgpuDocument(text).regions[0]!.directives.map((d) => d.directive);
     expect(listBindings(directives)).toHaveLength(1);

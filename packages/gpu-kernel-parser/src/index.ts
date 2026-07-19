@@ -42,7 +42,6 @@ export {
   type DocumentFrontmatter,
   type DocumentRegion,
   type MapDirective,
-  type MaxDirective,
   type ParseComputeCommentResult,
   type ParseScgpuDocumentOptions,
   type ParseScgpuDocumentResult,

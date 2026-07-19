@@ -4,11 +4,15 @@
  * The DSL is documented in §3 of `gpu-kernel-spec-summary.md`. Summary:
  *
  *   @bind <name>(<slot>) ro|rw [f32|i32|byte]
- *   @max length=<uint>
- *   @max <name>=<uint>
  *   @workgroup_size(<x>) | (<x>,<y>) | (<x>,<y>,<z>)
- *   @repeat R<i>[:<axis>] = <formula>[, max=<uint>]
- *   @map <var> <- <formula>
+ *   @repeat R<i>[:<axis>] = <formula>[, blockId="<id>"]
+ *   @map <var> <- <formula>[, blockId="<id>"]
+ *
+ * §Phase 2 (15.3): the `@max` directive and the inline `, max=<uint>`
+ * suffix on `@repeat` are removed in v9. Any remaining occurrences
+ * surface a `severity: 'error'` `gpu.dsl_syntax_error` so the owning
+ * region D1-demotes (15.2). The runtime adapter derives the dispatch
+ * cap from `runtime.listLength(name)` instead.
  *
  * `<name>` (and `<var>`, `<axis>`) accept either a plain identifier
  * (`tmp0`, `R0`, `aabb_width`) or a double-quoted string
@@ -29,7 +33,6 @@ import type {
   BindDirective,
   Diagnostic,
   MapDirective,
-  MaxDirective,
   ParsedComment,
   ParsedDirective,
   RepeatDirective,
@@ -123,7 +126,22 @@ function parseDirectiveLine(
     case 'bind':
       return parseBind(tail, line, regionId, blockId);
     case 'max':
-      return parseMax(tail, line, regionId, blockId);
+      // §Phase 2 (15.3) — `@max` was never read by the emitter (the
+      // runtime list length and the per-`@repeat` `max` suffix were
+      // the actually-used caps). The directive is removed in v9; any
+      // remaining `@max` line is rejected as a hard error so the
+      // owning region D1-demotes (15.2). The runtime adapter derives
+      // the dispatch cap from `runtime.listLength(name)` instead.
+      return {
+        directive: null,
+        diagnostic: makeErrorDiag(
+          `'@max' is removed in v9; the dispatch cap is derived from the runtime list length`,
+          regionId,
+          blockId,
+          line,
+          0,
+        ),
+      };
     case 'workgroup_size':
       return parseWorkgroupSize(tail, line, regionId, blockId);
     case 'repeat':
@@ -393,69 +411,11 @@ function findLastUnquotedComma(s: string): number {
   return -1;
 }
 
-function parseMax(
-  tail: string,
-  line: number,
-  regionId: string,
-  blockId: string,
-): LineParse {
-  // Pattern: <name>=<uint> where <name> is identifier-or-quoted (§Phase
-  // E+). We split on the *unquoted* `=` so a quoted group name with
-  // future extension characters does not break the parse.
-  const eq = findUnquotedEq(tail);
-  if (eq < 0) {
-    return {
-      directive: null,
-      diagnostic: makeDiag(
-        `malformed @max: expected '<name>=<uint>', got '${truncate(tail, 32)}'`,
-        regionId,
-        blockId,
-        line,
-        0,
-      ),
-    };
-  }
-  const nameToken = tail.slice(0, eq).trim();
-  const valueStr = tail.slice(eq + 1).trim();
-  if (!/^\d+$/.test(valueStr)) {
-    return {
-      directive: null,
-      diagnostic: makeDiag(
-        `malformed @max: expected '<name>=<uint>', got '${truncate(tail, 32)}'`,
-        regionId,
-        blockId,
-        line,
-        0,
-      ),
-    };
-  }
-  const parsed = parseNameToken(nameToken);
-  if (parsed.diagnostic) {
-    return { directive: null, diagnostic: { ...parsed.diagnostic, regionId, blockId, line } };
-  }
-  const value = Number.parseInt(valueStr, 10);
-  if (!Number.isFinite(value) || value < 0) {
-    return {
-      directive: null,
-      diagnostic: makeDiag(
-        `@max value must be a non-negative integer (got '${valueStr}')`,
-        regionId,
-        blockId,
-        line,
-        0,
-      ),
-    };
-  }
-  const directive: MaxDirective = {
-    kind: 'max',
-    name: parsed.name,
-    ...(parsed.internalName ? { internalName: parsed.internalName } : {}),
-    value,
-    line,
-    column: 0,
-  };
-  return { directive, diagnostic: null };
-}
+// §Phase 2 (15.3): `parseMax` was removed alongside the `@max`
+// directive. The directive is no longer recognised at all — the
+// switch in `parseDirectiveLine` rejects `@max` with a hard error.
+// The `findUnquotedEq` helper below stays because `@repeat` still
+// splits on the first unquoted `=` to find the formula boundary.
 
 function findUnquotedEq(s: string): number {
   let inQuote = false;
@@ -580,11 +540,17 @@ function parseRepeat(
   blockId: string,
   repeatBlockId: string,
 ): LineParse {
-  // Pattern: <name>[:<axis>] = <formula>[, max=<uint>][, blockId="<id>"]
+  // Pattern: <name>[:<axis>] = <formula>[, blockId="<id>"]
+  //
+  // §Phase 2 (15.3): the inline `, max=<uint>` suffix was removed
+  // alongside the `@max` directive. Any remaining `, max=...` is a
+  // hard error so the owning region D1-demotes (15.2). The `, blockId=`
+  // suffix (§Phase 0) remains accepted.
+  //
   // Both `<name>` and `<axis>` accept either an identifier or a quoted
-  // string (§Phase E+). The formula may contain anything up to a trailing
-  // `, max=...` and/or `, blockId="..."`. We split on the first *unquoted*
-  // `=` so a quoted name containing future-extension characters does not
+  // string (§Phase E+). The formula may contain anything up to a
+  // trailing `, blockId="..."`. We split on the first *unquoted* `=`
+  // so a quoted name containing future-extension characters does not
   // break the parse.
   const eq = findUnquotedEq(tail);
   if (eq < 0) {
@@ -602,39 +568,37 @@ function parseRepeat(
   const head = tail.slice(0, eq).trim();
   let right = tail.slice(eq + 1).trim();
 
-  // Optional trailing `, max=<uint>` and/or `, blockId="<id>"` (§Phase 0).
-  // The two may appear in either order, so we iterate the suffix scan
-  // up to a small fixed budget. Each pass strips one recognisable
-  // suffix; the loop breaks when neither pattern matches the tail.
-  let max: number | undefined;
-  let boundBlockId: string | undefined;
-  const suffixDiagnostics: Diagnostic[] = [];
-  for (let pass = 0; pass < 4; pass += 1) {
-    const maxMatch = right.match(/,\s*max\s*=\s*(\d+)\s*$/);
-    if (maxMatch) {
-      max = Number.parseInt(maxMatch[1] ?? '0', 10);
-      right = right.slice(0, right.length - maxMatch[0].length).trim();
-      continue;
-    }
-    const beforeLen = right.length;
-    const blockIdSuffix = parseTrailingBlockId(
-      right,
-      line,
-      regionId,
-      blockId,
-      suffixDiagnostics,
-    );
-    if (blockIdSuffix.boundBlockId !== undefined) {
-      boundBlockId = blockIdSuffix.boundBlockId;
-      right = blockIdSuffix.tail;
-      continue;
-    }
-    // `parseTrailingBlockId` shrinks the tail only when it stripped
-    // something (malformed blockId= suffix with a diagnostic). When
-    // nothing matched the loop is done.
-    if (blockIdSuffix.tail.length === beforeLen) break;
-    right = blockIdSuffix.tail;
+  // §Phase 2 (15.3): reject `, max=<uint>` as a syntax error. The
+  // match anchors on `,\s*max\s*=\s*\d+` so the pattern fires anywhere
+  // a comma-separated `max=<uint>` token appears (whether alone at
+  // the tail, paired with `, blockId="..."`, or surrounded by other
+  // formula tokens). A bare `max + 1` mid-formula does NOT match
+  // because the pattern requires a comma before `max`.
+  const inlineMaxMatch = right.match(/,\s*max\s*=\s*\d+/);
+  if (inlineMaxMatch) {
+    return {
+      directive: null,
+      diagnostic: makeErrorDiag(
+        `inline ', max=<uint>' on @repeat is removed in v9; the dispatch cap is derived from the runtime list length`,
+        regionId,
+        blockId,
+        line,
+        0,
+      ),
+    };
   }
+
+  // Optional trailing `, blockId="<id>"` (§Phase 0).
+  const suffixDiagnostics: Diagnostic[] = [];
+  const blockIdSuffix = parseTrailingBlockId(
+    right,
+    line,
+    regionId,
+    blockId,
+    suffixDiagnostics,
+  );
+  const boundBlockId = blockIdSuffix.boundBlockId;
+  right = blockIdSuffix.tail;
 
   // Head: `<name>` or `<name>:<axis>`. Find the unquoted `:` between
   // them. When absent, the whole head is `<name>` and `<axis>` defaults
@@ -676,7 +640,6 @@ function parseRepeat(
     ...(nameParsed.internalName ? { internalName: nameParsed.internalName } : {}),
     axis,
     formula: right,
-    max,
     blockId: repeatBlockId,
     ...(boundBlockId ? { boundBlockId } : {}),
     line,
@@ -801,6 +764,28 @@ function makeDiag(
     line,
     column,
   };
+}
+
+/**
+ * §Phase 2 (15.2 + 15.3) — emit a `severity: 'error'` parser diagnostic.
+ * `buildBlockSubsetVerdict` folds these into `BlockSubsetVerdict.diagnostics`
+ * and demotes the owning region to D1 (= JS-path fallback). Use this for
+ * directive shapes that the WGSL pipeline cannot tolerate:
+ *
+ *   - §15.3 `@max` directive removed in v9 (replaced by runtime list length).
+ *   - §15.3 inline `, max=<uint>` suffix on `@repeat` removed.
+ *
+ * The default-warn `makeDiag` covers every other case (historical
+ * surface + malformed `@bind` / `@map` / `@repeat` shape errors).
+ */
+function makeErrorDiag(
+  message: string,
+  regionId: string,
+  blockId: string,
+  line: number,
+  column: number,
+): Diagnostic {
+  return makeDiag(message, regionId, blockId, line, column, 'error');
 }
 
 function truncate(s: string, max: number): string {

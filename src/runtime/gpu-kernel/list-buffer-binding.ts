@@ -113,7 +113,7 @@ export interface ListBufferBinding {
   readonly dtype: ListBufferDtype;
   /** Whether the region declares the binding as `ro`. */
   readonly readOnly: boolean;
-  /** Allocated element count. Mirrors `@max length=` or runtime list length. */
+  /** Allocated element count. Mirrors the runtime list length at dispatch time. */
   length: number;
   /** Lazily-allocated GPU buffer. `null` until first sync. */
   gpuBuffer: GpuLikeBuffer | null;
@@ -357,7 +357,11 @@ function rebindMethods(binding: ListBufferBinding, device: GpuLikeDevice | null)
  * is large enough for almost any project; callers may override via
  * `device.limits.maxStorageBufferBindingSize` when available. The runtime
  * dispatcher (`__dispatch-kernel-sync.ts`) consults this ceiling to cap
- * `@max length=` values.
+ * the runtime list length.
+ *
+ * §Phase 2 (15.3): previously this constant also capped `@max length=`
+ * values. The `@max` directive was removed in v9; the cap now applies
+ * only to the runtime list length read at dispatch time.
  */
 export const DEFAULT_MAX_BUFFER_ELEMENTS = 1 << 20;
 

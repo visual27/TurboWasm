@@ -131,29 +131,6 @@ export interface BindDirective {
 }
 
 /**
- * `@max length=<uint>` or `@max <name>=<uint>`.
- *
- * `name` is either `'length'` (dispatch buffer cap) or any other
- * identifier the emitter will lookup against an `@repeat` declaration
- * (e.g. `@max aabb_width=64` paired with `@repeat R0:global_x = aabb_width`).
- *
- * `internalName` (§Phase E+): when the user writes a quoted group name
- * like `@max "my group"=64`, `name` keeps the surface form (used as the
- * canonical key) and `internalName` carries a FNV-1a-hashed WGSL-safe
- * identifier. The WGSL emitter substitutes every reference to `name` in
- * `@repeat` / `@map` formulas with `internalName` when set; the
- * rename-and-collision pass lives in `wgsl-emitter.ts:renameIdentifiers`.
- */
-export interface MaxDirective {
-  kind: 'max';
-  name: string;
-  internalName?: string;
-  value: number;
-  line: number;
-  column: number;
-}
-
-/**
  * `@workgroup_size(x)` | `(x,y)` | `(x,y,z)`. The WGSL emitter lifts this
  * directly into the `@compute @workgroup_size` attribute; the runtime
  * may further clamp it to the device's
@@ -169,7 +146,7 @@ export interface WorkgroupSizeDirective {
 }
 
 /**
- * `@repeat R<i>[:<axis>] = <formula>[, max=<uint>][, blockId="<id>"]`.
+ * `@repeat R<i>[:<axis>] = <formula>[, blockId="<id>"]`.
  *
  * `name` is e.g. `R0`. `axis` defaults to `'sequential'` (the safe
  * fallback) when omitted. `formula` is the raw text after `=` —
@@ -187,6 +164,10 @@ export interface WorkgroupSizeDirective {
  * that Phase 1 will register into the emitter's skip-set. Distinct from
  * `blockId` (which is the *owning* control_repeat block the directive's
  * comment sits on). Volatile: NOT included in canonical key.
+ *
+ * §Phase 2 (15.3): the inline `, max=<uint>` suffix was removed in v9.
+ * The dispatch cap is derived from the runtime list length (see
+ * `wgsl-emitter.ts:emitRegion` and `__dispatch-kernel-sync.ts`).
  */
 export interface RepeatDirective {
   kind: 'repeat';
@@ -194,11 +175,6 @@ export interface RepeatDirective {
   internalName?: string;
   axis: AxisFinal;
   formula: string;
-  /**
-   * Explicit per-`@repeat` cap (overrides `@max`). `undefined` means the
-   * emitter falls back to `@max` then runtime list length (per spec §3.5).
-   */
-  max?: number;
   /** The repeat's `control_repeat` block id, for diagnostics. */
   blockId: string;
   /**
@@ -246,7 +222,6 @@ export interface MapDirective {
 
 export type ParsedDirective =
   | BindDirective
-  | MaxDirective
   | WorkgroupSizeDirective
   | RepeatDirective
   | MapDirective;

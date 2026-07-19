@@ -4,7 +4,7 @@
  * Per spec §7.2, the runtime path for one `control_repeat` block is:
  *
  *   pre-dispatch (sync, microseconds):
- *     list.length read → @max cap → alloc/write list buffer
+ *     list.length read → runtime cap → alloc/write list buffer
  *   dispatch (async, milliseconds):
  *     createShaderModule → createComputePipeline → createBindGroup
  *       → beginComputePass → setPipeline → setBindGroup → dispatchWorkgroups
@@ -93,8 +93,8 @@ export interface GPipeline {
  * factories returning GPU objects). Tests inject a smaller subset.
  *
  * The bridge layer (`apply-gpu-kernels.ts`) fills in `limits` from
- * `adapter.limits` so the dispatcher can cap `@max length=` and read
- * `maxStorageBufferBindingSize`.
+ * `adapter.limits` so the dispatcher can cap the runtime list length
+ * and read `maxStorageBufferBindingSize`.
  */
 export interface GpuLikeDispatchDevice {
   queue: GpuLikeQueue;
@@ -679,7 +679,11 @@ function resolveDispatchDims(
 }
 
 /**
- * Cap on buffer length to prevent a runaway `@max` from OOM-ing.
+ * Cap on buffer length to prevent a runaway runtime list length from OOM-ing.
+ *
+ * §Phase 2 (15.3): previously this comment referenced the `@max` directive
+ * which was removed in v9. The cap now applies only to the runtime list
+ * length read at dispatch time.
  */
 export const MAX_BUFFER_LENGTH = 1 << 20;
 
@@ -695,14 +699,13 @@ export const MAX_COMPUTE_WORKGROUPS_PER_DIMENSION_DEFAULT = 65535;
  * Clamp a single dispatch dimension to a safe value. Defends against:
  *
  *   - Non-finite values from broken formula evaluation (`NaN`, `Infinity`).
- *   - Negative values slipped through `@max` or runtime list length.
+ *   - Negative values slipped through the runtime list length.
  *   - Over-large extents that would exceed
  *     `device.limits.maxComputeWorkgroupsPerDimension` (some devices
  *     reject `dispatchWorkgroups` with a validation error, some wrap
  *     silently — neither is observably correct).
- *   - The shared `MAX_BUFFER_LENGTH` cap (defends against runaway
- *     `@max length=...` which would otherwise pin a 1 Gi-element
- *     buffer).
+ *   - The shared `MAX_BUFFER_LENGTH` cap (defends against a runaway list
+ *     length that would otherwise pin a 1 Gi-element buffer).
  *
  * Returns at least 1 so `pass.dispatchWorkgroups(0, ...)` is never
  * issued (WGSL semantics reject zero workgroup counts).

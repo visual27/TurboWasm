@@ -79,7 +79,8 @@ describe('wgsl-emitter', () => {
       [
         '@compute',
         '@bind buff_r(2) rw f32',
-        '@repeat R0:global_x = N, max=64',
+        // §Phase 2 (15.3): inline `, max=<uint>` removed alongside @max.
+        '@repeat R0:global_x = N',
         '@workgroup_size(64)',
         '@map R0 <- 0',
       ].join('\n'),
@@ -513,7 +514,8 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
         [
           '@compute',
           '@bind my_list(0) ro f32',
-          '@repeat R0:global_x = len(my_list), max=64',
+          // §Phase 2 (15.3): `, max=<uint>` removed.
+          '@repeat R0:global_x = len(my_list)',
           '@map idx <- my_list[R0]',
         ].join('\n'),
         ['idx'],
@@ -530,7 +532,7 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
         [
           '@compute',
           '@bind my_list(0) ro f32',
-          '@repeat R0:global_x = len(my_list), max=64',
+          '@repeat R0:global_x = len(my_list)',
           '@map idx <- R0',
         ].join('\n'),
         ['idx'],
@@ -548,7 +550,7 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
         [
           '@compute',
           '@bind my_list(0) ro f32',
-          '@repeat R0:global_x = len(my_list), max=64',
+          '@repeat R0:global_x = len(my_list)',
           '@map flag <- bool(my_list[R0])',
         ].join('\n'),
         ['flag'],
@@ -564,7 +566,8 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
         [
           '@compute',
           '@bind "my list"(0) ro f32',
-          '@repeat R0:global_x = 32, max=64',
+          // §Phase 2 (15.3): `, max=<uint>` removed.
+          '@repeat R0:global_x = 32',
           '@map idx <- R0',
         ].join('\n'),
         ['idx'],
@@ -580,31 +583,19 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
       expect(result.wgsl).toMatch(/\s+__tw_[0-9a-f]{8}_length: u32/);
     });
 
-    it('quotes @max group name via internalName in @repeat formula reference', () => {
-      const { input } = makeVerdict(
-        [
-          '@compute',
-          '@bind my_list(0) ro f32',
-          '@max "my length"=64',
-          '@repeat R0:global_x = "my length"',
-          '@map idx <- R0',
-        ].join('\n'),
-        ['idx'],
-        { R0: 'global_x' },
-      );
-      const result = emitRegion(input);
-      // The quoted @max group's internalName replaces "my length" in
-      // the formula. The hash should appear in the dispatch plan.
-      expect(result.wgsl).toMatch(/__tw_[0-9a-f]{8}/);
-      expect(result.wgsl).not.toMatch(/"my length"/);
-    });
+    // §Phase 2 (15.3): the previous "quotes @max group name via
+    // internalName in @repeat formula reference" test was retired —
+    // the @max directive is gone. The quoted-formula test below
+    // (`quotes @repeat R<i> name via internalName in @map reference`)
+    // covers the same rename pass via the @repeat/@map path.
 
     it('quotes @repeat R<i> name via internalName in @map reference', () => {
       const { input } = makeVerdict(
         [
           '@compute',
           '@bind my_list(0) ro f32',
-          '@repeat "R0":global_x = 32, max=64',
+          // §Phase 2 (15.3): `, max=<uint>` removed.
+          '@repeat "R0":global_x = 32',
           '@map idx <- "R0"',
         ].join('\n'),
         ['idx'],
@@ -772,7 +763,8 @@ describe('wgsl-emitter: Phase 2 nested @compute', () => {
       [
         '@compute',
         '@bind buff_r(0) rw f32',
-        '@repeat R0:global_x = 32, max=64',
+        // §Phase 2 (15.3): `, max=<uint>` removed.
+        '@repeat R0:global_x = 32',
         '@workgroup_size(64)',
         '@map R0 <- 0',
       ].join('\n'),
@@ -938,7 +930,8 @@ describe('wgsl-emitter: Phase 2 nested @compute', () => {
         '@compute',
         '@bind aabb_w(0) ro f32',
         '@workgroup_size(64)',
-        '@repeat Ry:global_y = 32, max=128',  // explicit Ry
+        // §Phase 2 (15.3): `, max=<uint>` removed.
+        '@repeat Ry:global_y = 32',  // explicit Ry
       ].join('\n'),
       kernelContainerBlockId: k1,
       candidateBlockId: c1,
