@@ -141,21 +141,55 @@ export function classifyBlockSubset(
  * Phase 1: D1 verdict + pattern 抽出 (`effectivePatterns`) を一度に行う
  * orchestrator。`region-verdict-pipeline.ts:buildRegionVerdicts` から呼ばれる
  * 正規エントリ。
+ *
+ * §Phase 2 (15.2): parser 由来の diagnostics を `parsedDiagnostics`
+ * で受け取り、`blockSubset.diagnostics` に連結する。`severity === 'error'`
+ * の diagnostic が 1 件でも含まれる region は D1 demote
+ * (`valid: false`, `demoteReason: 'd1'`) として返却する。warn severity
+ * は後方互換のため `valid: true` を維持 (= 既存挙動)。
  */
 export interface BuildBlockSubsetVerdictInput {
   region: ExtractedRegion;
   project: ParsedProject;
   comments: Record<string, ParsedComment>;
   parsedDirectives: readonly ParsedDirective[];
+  /**
+   * §Phase 2 (15.2) — diagnostics from `parseComputeComment`. Defaults
+   * to `[]` for callers that don't have the parser surface (legacy unit
+   * tests); `buildRegionVerdicts` always passes the live parser output.
+   * A `severity: 'error'` entry demotes the region to D1.
+   */
+  parsedDiagnostics?: readonly Diagnostic[];
 }
 
 export function buildBlockSubsetVerdict(
   input: BuildBlockSubsetVerdictInput,
 ): BlockSubsetVerdict {
   const { region, project, comments, parsedDirectives } = input;
+  const parsedDiagnostics: readonly Diagnostic[] = input.parsedDiagnostics ?? [];
   const base = classifyD1Only({ region, project, comments });
+
+  // §Phase 2 (15.2): parser-error demote precedes D1 demote so the user
+  // sees the broken-DSL diagnostic first (= the more actionable root
+  // cause). When neither fires we proceed to Phase 1 pattern extraction.
+  const parserErrorDiagnostics = parsedDiagnostics.filter((d) => d.severity === 'error');
+  if (parserErrorDiagnostics.length > 0) {
+    return {
+      valid: false,
+      demoteReason: 'd1',
+      diagnostics: [...base.diagnostics, ...parsedDiagnostics],
+      effectivePatterns: [],
+    };
+  }
+
   if (!base.valid) {
-    return { ...base, effectivePatterns: [] };
+    // Preserve the existing D1-only return shape but include the warn-only
+    // parser diagnostics so the user can still see them on the ErrorLogPanel.
+    return {
+      ...base,
+      diagnostics: [...base.diagnostics, ...parsedDiagnostics],
+      effectivePatterns: [],
+    };
   }
 
   const blockMap = collectAllBlocks(project);
@@ -178,6 +212,7 @@ export function buildBlockSubsetVerdict(
     effectivePatterns: merged.effective,
     diagnostics: [
       ...base.diagnostics,
+      ...parsedDiagnostics,
       ...iterResult.diagnostics,
       ...indirectResult.diagnostics,
       ...validationDiagnostics,

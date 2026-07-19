@@ -33,9 +33,18 @@ import type {
   ParsedComment,
   ParsedDirective,
   RepeatDirective,
+  Severity,
   WorkgroupSizeDirective,
 } from './types';
 import { ALL_AXES } from './types';
+
+/**
+ * §Phase 2 (15.2): `makeDiag` now accepts a `severity` argument so the
+ * parser can emit `severity: 'error'` diagnostics for directive shapes
+ * that the WGSL pipeline cannot tolerate (e.g. the `@max` removal in
+ * §15.3). Default remains `'warn'` so every existing call site keeps its
+ * pre-Phase 2 behaviour without modification.
+ */
 
 /**
  * Parse the text of one `@compute` comment block into the directives and
@@ -781,9 +790,10 @@ function makeDiag(
   blockId: string,
   line: number,
   column: number,
+  severity: Severity = 'warn',
 ): Diagnostic {
   return {
-    severity: 'warn',
+    severity,
     code: 'gpu.dsl_syntax_error',
     message,
     regionId,

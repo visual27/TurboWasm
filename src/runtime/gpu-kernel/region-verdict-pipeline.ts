@@ -61,11 +61,16 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): {
     // the canonical entry that combines the D1 verdict with the
     // auto-detected `effectivePatterns` (= skip-set for the WGSL emitter
     // in Phase 2). §Phase 1 (nested-parallelization-02-phase1 §3.7).
+    //
+    // §Phase 2 (15.2): parser diagnostics are folded into
+    // `blockSubset.diagnostics` here so a `severity: 'error'` diagnostic
+    // (e.g. the `@max` removal in §15.3) demotes the region to D1.
     const blockSubset = buildBlockSubsetVerdict({
       region,
       project: input.parsedProject,
       comments: input.parsedProject.comments,
       parsedDirectives: parsed.directives,
+      parsedDiagnostics: parsed.diagnostics,
     });
     // 3. D2: per-axis verdict.
     const axesResult = analyzeAxes(region, parsed.directives, input.parsedProject);
@@ -84,7 +89,10 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): {
     const parallelAxes = collectParallelAxes(axesResult.axes);
 
     const diagnostics = [
-      ...parsed.diagnostics,
+      // §Phase 2 (15.2): `parsed.diagnostics` is already folded into
+      // `blockSubset.diagnostics` by `buildBlockSubsetVerdict`, so it
+      // must NOT be re-spread here (= would double-count parser
+      // diagnostics on the ErrorLogPanel).
       ...blockSubset.diagnostics,
       ...axesResult.diagnostics,
       ...cascade.diagnostics,
