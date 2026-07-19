@@ -141,7 +141,6 @@ function ControlBarImpl({
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="Start (green flag). Hold Shift to toggle Turbo Mode, Ctrl/Cmd to toggle mute, Alt to cycle FPS between 30 and your preferred value."
                 onClick={onGreenFlagClick}
                 onMouseDown={preventFocusOnMouseDown}
                 data-testid="green-flag"
@@ -153,7 +152,6 @@ function ControlBarImpl({
             <TooltipContent>
               <span>Run</span>
               <span className="mt-1 block text-[10px] opacity-70">
-                Shift: Turbo · Ctrl/Cmd: Mute · Alt: Cycle FPS
               </span>
             </TooltipContent>
           </Tooltip>
