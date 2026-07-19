@@ -122,12 +122,20 @@ export function extractNumericLiteral(value: unknown): number | null {
 /**
  * scratch-vm の field shape から variable name を抽出。
  *
- *   ['VARIABLE', '<name>']  (legacy shape)
- *   { name: '<name>' }      (newer shape)
+ * 3 形式を受理する:
+ *   - ['VARIABLE', '<name>']  (newer shape — phase 1 テストで使用)
+ *   - ['<name>', null]         (legacy scratch-vm 形式 — legacy fixture)
+ *   - { name: '<name>' }       (alt object shape)
+ *
+ * `field[1]` が string なら newer shape (= 値)、`null` なら legacy shape
+ * (= `field[0]` が値) として扱う。
  */
 export function extractVariableName(field: unknown): string | null {
   if (Array.isArray(field)) {
+    // newer shape: ['VARIABLE', '<name>'] → second element is the value
     if (typeof field[1] === 'string') return field[1];
+    // legacy shape: ['<name>', null] → first element is the value
+    if (field[1] === null && typeof field[0] === 'string') return field[0];
     return null;
   }
   if (field && typeof field === 'object' && 'name' in field) {

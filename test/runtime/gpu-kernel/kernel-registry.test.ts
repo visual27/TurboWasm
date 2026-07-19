@@ -27,6 +27,9 @@ function makeVerdict(
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
     diagnostics: [],
     parallelAxes: [],
+    kernelContainerBlockId: blockId,
+    nestedRepeatContainerBlockIds: [],
+    firstSubstackBlockId: '',
   };
 }
 

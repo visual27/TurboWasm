@@ -31,6 +31,9 @@ function verdict(): RegionVerdict {
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
     diagnostics: [],
     parallelAxes: [],
+    kernelContainerBlockId: 'b1',
+    nestedRepeatContainerBlockIds: [],
+    firstSubstackBlockId: '',
   };
 }
 

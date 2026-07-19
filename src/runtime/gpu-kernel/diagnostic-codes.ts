@@ -30,6 +30,14 @@ export const GPU_DIAGNOSTIC_CODES = {
    * auto-detected from body chain. Surfaced only in debug builds.
    */
   AXIS_AUTO_DETECTED: 'gpu.axis_auto_detected',
+  /**
+   * Phase 2 — emitted by `implicit-axis.ts` when `scratchBlockToWgslExpr`
+   * returns `null` for an implicit axis (kernel container or nested
+   * control_repeat with an unsupported loop count formula). The axis is
+   * pushed with `formula: ''` so `axis-analysis.ts` can demote it to
+   * `sequential`. Severity `warn`.
+   */
+  IMPLICIT_AXIS_UNSUPPORTED: 'gpu.implicit_axis_unsupported',
 } as const;
 
 export type GpuDiagnosticCode =

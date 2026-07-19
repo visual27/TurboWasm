@@ -69,6 +69,9 @@ function makeVerdict(blockId: string, binds: BindDirective[]): RegionVerdict {
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
     diagnostics: [],
     parallelAxes: [],
+    kernelContainerBlockId: blockId,
+    nestedRepeatContainerBlockIds: [],
+    firstSubstackBlockId: '',
   };
 }
 

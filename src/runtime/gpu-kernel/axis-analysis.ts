@@ -28,6 +28,7 @@ import {
   type AxisVerdict,
   type Diagnostic,
   type ExtractedRegion,
+  type ImplicitAxis,
   type ParsedDirective,
   type ParsedProject,
   type RawBlock,
@@ -49,6 +50,7 @@ export function analyzeAxes(
   region: ExtractedRegion,
   directives: readonly ParsedDirective[],
   project: ParsedProject,
+  implicitAxes: readonly ImplicitAxis[] = [],
 ): AxisAnalysisResult {
   const diagnostics: Diagnostic[] = [];
   const repeats = directives.filter(
@@ -67,6 +69,35 @@ export function analyzeAxes(
     out[r.name] = verdict;
     diagnostics.push(...verdict.diagnostics);
   }
+
+  // Phase 2 (nested-parallelization-03-phase2 §3.6): implicit axes を
+  // verdict map に追加する。`formula === ''` (= scratchBlockToWgslExpr が
+  // 失敗) は D2 sequential に降格。
+  //
+  // canonical key には反映しない (kernel-registry.ts:stripVolatile が
+  // `implicitAxes` を一切見ない)。
+  for (const implicit of implicitAxes) {
+    const demoted = implicit.formula === '' || implicit.formula === null;
+    const verdict: AxisVerdict = {
+      requestedAxis: implicit.axis,
+      finalAxis: demoted ? 'sequential' : implicit.axis,
+      ...(demoted ? { demoteReason: 'd2' as const } : {}),
+      diagnostics: demoted
+        ? [
+            {
+              severity: 'warn',
+              code: 'd2.axis_demoted',
+              message: `implicit axis '${implicit.name}' demoted to sequential (unsupported formula)`,
+              regionId: region.regionId,
+              blockId: implicit.blockId,
+            },
+          ]
+        : [],
+    };
+    out[implicit.name] = verdict;
+    diagnostics.push(...verdict.diagnostics);
+  }
+
   return { axes: out, diagnostics };
 }
 

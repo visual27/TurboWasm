@@ -102,6 +102,13 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): {
       cascade,
       diagnostics,
       parallelAxes,
+      // Phase 2 (nested-parallelization-03-phase2): ExtractedRegion から
+      // kernel container / nested repeats / firstSubstackBlockId を
+      // RegionVerdict に伝搬。`implicitAxes` は emitRegion 入口で再計算
+      // されるため、ここでは省略 (= undefined)。
+      kernelContainerBlockId: region.kernelContainerBlockId,
+      nestedRepeatContainerBlockIds: region.nestedRepeatContainerBlockIds,
+      firstSubstackBlockId: region.firstSubstackBlockId,
     });
   }
   return { verdicts, allDirectives };

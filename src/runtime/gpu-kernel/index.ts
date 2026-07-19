@@ -44,6 +44,24 @@ export type {
   WorkgroupSize,
 } from './wgsl-emitter';
 export {
+  axisToRepeatDirective,
+  collectImplicitAxes,
+} from './implicit-axis';
+export type {
+  CollectImplicitAxesInput,
+  CollectImplicitAxesResult,
+} from './implicit-axis';
+export {
+  buildScratchBlockExprContext,
+  scratchBlockToWgslExpr,
+} from './scratch-block-expr';
+export type {
+  ScalarUniformBindingLike,
+  ScratchBlockExprContext,
+} from './scratch-block-expr';
+export { shouldSkipBlock } from './skip-block-filter';
+export type { SkipBlockContext } from './skip-block-filter';
+export {
   analyzeBufferAccesses,
   analyzeRegionDependencies,
   canonicalKeyOf,

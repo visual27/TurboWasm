@@ -546,6 +546,9 @@ describe('__exposeForBrowserVerify publishes the kernelRegistry snapshot', () =>
         cascade: { valid: true, diagnostics: [], topoOrder: [] },
         diagnostics: [],
         parallelAxes: [],
+        kernelContainerBlockId: 'b1',
+        nestedRepeatContainerBlockIds: [],
+        firstSubstackBlockId: '',
       },
       'wgsl-fake',
     );

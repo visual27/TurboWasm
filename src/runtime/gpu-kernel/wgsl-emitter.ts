@@ -1,9 +1,13 @@
 import { rewriteFormula } from './formula-rewrite';
 import { scratchCompatHeader } from './scratch-compat';
+import { buildScratchBlockExprContext } from './scratch-block-expr';
+import { axisToRepeatDirective, collectImplicitAxes } from './implicit-axis';
+import { shouldSkipBlock, type SkipBlockContext } from './skip-block-filter';
 import type {
   AxisFinal,
   BindDirective,
   Diagnostic,
+  ExtractedRegion,
   MapDirective,
   MaxDirective,
   ParsedProject,
@@ -39,6 +43,16 @@ export interface EmitInput {
    * exercise the conservative default path.
    */
   workgroupLimits?: WorkgroupLimits;
+  /**
+   * Phase 2: original `ExtractedRegion` (Phase 0 出力)。Phase 1 で
+   * RegionVerdict 構築時に `kernelContainerBlockId` /
+   * `nestedRepeatContainerBlockIds` が伝搬済みなので通常は不要。
+   * テストや caller が RegionVerdict を直接構築する経路では省略される。
+   *
+   * RegionVerdict から取得できない場合のみ fallback として渡される。
+   * (`region-verdict-pipeline.ts` 経由の正経路では使用されない。)
+   */
+  extractedRegion?: ExtractedRegion;
 }
 
 export interface WorkgroupSize {
@@ -225,6 +239,8 @@ interface EmitterContext {
   diagnostics: Diagnostic[];
   diagnosedBlocks: Set<string>;
   expressionStack: Set<string>;
+  /** Phase 2: skip-set (effectivePatterns) for body emission. */
+  skipContext: SkipBlockContext;
 }
 
 export function clampWorkgroupSize(
@@ -456,9 +472,67 @@ export function emitRegion(input: EmitInput): EmitResult {
     lengthNames.set(binding.name, safeIdentifier(`${storageName}_length`));
   }
 
-  const sequentialRepeats = repeats.filter(
-    (repeat) => (regionVerdict.axes[repeat.name]?.finalAxis ?? repeat.axis) === 'sequential',
+  // Phase 2: implicit axis 収集 (kernel container + nested repeats の
+  // loop count formula → Ry/Rx<N> axis)。legacy レイアウト
+  // (nestedRepeatContainerBlockIds が空) では生成しない。
+  const nestedRepeatIds =
+    regionVerdict.nestedRepeatContainerBlockIds ??
+    input.extractedRegion?.nestedRepeatContainerBlockIds ??
+    [];
+  const exprContext = buildScratchBlockExprContext(
+    regionVerdict.directives,
+    renamed.renameTable,
+    [], // Phase 2: scalarBindings は Phase 3 で導入。空配列。
   );
+  const implicitResult = collectImplicitAxes({
+    kernelContainerId: regionVerdict.blockId,
+    nestedRepeatIds,
+    blocks,
+    context: exprContext,
+    regionId: regionVerdict.regionId,
+    directives: regionVerdict.directives,
+  });
+  diagnostics.push(...implicitResult.diagnostics);
+
+  // Phase 2: implicit axes の verdict を RegionVerdict.axes に統合。
+  // D2 降格された axis は sequential として記録され、sequential body に
+  // 巻かれる。legacy レイアウト (implicitResult.axes が空) では既存挙動
+  // と同じ。
+  const implicitAxisNames = new Set(implicitResult.axes.map((axis) => axis.name));
+  const allAxisVerdicts: Record<string, { finalAxis: AxisFinal }> = { ...regionVerdict.axes };
+  for (const axis of implicitResult.axes) {
+    const demoted = axis.formula === '' || axis.formula === null;
+    allAxisVerdicts[axis.name] = {
+      finalAxis: demoted ? 'sequential' : axis.axis,
+    };
+  }
+  const combinedRepeats: RepeatDirective[] = [
+    ...repeats,
+    ...implicitResult.axes.map(axisToRepeatDirective),
+  ];
+
+  // Phase 2: implicit axis を parallelAxes に反映 (= mainSignature が
+  // global_x/global_y/workgroup_* を判定する材料)。
+  const combinedParallelAxes = [
+    ...regionVerdict.parallelAxes,
+    ...implicitResult.axes
+      .filter((axis) => {
+        const verdict = allAxisVerdicts[axis.name];
+        return verdict ? verdict.finalAxis !== 'sequential' : false;
+      })
+      .map((axis) => ({ repeatName: axis.name, axis: axis.axis })),
+  ];
+
+  const sequentialRepeats = combinedRepeats.filter((repeat) => {
+    if (implicitAxisNames.has(repeat.name)) {
+      const verdict = allAxisVerdicts[repeat.name];
+      return verdict ? verdict.finalAxis === 'sequential' : true;
+    }
+    return (regionVerdict.axes[repeat.name]?.finalAxis ?? repeat.axis) === 'sequential';
+  });
+  const skipContext: SkipBlockContext = {
+    effectivePatterns: regionVerdict.blockSubset.effectivePatterns ?? [],
+  };
   const context: EmitterContext = {
     regionId: regionVerdict.regionId,
     blocks,
@@ -473,13 +547,14 @@ export function emitRegion(input: EmitInput): EmitResult {
     diagnostics,
     diagnosedBlocks: new Set(),
     expressionStack: new Set(),
+    skipContext,
   };
 
   const lines: string[] = [scratchCompatHeader(), '', emitUniforms(bindings, lengthNames), ''];
   for (const binding of bindings) lines.push(emitBinding(binding, bindingNames));
   if (bindings.length > 0) lines.push('');
 
-  const dispatchPlan = computeDispatchPlan(repeats, regionVerdict, workgroupSize, {
+  const dispatchPlan = computeDispatchPlan(combinedRepeats, allAxisVerdicts, workgroupSize, {
     bindings,
     renameTable: renamed.renameTable,
     bindingRenameTable: renamed.bindingRenames,
@@ -489,7 +564,7 @@ export function emitRegion(input: EmitInput): EmitResult {
   lines.push(
     `@compute @workgroup_size(${workgroupSize.x},${workgroupSize.y},${workgroupSize.z})`,
   );
-  lines.push(`${mainSignature(regionVerdict.parallelAxes)} {`);
+  lines.push(`${mainSignature(combinedParallelAxes)} {`);
 
   const orderedMaps = orderMaps(maps, regionVerdict.cascade.topoOrder);
   for (const map of orderedMaps) {
@@ -503,10 +578,23 @@ export function emitRegion(input: EmitInput): EmitResult {
     lines.push(`  let ${emittedName}: f32 = ${formula};`);
   }
 
-  const bodyStart = findBodyStart(blocks[regionVerdict.blockId], blocks, regionVerdict.blockId);
+  // Phase 2: candidate's substack head (= `@compute` ブロック) を body
+  // entry として使う。legacy (outer-only) では kernel container = candidate
+  // なので、`firstSubstackBlockId` は kernel container の substack head
+  // (= `@compute` ブロック) と同一。Falsy (= 空文字・undefined) のときは
+  // kernel container の SUBSTACK からフォールバック (= legacy 経路)。
+  const bodyStart =
+    regionVerdict.firstSubstackBlockId ||
+    findBodyStart(blocks[regionVerdict.blockId], blocks, regionVerdict.blockId);
   const bodyLines = bodyStart ? emitStatementChain(bodyStart, context) : [];
   appendSequentialBody(lines, bodyLines, sequentialRepeats, context);
   lines.push('}');
+
+  // Phase 2: implicit axis 情報を RegionVerdict に書き戻す
+  // (= __exposeForBrowserVerify 経由で観測される)。
+  // ただし EmitInput は副作用を持たないので、caller 側で必要なら
+  // 別途 `regionVerdict.implicitAxes = ...` をセットする経路を採る。
+  // ここでは export しない (副作用分離)。
 
   return {
     wgsl: lines.join('\n'),
@@ -885,10 +973,14 @@ function findClosingParen(value: string, openIndex: number): number {
  * The denominator is the workgroup size along that axis (1 for axes
  * that don't run in parallel — those are demoted to a sequential for
  * loop in WGSL).
+ *
+ * Phase 2: explicit `@repeat` + implicit axis (= `combinedRepeats`) を
+ * 統一的に扱う。`axisVerdicts` には explicit と implicit の両方の verdict
+ * が含まれる。
  */
 function computeDispatchPlan(
   repeats: readonly RepeatDirective[],
-  verdict: RegionVerdict,
+  axisVerdicts: Readonly<Record<string, { finalAxis: AxisFinal }>>,
   workgroupSize: Readonly<WorkgroupSize>,
   context: {
     bindings: readonly BindDirective[];
@@ -899,7 +991,7 @@ function computeDispatchPlan(
 ): DispatchPlan {
   const formulas: string[][] = [[], [], []];
   for (const repeat of repeats) {
-    const axis = verdict.axes[repeat.name]?.finalAxis ?? repeat.axis;
+    const axis = axisVerdicts[repeat.name]?.finalAxis ?? repeat.axis;
     if (axis === 'sequential' || axis.startsWith('local_')) continue;
     const dimension = axis.endsWith('_y') ? 1 : axis.endsWith('_z') ? 2 : 0;
     const denominator = dimension === 0 ? workgroupSize.x : dimension === 1 ? workgroupSize.y : workgroupSize.z;
@@ -1001,6 +1093,14 @@ function emitStatementChain(startId: string, context: EmitterContext): string[] 
     visited.add(currentId);
     const currentBlock: RawBlock | undefined = context.blocks[currentId];
     if (!currentBlock) break;
+    // Phase 2: skip-set に含まれる block は emit せず次の next へ。
+    // effectivePatterns (= Phase 1 で収集) が指す block は iteration
+    // advance / indirect access (read) として既に GPU 側で処理済み
+    // (= WGSL body に再登場する必要がない)。
+    if (shouldSkipBlock(currentId, context.skipContext)) {
+      currentId = currentBlock.next;
+      continue;
+    }
     lines.push(...emitStatement(currentBlock, context));
     currentId = currentBlock.next;
   }

@@ -363,6 +363,35 @@ export interface IterationAdvancePattern {
 }
 
 /**
+ * Phase 2 (nested-parallelization-03-phase2 §3.1) — kernel container
+ * もしくは body 内 nested control_repeat の loop count formula から
+ * 自動生成される暗黙 axis。
+ *
+ * - `kernel-container` source: kernel container の `inputs.TIMES`
+ *   (= `@compute` を囲む ancestor control_repeat の loop count)。
+ *   既定で `name: 'Ry'`, `axis: 'global_y'`。
+ * - `nested-repeat` source: candidate (= `@compute`-marked control_repeat)
+ *   もしくは body 内 control_repeat の `inputs.TIMES`。
+ *   既定で `name: 'Rx<N>'`, `axis: 'global_x'`。N は 0 から連番。
+ *
+ * 命名は Phase 2 で固定 (ユーザー命名は Phase 5 以降の検討)。canonical
+ * key 計算 (`kernel-registry.ts:stripDirectiveVolatile`) には関与しない
+ * (= 自動採番で命名揺れがあっても canonical 同一性を維持)。
+ */
+export interface ImplicitAxis {
+  /** axis name (e.g. 'Ry', 'Rx0', 'Rx1'). 自動採番。 */
+  name: string;
+  /** axis target (e.g. 'global_y', 'global_x'). */
+  axis: AxisFinal;
+  /** WGSL expression for the loop count (= scratch block chain → WGSL 逆変換結果)。 */
+  formula: string;
+  /** Source control_repeat block id (診断用)。 */
+  blockId: string;
+  /** 自動生成元。 */
+  source: 'kernel-container' | 'nested-repeat';
+}
+
+/**
  * Phase 1 (nested-parallelization-02-phase1 §3.2) — auto-detected or
  * explicit "indirect access" pattern.
  *
@@ -473,4 +502,42 @@ export interface RegionVerdict {
    * (or, more simply, the kernel is just skipped and JS runs).
    */
   parallelAxes: { repeatName: string; axis: AxisFinal }[];
+  /**
+   * Phase 2: kernel container's `control_repeat` block id (= `blockId`
+   * と同値、Phase 0 で unification 済み)。`wgsl-emitter.ts` が
+   * `RegionVerdict.blockId` と比較して nested/legacy を分岐するために
+   * 持つが、現状は `blockId` と同義なので参照しない。
+   */
+  kernelContainerBlockId: string;
+  /**
+   * Phase 2: candidate's substack head (= `@compute` マーカーが
+   * 付いた control_repeat の SUBSTACK 先頭ブロック)。`wgsl-emitter.ts`
+   * が body entry として使う。
+   *
+   * - legacy (outer-only): kernel container の substack head (= `@compute`
+   *   ブロック) と同一。
+   * - nested: candidate の substack head。kernel container の substack
+   *   head ではない (= そこに `@compute` は付かない)。
+   */
+  firstSubstackBlockId: string;
+  /**
+   * Phase 2: body 内の control_repeat blockId 一覧 (candidate を含む、
+   * kernel container は除外)。`collectImplicitAxes` 入力の source。
+   *
+   * - legacy (outer-only) レイアウトでは空配列。
+   * - nested レイアウトでは `[candidateId, ...bodyRepeats]`。
+   * - candidate が nested の場合の第一要素 = `Rx0` に対応する control_repeat。
+   */
+  nestedRepeatContainerBlockIds: readonly string[];
+  /**
+   * Phase 2: `collectImplicitAxes` で生成された implicit axis 群。
+   * `region-verdict-pipeline.ts:buildRegionVerdicts` 出口では空配列
+   * (= emitter 入口で再計算される)。`kernel-registry.ts` が
+   * `RegionVerdict` を保持して `__exposeForBrowserVerify` から観測する
+   * ケースでは emitter 計算後の値が入る。
+   *
+   * canonical key 計算には関与しない (`stripVolatile` がこのフィールドを
+   * 見ないため、scratch block 構造の変化で canonical key は不変)。
+   */
+  implicitAxes?: readonly ImplicitAxis[];
 }

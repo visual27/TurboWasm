@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { extractRegions } from '@/runtime/gpu-kernel/region-extractor';
+import { buildRegionVerdicts } from '@/runtime/gpu-kernel/region-verdict-pipeline';
+import { emitRegion } from '@/runtime/gpu-kernel/wgsl-emitter';
 import type { ParsedProject, RawBlock } from '@/runtime/gpu-kernel/types';
 
 function mkBlock(id: string, opcode: string, opts: Partial<RawBlock> = {}): RawBlock {
@@ -229,5 +231,107 @@ describe('region-extractor', () => {
           d.message.includes('r2'),
       )).toBe(true);
     });
+  });
+});
+
+/**
+ * Phase 2 end-to-end integration: region-extractor → buildRegionVerdicts →
+ * emitRegion を 1 つの scratch ブロックツリーで通す。
+ *
+ * 既存の `region-extractor` test は RegionVerdict 構築で止まるが、ここでは
+ * emitRegion まで繋いで nested `fn expo` 形式の最終 WGSL を観測する。
+ */
+describe('region-extractor → emitRegion end-to-end (Phase 2 nested)', () => {
+  function mathNumber(id: string, value: number): RawBlock {
+    return mkBlock(id, 'math_number', {
+      fields: { NUM: [String(value), null] },
+    });
+  }
+
+  it('nested @compute: kernel container + candidate → 2D parallel kernel', () => {
+    // Structure:
+    //   outer (kernel container, id='k1') — NOT a candidate (no @compute on its substack head)
+    //     SUBSTACK → 'outer-body-1'
+    //       outer-body-1 → c1 (control_repeat = candidate)
+    //         c1.SUBSTACK → 'b1'  ← @compute marker
+    //           b1 → b2 (data_changevariableby)  ← iteration advance (skip)
+    //           b2 → b3 (data_replaceitemoflist)  ← actual parallel write
+    //   TIMES for both = math_number literal
+    const blocks: RawBlock[] = [
+      mkBlock('k1', 'control_repeat', {
+        inputs: { TIMES: [2, 'kc-times'], SUBSTACK: 'outer-body-1' },
+      }),
+      mkBlock('outer-body-1', 'data_setvariableto', {
+        next: 'c1',
+        parent: 'k1',
+        fields: { VARIABLE: ['outer_helper', null] },
+      }),
+      mkBlock('c1', 'control_repeat', {
+        parent: 'outer-body-1',
+        inputs: { TIMES: [2, 'cand-times'], SUBSTACK: 'b1' },
+      }),
+      mkBlock('b1', 'data_changevariableby', {
+        next: 'b2',
+        parent: 'c1',
+        // Shadow format: [shadow_opcode, [reporter_opcode, value]] = [10, ['math_number', '1']]
+        inputs: { VALUE: [10, ['math_number', '1']] },
+        fields: { VARIABLE: ['idx1', null] },
+      }),
+      mkBlock('b2', 'data_replaceitemoflist', {
+        next: null,
+        parent: 'b1',
+        inputs: {
+          LIST: { name: 'buff_r' },
+          INDEX: [2, 'b2-idx'],
+          ITEM: { value: '1' },
+        },
+        fields: { LIST: ['buff_r', null] },
+      }),
+      mkBlock('b2-idx', 'math_number', {
+        fields: { NUM: ['0', null] },
+        parent: 'b2',
+      }),
+      mathNumber('kc-times', 64),
+      mathNumber('cand-times', 100),
+    ];
+    const project: ParsedProject = {
+      targets: [{ id: 'sprite1', isStage: false, blocks: Object.fromEntries(blocks.map((b) => [b.id, b])) }],
+      comments: {
+        // idx1 を @bind することで `data_changevariableby(idx1, 1)` が
+        // auto-detect (= iteration-advance pattern) される。
+        cmt1: {
+          blockId: 'b1',
+          text: '@compute\n@bind buff_r(0) rw f32\n@bind idx1(1) ro f32\n@workgroup_size(64)',
+        },
+      },
+    };
+    const { regions, diagnostics: extractDiags } = extractRegions(project);
+    expect(extractDiags).toEqual([]);
+    expect(regions).toHaveLength(1);
+    const region = regions[0]!;
+    expect(region.kernelContainerBlockId).toBe('k1');
+    expect(region.nestedRepeatContainerBlockIds).toEqual(['c1']);
+    // Build RegionVerdict + emit.
+    const { verdicts } = buildRegionVerdicts({ parsedProject: project, regions });
+    expect(verdicts).toHaveLength(1);
+    const verdict = verdicts[0]!;
+    expect(verdict.kernelContainerBlockId).toBe('k1');
+    expect(verdict.nestedRepeatContainerBlockIds).toEqual(['c1']);
+    expect(verdict.firstSubstackBlockId).toBe('b1');
+    const result = emitRegion({ regionVerdict: verdict, parsedProject: project });
+    // Effective patterns: data_changevariableby for idx1 (auto-detected).
+    // b2 (write) は残るので scratch_list_write_f32 が出る。
+    expect(
+      verdict.blockSubset.effectivePatterns?.some(
+        (e) => e.kind === 'iteration-advance' && e.pattern.blockId === 'b1',
+      ),
+    ).toBe(true);
+    // WGSL body: write は残る (skip-set に含まれない)。
+    expect(result.wgsl).toContain('scratch_list_write_f32(&buff_r');
+    // iteration advance block b1 は body に残らない (skip される)。
+    expect(result.wgsl).not.toMatch(/let __tw_expr_b1\b/);
+    // dispatch plan: y = ceil(64 / 1) from kernel container, x = ceil(100 / 64) from candidate.
+    expect(result.dispatchPlan.y).toMatch(/ceil\(64/);
+    expect(result.dispatchPlan.x).toMatch(/ceil\(100/);
   });
 });
