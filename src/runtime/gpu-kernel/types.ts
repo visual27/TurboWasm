@@ -311,19 +311,11 @@ export interface ExtractedRegion {
    */
   nestedRepeatContainerBlockIds: string[];
   /**
-   * Phase 0: scratch block ids of additional `@compute` markers found
-   * inside the same sprite. Empty when the sprite carries exactly one
-   * marker (the common case). When non-empty, a
-   * `gpu.multiple_compute_regions` diagnostic is emitted at
-   * `region-extractor.ts` time and only the first candidate is kept in
-   * `regions[]`.
-   */
-  duplicateComputeBlockIds: string[];
-  /**
    * Phase 1 (gpu-kernel-dsl-phase1-spec §1.2): per-sprite region index
    * (0-based). Disambiguates region ids when a sprite carries multiple
-   * `@compute` regions (Phase 3). In Phase 1-2 the extractor emits at
-   * most one region per sprite so this is always `0`.
+   * `@compute` regions (Phase 3). In Phase 1-2 the extractor emitted at
+   * most one region per sprite; from Phase 3 onward this is incremented
+   * per adopted candidate.
    */
   regionIndex: number;
   /**

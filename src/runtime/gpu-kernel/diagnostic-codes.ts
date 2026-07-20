@@ -20,9 +20,10 @@ export const GPU_DIAGNOSTIC_CODES = {
    */
   BOUND_BLOCK_NOT_FOUND: 'gpu.bound_block_not_found',
   /**
-   * Phase 0 — emitted by `region-extractor.ts`. Multiple `@compute`
-   * markers found inside a single sprite; only the first candidate is
-   * kept and the rest are recorded in `ExtractedRegion.duplicateComputeBlockIds`.
+   * Phase 0 — emitted by `region-extractor.ts`. From Phase 3 this fires
+   * when a single `control_repeat` block carries multiple `@compute`
+   * markers (= the rare comment-duplication case). Per-region adoption
+   * is handled separately by `KERNEL_CONTAINER_COLLISION`.
    */
   MULTIPLE_COMPUTE_REGIONS: 'gpu.multiple_compute_regions',
   /**

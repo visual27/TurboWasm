@@ -458,9 +458,16 @@ function demoteKernel(
  * throwing into the VM.
  */
 async function preDispatch(kernel: Kernel, ctx: DispatchContext): Promise<void> {
+  // §Phase 3 — propagate the owning region's id / kernel-container id
+  // to the pool so any `gpu.regional_buffer_memory_pressure` diagnostic
+  // surfaces the source region in its `useErrorLogStore` message.
+  const regionMetadata = {
+    regionId: kernel.regionVerdict.regionId,
+    regionBlockId: kernel.regionVerdict.blockId,
+  };
   for (const bind of kernel.listBindings) {
     let binding = ctx.pool.get(bind.name);
-    if (!binding) binding = ctx.pool.bind(bind);
+    if (!binding) binding = ctx.pool.bind(bind, regionMetadata);
     const hostLen = ctx.runtime.listLength(bind.name);
     const requestedLength = Math.max(0, Math.floor(hostLen));
     const data = ctx.runtime.readList(bind.name, requestedLength, binding.dtype);

@@ -20,8 +20,10 @@ import { buildBlockSubsetVerdict } from './block-subset';
 import { parseComputeComment } from './comment-parser';
 import { analyzeAxes } from './axis-analysis';
 import { analyzeCascade } from './cascade-analysis';
+import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
 import type {
   AxisFinal,
+  BindDirective,
   Diagnostic,
   ExtractedRegion,
   ParsedComment,
@@ -94,6 +96,14 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
     if (!comment) continue;
     // 1. parse the comment text into directives.
     const parsed = parseComputeComment(comment, region.regionId);
+    // §Phase 3 (gpu-kernel-dsl-phase3-spec §3.2) — per-region `@bind`
+    // slot uniqueness. When two `@bind` directives inside the same
+    // region claim the same `@group(0) @binding(N)` slot, the region
+    // demotes to D1 via the parser-error channel. We push the
+    // diagnostic into `parsed.diagnostics` so `buildBlockSubsetVerdict`
+    // (Phase 2 §15.2) routes it through `PARSER_ERROR_CODES`.
+    const slotCollisionDiagnostics = detectSlotCollision(region, parsed.directives);
+    parsed.diagnostics.push(...slotCollisionDiagnostics);
     // 2. D1 + Phase 1 pattern extraction: `buildBlockSubsetVerdict` is
     // the canonical entry that combines the D1 verdict with the
     // auto-detected `effectivePatterns` (= skip-set for the WGSL emitter
@@ -175,12 +185,99 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
  * surviving `RegionVerdict.diagnostics`. Empty in the common case;
  * non-empty when a future extractor emits a sprite-wide diagnostic
  * (currently unused).
+ *
+ * §Phase 3 (gpu-kernel-dsl-phase3-spec §3.2) — after
+ * `buildRegionVerdicts` returns, walk every surviving verdict's
+ * directives and surface any cross-region `@bind` slot overlap via
+ * `console.debug` (no `ErrorLogPanel` entry — per AGENTS.md policy
+ * the panel surfaces errors and warnings only). The user is informed
+ * through DevTools so they can decide whether the overlap is
+ * intentional (= different regions writing different slices of the
+ * same buffer, sequentially dispatched) or accidental (= a copy/paste
+ * mistake).
  */
 export function collectRegionVerdictsFromArrayBuffer(
   parsedProject: ParsedProject,
 ): RegionVerdictOutputs {
   const { regions, diagnostics } = extractRegions(parsedProject);
-  return buildRegionVerdicts({ parsedProject, regions, extractionDiagnostics: diagnostics });
+  const outputs = buildRegionVerdicts({
+    parsedProject,
+    regions,
+    extractionDiagnostics: diagnostics,
+  });
+  logCrossRegionSlotOverlap(outputs.verdicts);
+  return outputs;
+}
+
+/**
+ * Walk the surviving region verdicts and emit a `console.debug` line for
+ * every pair of regions that bind the same `@group(0) @binding(N)`
+ * slot. This is informational only — overlapping slots across regions
+ * are explicitly allowed per spec §3.1 (different regions write to the
+ * same rw buffer; the user is responsible for sequential dispatch).
+ */
+function logCrossRegionSlotOverlap(verdicts: readonly RegionVerdict[]): void {
+  type SlotMap = Map<number, { regionId: string; name: string }>;
+  const bySprite = new Map<string, SlotMap[]>();
+  for (const verdict of verdicts) {
+    const slotMap: SlotMap = new Map();
+    for (const d of verdict.directives) {
+      if (d.kind !== 'bind') continue;
+      slotMap.set(d.slot, { regionId: verdict.regionId, name: d.name });
+    }
+    if (slotMap.size === 0) continue;
+    const list = bySprite.get(verdict.spriteId) ?? [];
+    list.push(slotMap);
+    bySprite.set(verdict.spriteId, list);
+  }
+  for (const [spriteId, slotMaps] of bySprite) {
+    for (let i = 0; i < slotMaps.length; i += 1) {
+      const a = slotMaps[i]!;
+      for (let j = i + 1; j < slotMaps.length; j += 1) {
+        const b = slotMaps[j]!;
+        for (const [slot, aInfo] of a) {
+          const bInfo = b.get(slot);
+          if (!bInfo) continue;
+          // eslint-disable-next-line no-console
+          console.debug(
+            `[gpu-kernel] cross-region slot overlap: sprite ${spriteId} region ${aInfo.regionId} ('${aInfo.name}') ↔ region ${bInfo.regionId} ('${bInfo.name}') at slot ${slot}; sequential dispatch is user's responsibility`,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Phase 3 (gpu-kernel-dsl-phase3-spec §3.2) — for a single region's
+ * directive list, return every `gpu.bind_slot_collision` diagnostic
+ * (severity `error`) that should be folded into the parser-error demote
+ * path. The function is pure: caller decides where the diagnostics
+ * land. We use `Map<slot, BindDirective>` so the first occurrence at
+ * each slot wins and subsequent ones are reported as collisions.
+ */
+function detectSlotCollision(
+  region: ExtractedRegion,
+  directives: readonly ParsedDirective[],
+): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const seenSlots = new Map<number, BindDirective>();
+  for (const directive of directives) {
+    if (directive.kind !== 'bind') continue;
+    const previous = seenSlots.get(directive.slot);
+    if (previous) {
+      diagnostics.push({
+        severity: 'error',
+        code: GPU_DIAGNOSTIC_CODES.BIND_SLOT_COLLISION,
+        regionId: region.regionId,
+        blockId: region.blockId,
+        message: `@bind slot ${directive.slot} used by both '${previous.name}' and '${directive.name}' in the same region; D1 demote`,
+      });
+      continue;
+    }
+    seenSlots.set(directive.slot, directive);
+  }
+  return diagnostics;
 }
 
 function collectParallelAxes(

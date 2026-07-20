@@ -71,9 +71,9 @@ describe('types (§Phase 0)', () => {
   });
 
   describe('ExtractedRegion (§Phase 0 fields)', () => {
-    it('requires kernelContainerBlockId, nestedRepeatContainerBlockIds, duplicateComputeBlockIds', () => {
+    it('requires kernelContainerBlockId, nestedRepeatContainerBlockIds', () => {
       const region: ExtractedRegion = {
-        regionId: 'region:sprite1:r0',
+        regionId: 'region:sprite1:r0:0',
         blockId: 'r0',
         spriteId: 'sprite1',
         commentId: 'cmt1',
@@ -81,19 +81,17 @@ describe('types (§Phase 0)', () => {
         bodyBlockIds: ['a'],
         kernelContainerBlockId: 'r0',
         nestedRepeatContainerBlockIds: [],
-        duplicateComputeBlockIds: [],
         regionIndex: 0,
         inlinedPrototypeBlockIds: [],
         commentAnchorBlockId: 'a',
       };
       expect(region.kernelContainerBlockId).toBe('r0');
       expect(region.nestedRepeatContainerBlockIds).toEqual([]);
-      expect(region.duplicateComputeBlockIds).toEqual([]);
     });
 
     it('allows nestedRepeatContainerBlockIds to carry the @compute candidate id', () => {
       const region: ExtractedRegion = {
-        regionId: 'region:sprite1:outer',
+        regionId: 'region:sprite1:outer:0',
         blockId: 'outer',
         spriteId: 'sprite1',
         commentId: 'cmt1',
@@ -101,7 +99,6 @@ describe('types (§Phase 0)', () => {
         bodyBlockIds: ['inner_a', 'inner_b'],
         kernelContainerBlockId: 'outer',
         nestedRepeatContainerBlockIds: ['inner'],
-        duplicateComputeBlockIds: [],
         regionIndex: 0,
         inlinedPrototypeBlockIds: [],
         commentAnchorBlockId: 'inner_a',
@@ -109,27 +106,21 @@ describe('types (§Phase 0)', () => {
       expect(region.nestedRepeatContainerBlockIds).toEqual(['inner']);
     });
 
-    it('allows duplicateComputeBlockIds to carry surplus @compute block ids', () => {
-      const region: ExtractedRegion = {
-        regionId: 'region:sprite1:r1',
-        blockId: 'r1',
-        spriteId: 'sprite1',
-        commentId: 'cmt1',
-        firstSubstackBlockId: 'a',
-        bodyBlockIds: ['a'],
-        kernelContainerBlockId: 'r1',
-        nestedRepeatContainerBlockIds: [],
-        duplicateComputeBlockIds: ['r2', 'r3'],
-        regionIndex: 0,
-        inlinedPrototypeBlockIds: [],
-        commentAnchorBlockId: 'a',
-      };
-      expect(region.duplicateComputeBlockIds).toEqual(['r2', 'r3']);
+    it('§Phase 3 — duplicateComputeBlockIds field is removed from ExtractedRegion', () => {
+      // Type-level guarantee that the legacy field no longer exists.
+      // `ExtractedRegion extends { duplicateComputeBlockIds: unknown }`
+      // must evaluate to `false`. If a future refactor accidentally
+      // re-introduces the field, this test fails to compile.
+      type _Assert = ExtractedRegion extends { duplicateComputeBlockIds: unknown }
+        ? 'FORBIDDEN'
+        : 'OK';
+      const assert: _Assert = 'OK';
+      expect(assert).toBe('OK');
     });
 
     it('requires Phase 1 fields: regionIndex, inlinedPrototypeBlockIds, commentAnchorBlockId', () => {
       const region: ExtractedRegion = {
-        regionId: 'region:sprite1:r0',
+        regionId: 'region:sprite1:r0:0',
         blockId: 'r0',
         spriteId: 'sprite1',
         commentId: 'cmt1',
@@ -137,7 +128,6 @@ describe('types (§Phase 0)', () => {
         bodyBlockIds: ['a'],
         kernelContainerBlockId: 'r0',
         nestedRepeatContainerBlockIds: [],
-        duplicateComputeBlockIds: [],
         regionIndex: 0,
         inlinedPrototypeBlockIds: [],
         commentAnchorBlockId: 'a',

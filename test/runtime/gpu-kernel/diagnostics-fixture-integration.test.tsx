@@ -2,12 +2,17 @@
  * Integration test — diagnostics fixture → player bootstrap →
  * ErrorLogPanel rendering.
  *
- * §Phase 5 §15.9 / §15.14 — pins the end-to-end flow from the
- * diagnostics SB3 fixture through `bootstrapGpuKernels` to the
+ * §Phase 5 §15.9 / §15.14 + §Phase 3 — pins the end-to-end flow from
+ * the diagnostics SB3 fixture through `bootstrapGpuKernels` to the
  * `ErrorLogPanel` UI:
  *
- *   1. The fixture's duplicate `@compute` marker surfaces as
- *      `gpu.multiple_compute_regions` (severity `error`).
+ *   1. The fixture's first `@compute` region carries TWO `@bind`
+ *      directives at slot 0 (`let` + `foo`), which surfaces as
+ *      `gpu.bind_slot_collision` (severity `error`, D1 demote via
+ *      `PARSER_ERROR_CODES`). Phase 3 removed the legacy
+ *      `gpu.multiple_compute_regions` trigger from this fixture because
+ *      the two `@compute` markers now live on distinct control_repeats
+ *      and both regions are adopted without error.
  *   2. The shared `forwardGpuDiagnostics` helper routes the error
  *      into the `useErrorLogStore` store WITHOUT capping.
  *   3. The `ErrorLogPanel` renders the entry when expanded.
@@ -115,8 +120,8 @@ beforeEach(() => {
   __resetAdapterUnavailableWarningForTesting();
 });
 
-describe('§Phase 5 §15.9 / §15.14 — diagnostics fixture → ErrorLogPanel', () => {
-  it('surfaces gpu.multiple_compute_regions (error) in the ErrorLogPanel when expanded', async () => {
+describe('§Phase 3 / §Phase 5 §15.9 / §15.14 — diagnostics fixture → ErrorLogPanel', () => {
+  it('surfaces gpu.dsl_syntax_error (error) in the ErrorLogPanel when expanded', async () => {
     const projectJson = await readFixtureProject(FIXTURE_PATH);
     const parsed = toParsedProjectFromJson(projectJson);
 
@@ -124,27 +129,30 @@ describe('§Phase 5 §15.9 / §15.14 — diagnostics fixture → ErrorLogPanel',
     const { verdicts, extractionDiagnostics } =
       collectRegionVerdictsFromArrayBuffer(parsed);
 
-    // §15.9 — extraction diagnostics surface even when the pipeline
-    // registers regions (the duplicate diagnostic folds into the
-    // surviving region's verdict.diagnostics).
+    // §Phase 3 — both `@compute` markers on distinct control_repeats
+    // are adopted (no MULTIPLE_COMPUTE_REGIONS fires). The first
+    // region carries `@max length=1000`, which the parser rejects at
+    // severity `error` with code `gpu.dsl_syntax_error`. That code is
+    // in `PARSER_ERROR_CODES`, so the region demotes to D1 and the
+    // diagnostic surfaces in the ErrorLog.
     forwardGpuDiagnostics(extractionDiagnostics);
     forwardGpuDiagnostics(verdicts.flatMap((v) => v.diagnostics));
 
-    const dupError = useErrorLogStore
+    const slotError = useErrorLogStore
       .getState()
       .entries.find(
         (e) =>
           e.severity === 'error' &&
-          e.message.includes('gpu.multiple_compute_regions'),
+          e.message.includes('gpu.dsl_syntax_error'),
       );
-    expect(dupError, 'gpu.multiple_compute_regions should be in the store').toBeDefined();
+    expect(slotError, 'gpu.dsl_syntax_error should be in the store').toBeDefined();
 
     // The panel renders only the error entry when expanded.
     render(<ErrorLogPanel />);
     expect(screen.getByText(/^1 error$/i)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText(/Expand errors/i));
     expect(
-      screen.getByText(/gpu\.multiple_compute_regions/),
+      screen.getByText(/gpu\.dsl_syntax_error/),
     ).toBeInTheDocument();
   });
 

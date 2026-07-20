@@ -116,6 +116,40 @@ const GPU_UNSAFE_OPCODES: ReadonlySet<string> = new Set([
   'argument_reporter_string',
 ]);
 
+/**
+ * §Phase 3 (gpu-kernel-dsl-phase3-spec §3.3) — diagnostic codes whose
+ * presence on a region's diagnostic list forces a D1 demote regardless
+ * of the `severity` field. Used to wire post-parser validation into the
+ * demote path without inventing a new severity channel.
+ *
+ * Currently:
+ *   - `gpu.dsl_syntax_error`: emitted by the parser for malformed
+ *     directive syntax (and the @max removal in §15.3). Severity is
+ *     `'error'` for hard-syntax cases and `'warn'` for shape-only
+ *     warnings — both routes use this set so the region demotes on
+ *     any breaking directive.
+ *   - `gpu.max_removed`: Phase 2 (15.3) — backward-compat alias for the
+ *     `@max` removal path. Kept in this set so old diagnostic payloads
+ *     surface as D1 demotes without a refactor.
+ *   - `gpu.multiple_compute_regions`: region-extractor emits this when
+ *     a single block carries multiple `@compute` markers (Phase 3).
+ *   - `gpu.bind_slot_collision`: emitted by the region-verdict pipeline
+ *     when two `@bind` directives inside the same region claim the
+ *     same `@group(0) @binding(N)` slot index.
+ *
+ * Codes that are emitted at `severity: 'warn'` only (`gpu.kc_container_collision`,
+ * `gpu.regional_buffer_memory_pressure`, `gpu.implicit_axis_unsupported`,
+ * `gpu.bound_block_not_found`, `gpu.axis_auto_detected`) are NOT in this
+ * set — they must keep the existing `'severity === 'error''` filter
+ * behaviour so a warn does not accidentally demote the region.
+ */
+export const PARSER_ERROR_CODES: ReadonlySet<string> = new Set([
+  'gpu.dsl_syntax_error',
+  'gpu.max_removed',
+  'gpu.multiple_compute_regions',
+  'gpu.bind_slot_collision',
+]);
+
 export interface ClassifyBlockSubsetInput {
   region: ExtractedRegion;
   project: ParsedProject;
@@ -172,7 +206,16 @@ export function buildBlockSubsetVerdict(
   // §Phase 2 (15.2): parser-error demote precedes D1 demote so the user
   // sees the broken-DSL diagnostic first (= the more actionable root
   // cause). When neither fires we proceed to Phase 1 pattern extraction.
-  const parserErrorDiagnostics = parsedDiagnostics.filter((d) => d.severity === 'error');
+  //
+  // §Phase 3 (gpu-kernel-dsl-phase3-spec §3.3) — widen the trigger to
+  // also include any diagnostic whose `code` is in `PARSER_ERROR_CODES`
+  // (notably `gpu.bind_slot_collision`, emitted by
+  // `region-verdict-pipeline.ts`). This makes the demote route
+  // code-driven rather than purely severity-driven so future error-coded
+  // diagnostics from M3 — M5 can land in this single demote path.
+  const parserErrorDiagnostics = parsedDiagnostics.filter(
+    (d) => d.severity === 'error' || PARSER_ERROR_CODES.has(d.code),
+  );
   if (parserErrorDiagnostics.length > 0) {
     return {
       valid: false,

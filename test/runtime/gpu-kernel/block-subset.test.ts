@@ -28,7 +28,6 @@ function region(body: RawBlock[]): ExtractedRegion {
     bodyBlockIds: body.map((b) => b.id),
     kernelContainerBlockId: 'r0',
     nestedRepeatContainerBlockIds: [],
-    duplicateComputeBlockIds: [],
     regionIndex: 0,
     inlinedPrototypeBlockIds: [],
     commentAnchorBlockId: body[0]?.id ?? '',

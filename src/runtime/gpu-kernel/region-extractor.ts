@@ -23,6 +23,23 @@
  * exists (= legacy outer-only layout). This lets `fn expo` style
  * nested layouts carry their `@compute` marker on the deepest
  * `control_repeat` while still emitting WGSL over the surrounding loop.
+ *
+ * §Phase 3 (gpu-kernel-dsl-phase3-spec §3.1) — multiple `@compute`
+ * regions per sprite. The extractor now adopts *every* distinct
+ * `@compute` candidate as its own `ExtractedRegion`. The dedupe keys
+ * are:
+ *
+ *   1. Same candidate `blockId` carrying more than one `@compute` marker
+ *      → `MULTIPLE_COMPUTE_REGIONS` (severity `error`), no extra region.
+ *   2. Same kernel container shared by 2+ adopted regions
+ *      → `KERNEL_CONTAINER_COLLISION` (severity `warn`), only the first
+ *      adopted region survives (the rest are dropped).
+ *
+ * Cross-region slot overlap on `@bind` is intentionally allowed; the
+ * cross-region overlap path is detected at `region-verdict-pipeline.ts`
+ * and surfaced via `console.debug` only (spec §3.2 + AGENTS.md policy
+ * that all diagnostics flow through `ErrorLogPanel` — info-level
+ * outputs are excluded).
  */
 
 import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
@@ -56,9 +73,10 @@ export function extractRegions(project: ParsedProject): RegionExtractionResult {
   }
 
   for (const target of project.targets) {
-    // Phase 0: collect every `@compute`-marked control_repeat in this
-    // sprite so we can promote the first to a region and surface
-    // duplicates via `gpu.multiple_compute_regions`.
+    // Phase 0/3: collect every `@compute`-marked control_repeat in this
+    // sprite. From Phase 3 onward every candidate becomes its own
+    // region; the duplicates and collisions are surfaced via
+    // diagnostics rather than silently dropped.
     const candidates: RawBlock[] = [];
     for (const block of Object.values(target.blocks)) {
       if (!block) continue;
@@ -76,98 +94,125 @@ export function extractRegions(project: ParsedProject): RegionExtractionResult {
     }
     if (candidates.length === 0) continue;
 
-    // Phase 0: a sprite carrying multiple `@compute` markers is almost
-    // certainly a mistake — surface it as an error-severity diagnostic
-    // and record the surplus block ids on the surviving region so users
-    // can find them in the editor.
+    // Phase 3: per-candidate loop. Each candidate either becomes a
+    // region or is skipped (and a diagnostic is emitted) when:
+    //   - a prior candidate already adopted the same `blockId`
+    //     (`MULTIPLE_COMPUTE_REGIONS`, error), or
+    //   - a prior candidate already adopted the same kernel container
+    //     (`KERNEL_CONTAINER_COLLISION`, warn).
     //
-    // §Phase 5 §15.9 — attach the adopted region's `regionId` and the
-    // kernel container's `blockId` to the diagnostic so the
-    // region-verdict pipeline can fold it into the surviving region's
-    // `RegionVerdict.diagnostics` (and forward it to the ErrorLogPanel
-    // without needing a separate pass).
-    const candidate = candidates[0]!;
-    const kernelContainer = findKernelContainer(candidate, target.blocks);
-    const kernelContainerId = kernelContainer.id;
-    const adoptedRegionId = `region:${target.id}:${kernelContainerId}`;
-    const duplicateIds = candidates.length > 1
-      ? candidates.slice(1).map((c) => c.id)
-      : [];
-    if (duplicateIds.length > 0) {
-      diagnostics.push({
-        severity: 'error',
-        code: GPU_DIAGNOSTIC_CODES.MULTIPLE_COMPUTE_REGIONS,
-        regionId: adoptedRegionId,
-        blockId: kernelContainerId,
-        message:
-          `Multiple @compute markers found in sprite "${target.id}": ` +
-          `[${candidates.map((c) => c.id).join(', ')}]. Pick one.`,
-      });
-    }
-
-    // The body entry is the candidate's substack head when nested, or
-    // the kernel container's substack head when the candidate is the
-    // outermost control_repeat (legacy case).
-    const isNested = candidate.id !== kernelContainer.id;
-    let bodyEntry: RawBlock;
-    let commentBlockId: string;
-    if (isNested) {
-      const candidateSubId = readSubstackId(candidate);
-      if (!candidateSubId) continue;
-      const candidateEntry = target.blocks[candidateSubId];
-      if (!candidateEntry) continue;
-      bodyEntry = candidateEntry;
-      commentBlockId = candidateEntry.id;
-    } else {
-      const kernelSubId = readSubstackId(kernelContainer);
-      if (!kernelSubId) continue;
-      const kernelEntry = target.blocks[kernelSubId];
-      if (!kernelEntry) continue;
-      bodyEntry = kernelEntry;
-      commentBlockId = kernelEntry.id;
-    }
-
-    const commentId = commentIdByBlockId.get(commentBlockId);
-    if (!commentId) continue;
-
-    const bodyIds = walkSubstackBody(
-      target.blocks,
-      bodyEntry,
-      new Set([kernelContainerId]),
-    );
-
-    // Phase 0: every control_repeat visible from the body — *excluding*
-    // the kernel container itself — is a candidate for Phase 2's
-    // implicit-axis emission. The `@compute` candidate itself is also a
-    // target when nested, but it sits *outside* the walk (the walk
-    // starts at the candidate's substack head) so we add it explicitly.
-    const nestedRepeatContainerBlockIds: string[] = [];
-    if (isNested) {
-      nestedRepeatContainerBlockIds.push(candidate.id);
-    }
-    for (const id of bodyIds) {
-      if (id === kernelContainerId) continue;
-      if (id === candidate.id) continue;
-      const b = target.blocks[id];
-      if (b && b.opcode === 'control_repeat') {
-        nestedRepeatContainerBlockIds.push(id);
+    // The `regionIndex` increments only for adopted regions so the
+    // index forms a 0..N-1 sequence with no holes (= every region's
+    // index equals its position in the sprite-local adopted list).
+    const seenCandidateBlockIds = new Map<string, ExtractedRegion>();
+    const usedKernelContainers = new Map<string, ExtractedRegion>();
+    let regionIndex = 0;
+    for (const candidate of candidates) {
+      // Defensive dedupe: a single `control_repeat` should not appear
+      // twice in `candidates[]`, but if duplicate comments point at
+      // the same entry block we still surface the diagnostic and skip.
+      const existingRegion = seenCandidateBlockIds.get(candidate.id);
+      if (existingRegion) {
+        const regionId = `region:${target.id}:${existingRegion.kernelContainerBlockId}:${existingRegion.regionIndex}`;
+        diagnostics.push({
+          severity: 'error',
+          code: GPU_DIAGNOSTIC_CODES.MULTIPLE_COMPUTE_REGIONS,
+          regionId,
+          blockId: existingRegion.kernelContainerBlockId,
+          message:
+            `control_repeat block ${candidate.id} has multiple @compute markers; pick one`,
+        });
+        continue;
       }
-    }
 
-    regions.push({
-      regionId: adoptedRegionId,
-      blockId: kernelContainerId,
-      spriteId: target.id,
-      commentId,
-      firstSubstackBlockId: commentBlockId,
-      bodyBlockIds: bodyIds,
-      kernelContainerBlockId: kernelContainerId,
-      nestedRepeatContainerBlockIds,
-      duplicateComputeBlockIds: duplicateIds,
-      regionIndex: 0,
-      inlinedPrototypeBlockIds: [],
-      commentAnchorBlockId: commentBlockId,
-    });
+      const kernelContainer = findKernelContainer(candidate, target.blocks);
+      const kernelContainerId = kernelContainer.id;
+
+      // Same kernel container already adopted by an earlier candidate?
+      // Surface the warn and skip — the earlier region keeps its slot.
+      const existingContainer = usedKernelContainers.get(kernelContainerId);
+      if (existingContainer) {
+        const regionId = `region:${target.id}:${existingContainer.kernelContainerBlockId}:${existingContainer.regionIndex}`;
+        diagnostics.push({
+          severity: 'warn',
+          code: GPU_DIAGNOSTIC_CODES.KERNEL_CONTAINER_COLLISION,
+          regionId,
+          blockId: kernelContainerId,
+          message:
+            `kernel container ${kernelContainerId} is shared by multiple @compute regions; only the first is adopted`,
+        });
+        continue;
+      }
+
+      // The body entry is the candidate's substack head when nested, or
+      // the kernel container's substack head when the candidate is the
+      // outermost control_repeat (legacy case).
+      const isNested = candidate.id !== kernelContainer.id;
+      let bodyEntry: RawBlock;
+      let commentBlockId: string;
+      if (isNested) {
+        const candidateSubId = readSubstackId(candidate);
+        if (!candidateSubId) continue;
+        const candidateEntry = target.blocks[candidateSubId];
+        if (!candidateEntry) continue;
+        bodyEntry = candidateEntry;
+        commentBlockId = candidateEntry.id;
+      } else {
+        const kernelSubId = readSubstackId(kernelContainer);
+        if (!kernelSubId) continue;
+        const kernelEntry = target.blocks[kernelSubId];
+        if (!kernelEntry) continue;
+        bodyEntry = kernelEntry;
+        commentBlockId = kernelEntry.id;
+      }
+
+      const commentId = commentIdByBlockId.get(commentBlockId);
+      if (!commentId) continue;
+
+      const bodyIds = walkSubstackBody(
+        target.blocks,
+        bodyEntry,
+        new Set([kernelContainerId]),
+      );
+
+      // Phase 0: every control_repeat visible from the body — *excluding*
+      // the kernel container itself — is a candidate for Phase 2's
+      // implicit-axis emission. The `@compute` candidate itself is also a
+      // target when nested, but it sits *outside* the walk (the walk
+      // starts at the candidate's substack head) so we add it explicitly.
+      const nestedRepeatContainerBlockIds: string[] = [];
+      if (isNested) {
+        nestedRepeatContainerBlockIds.push(candidate.id);
+      }
+      for (const id of bodyIds) {
+        if (id === kernelContainerId) continue;
+        if (id === candidate.id) continue;
+        const b = target.blocks[id];
+        if (b && b.opcode === 'control_repeat') {
+          nestedRepeatContainerBlockIds.push(id);
+        }
+      }
+
+      const regionId = `region:${target.id}:${kernelContainerId}:${regionIndex}`;
+      const region: ExtractedRegion = {
+        regionId,
+        blockId: kernelContainerId,
+        spriteId: target.id,
+        commentId,
+        firstSubstackBlockId: commentBlockId,
+        bodyBlockIds: bodyIds,
+        kernelContainerBlockId: kernelContainerId,
+        nestedRepeatContainerBlockIds,
+        regionIndex,
+        inlinedPrototypeBlockIds: [],
+        commentAnchorBlockId: commentBlockId,
+      };
+
+      seenCandidateBlockIds.set(candidate.id, region);
+      usedKernelContainers.set(kernelContainerId, region);
+      regions.push(region);
+      regionIndex += 1;
+    }
   }
 
   return { regions, diagnostics };

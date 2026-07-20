@@ -32,8 +32,21 @@
  * buffer in that case; the dispatcher also re-creates the bind group
  * because the underlying `GPUBuffer` reference changes (see
  * `__dispatch-kernel-sync.ts`).
+ *
+ * # Aggregate memory budget (§Phase 3)
+ *
+ * Each `ensureBuffer` call updates `pool.bufferBudgetBytes()` —
+ * cumulative bytes for every buffer the pool currently owns. When the
+ * budget crosses 80% of `device.limits.maxStorageBufferBindingSize` (or
+ * the conservative 256 MiB fallback when no device is present), a
+ * `gpu.regional_buffer_memory_pressure` warn is forwarded to
+ * `useErrorLogStore`. The pool's `totalBufferBytes` resets whenever
+ * the device is replaced or `resetBufferBudget()` is invoked (= the
+ * explicit test seam).
  */
+import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
 import type { BindDirective } from './types';
+import { useErrorLogStore } from '@/stores/useErrorLogStore';
 
 export type ListBufferDtype = 'f32' | 'i32' | 'byte';
 
@@ -100,6 +113,25 @@ export const BYTES_PER_ELEMENT: Readonly<Record<ListBufferDtype, number>> = {
 };
 
 /**
+ * Conservative fallback when the WebGPU device does not expose
+ * `maxStorageBufferBindingSize`. Matches the spec §6.3 default. Tests
+ * construct minimal mock devices that omit `limits` entirely; the
+ * fallback keeps the 80%-threshold math stable across hosts.
+ */
+const DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE = 256 * 1024 * 1024;
+
+/**
+ * Region metadata attached to each binding. Phase 3 propagates the
+ * owning `regionId` and `kernelContainerBlockId` so the
+ * `gpu.regional_buffer_memory_pressure` diagnostic can name the source
+ * region in its `useErrorLogStore` message.
+ */
+export interface BindingRegionMetadata {
+  regionId: string;
+  regionBlockId: string;
+}
+
+/**
  * One named binding (a scratch-vm list or scalar) backed by a GPU
  * storage buffer. The pool owns a `Map<listName, ListBufferBinding>` and
  * hands them out to the dispatch layer.
@@ -117,6 +149,14 @@ export interface ListBufferBinding {
   length: number;
   /** Lazily-allocated GPU buffer. `null` until first sync. */
   gpuBuffer: GpuLikeBuffer | null;
+  /**
+   * §Phase 3 — owning region id (`region:<sprite>:<blockId>:<index>`).
+   * `null` for bindings registered without region metadata (legacy
+   * callers; rare in practice).
+   */
+  readonly regionId: string | null;
+  /** §Phase 3 — kernel container block id for diagnostic attribution. */
+  readonly regionBlockId: string | null;
   /**
    * Push the host list into the GPU buffer. Allocates the buffer lazily
    * if this is the first call. `value` may be a `Float32Array`,
@@ -151,15 +191,35 @@ export interface ListBufferPoolOptions {
 export class ListBufferPool {
   private readonly bindings = new Map<string, ListBufferBinding>();
   private device: GpuLikeDevice | null;
+  /**
+   * §Phase 3 — aggregate bytes the pool currently owns (sum of every
+   * `gpuBuffer.size` minus the bytes returned to the host on
+   * `destroyBinding`). Updated in `ensureBuffer` /
+   * `destroyBinding` / `forDeviceLost` / `clear`.
+   */
+  private totalBufferBytes = 0;
 
   constructor(options: ListBufferPoolOptions) {
     this.device = options.device;
   }
 
   /**
+   * §Phase 3 — internal counter used by `attachBudgetWriters`. Kept
+   * package-private via the leading underscore prefix so the budget
+   * reader/writer closures installed in `bind()` can update the
+   * aggregate without taking a public API dependency on the field.
+   */
+  _bumpBudget(delta: number): void {
+    this.totalBufferBytes = Math.max(0, this.totalBufferBytes + delta);
+  }
+
+  /**
    * Set / replace the device. Existing bindings have their GPU buffers
    * destroyed (they belonged to the old device) and the host mirror is
-   * preserved so the next `syncFromHost` knows the desired shape.
+   * preserved so the next `syncFromHost` knows the desired shape. The
+   * byte budget resets to zero because the new device has its own
+   * limits (we have no way to predict whether buffers of the same
+   * shape will fit).
    */
   setDevice(device: GpuLikeDevice | null): void {
     if (this.device === device) return;
@@ -176,6 +236,7 @@ export class ListBufferPool {
       }
       rebindMethods(binding, this.device);
     }
+    this.totalBufferBytes = 0;
   }
 
   /** The current device, or `null` if WebGPU is unavailable. */
@@ -190,8 +251,13 @@ export class ListBufferPool {
    * is destroyed (it may have been sized differently) and the metadata
    * is updated in place — the public `ListBufferBinding` instance stays
    * the same so callers can hold a reference across rebinds.
+   *
+   * §Phase 3 — `regionMetadata` is optional. When provided, the new
+   * binding carries the owning region's id / kernel-container id so
+   * any `gpu.regional_buffer_memory_pressure` diagnostic surfaces the
+   * source region.
    */
-  bind(directive: BindDirective): ListBufferBinding {
+  bind(directive: BindDirective, regionMetadata?: BindingRegionMetadata): ListBufferBinding {
     const existing = this.bindings.get(directive.name);
     if (existing) {
       // `existing` is the public-facing wrapper; the underlying
@@ -203,19 +269,27 @@ export class ListBufferPool {
         } catch {
           /* device may already be lost — swallow */
         }
+        this.totalBufferBytes = Math.max(0, this.totalBufferBytes - internal.gpuBuffer.size);
         internal.gpuBuffer = null;
       }
       internal.slot = directive.slot;
       internal.dtype = directive.dtype;
       internal.readOnly = directive.readOnly;
       internal.length = 0;
+      internal.regionId = regionMetadata?.regionId ?? null;
+      internal.regionBlockId = regionMetadata?.regionBlockId ?? null;
       setHostMirror(internal, emptyTypedArray(directive.dtype));
       // Update the device pointer on the sync functions (the wrapper
       // closes over `this.device`, so we need to rebind them).
       rebindMethods(existing, this.device);
+      // §Phase 3 — re-attach the budget reader/writer in case the pool
+      // instance was swapped (e.g. `setDevice` cloned the binding).
+      attachBudgetWriters(internal, this);
       return existing;
     }
-    const binding = createBinding(directive, this.device);
+    const binding = createBinding(directive, this.device, regionMetadata);
+    const internal = internalStateOf(binding);
+    attachBudgetWriters(internal, this);
     this.bindings.set(directive.name, binding);
     return binding;
   }
@@ -228,6 +302,25 @@ export class ListBufferPool {
   /** Number of registered bindings. */
   size(): number {
     return this.bindings.size;
+  }
+
+  /**
+   * §Phase 3 — aggregate bytes the pool currently owns (= sum of every
+   * binding's `gpuBuffer.size`). Returns `0` when the device is
+   * unavailable (sync calls never allocate buffers in that path).
+   */
+  bufferBudgetBytes(): number {
+    return this.totalBufferBytes;
+  }
+
+  /**
+   * §Phase 3 — test seam for the budget counter. Production code does
+   * not call this; tests reset between scenarios so the
+   * `gpu.regional_buffer_memory_pressure` threshold logic is exercised
+   * deterministically.
+   */
+  resetBufferBudget(): void {
+    this.totalBufferBytes = 0;
   }
 
   /**
@@ -247,6 +340,7 @@ export class ListBufferPool {
         internal.gpuBuffer = null;
       }
     }
+    this.totalBufferBytes = 0;
   }
 
   /** Drop every binding (project reload). */
@@ -255,6 +349,7 @@ export class ListBufferPool {
       destroyBinding(internalStateOf(binding));
     }
     this.bindings.clear();
+    this.totalBufferBytes = 0;
   }
 
   /**
@@ -282,11 +377,15 @@ interface MutableBinding extends BindingWithMirror {
   readOnly: boolean;
   length: number;
   gpuBuffer: GpuLikeBuffer | null;
+  /** §Phase 3 — region metadata propagated for diagnostic attribution. */
+  regionId: string | null;
+  regionBlockId: string | null;
 }
 
 function createBinding(
   directive: BindDirective,
   device: GpuLikeDevice | null,
+  regionMetadata?: BindingRegionMetadata,
 ): ListBufferBinding {
   const internal: MutableBinding = {
     listName: directive.name,
@@ -295,6 +394,8 @@ function createBinding(
     readOnly: directive.readOnly,
     length: 0,
     gpuBuffer: null,
+    regionId: regionMetadata?.regionId ?? null,
+    regionBlockId: regionMetadata?.regionBlockId ?? null,
   };
   const wrapper: ListBufferBinding = {
     get listName() {
@@ -320,6 +421,12 @@ function createBinding(
     },
     set gpuBuffer(v: GpuLikeBuffer | null) {
       internal.gpuBuffer = v;
+    },
+    get regionId() {
+      return internal.regionId;
+    },
+    get regionBlockId() {
+      return internal.regionBlockId;
     },
     syncFromHost: (value) => syncFromHostImpl(internal, device, value),
     syncToHost: () => syncToHostImpl(internal),
@@ -365,6 +472,96 @@ function rebindMethods(binding: ListBufferBinding, device: GpuLikeDevice | null)
  */
 export const DEFAULT_MAX_BUFFER_ELEMENTS = 1 << 20;
 
+/**
+ * §Phase 3 (gpu-kernel-dsl-phase3-spec §3.5) — lazily allocate (or
+ * reallocate) the GPU buffer for a binding of `capacity` elements of
+ * `dtype`. Returns the resulting buffer (or `null` when the device is
+ * unavailable — the no-GPU path keeps the host mirror updated and
+ * returns a `null` buffer).
+ *
+ * Side effects:
+ *
+ *   - updates `binding.length` to `capacity`
+ *   - updates `binding.gpuBuffer` to the new (or recycled) buffer
+ *   - updates the pool's `totalBufferBytes` aggregate
+ *   - forwards `gpu.regional_buffer_memory_pressure` to
+ *     `useErrorLogStore` when the projected aggregate exceeds 80% of
+ *     `device.limits.maxStorageBufferBindingSize` (or the 256 MiB
+ *     fallback)
+ *
+ * The function is pure of `useErrorLogStore` side effects when the
+ * device is `null` (= no allocation happens, no budget check fires).
+ */
+export function ensureBuffer(
+  binding: MutableBinding,
+  capacity: number,
+  device: GpuLikeDevice | null,
+): GpuLikeBuffer | null {
+  if (device === null) return null;
+  const physicalBytes = capacity * BYTES_PER_ELEMENT[binding.dtype];
+  if (binding.gpuBuffer && binding.gpuBuffer.size < physicalBytes) {
+    binding.gpuBuffer.destroy();
+    binding.gpuBuffer = null;
+  }
+  if (!binding.gpuBuffer) {
+    const limit =
+      device.limits?.maxStorageBufferBindingSize ?? DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE;
+    const projected = bufferBudgetSnapshot(binding) + physicalBytes;
+    if (projected > limit * 0.8) {
+      useErrorLogStore.getState().push(
+        'warn',
+        `${GPU_DIAGNOSTIC_CODES.REGIONAL_BUFFER_MEMORY_PRESSURE}: aggregate buffer memory (${projected} B) exceeds 80% of GPU limit (${limit} B) for region ${binding.regionId ?? '<unknown>'} block ${binding.regionBlockId ?? '<unknown>'}; expect out-of-memory on lower-end GPUs`,
+      );
+    }
+    binding.gpuBuffer = device.createBuffer({
+      size: Math.max(physicalBytes, BYTES_PER_ELEMENT[binding.dtype]),
+      usage:
+        GPU_BUFFER_USAGE_STORAGE |
+        GPU_BUFFER_USAGE_COPY_DST |
+        GPU_BUFFER_USAGE_COPY_SRC,
+    });
+    // §Phase 3 — increment the pool's aggregate counter through the
+    // budget writer installed in `attachBudgetWriters`.
+    const writer = (binding as MutableBinding & {
+      __twBudgetWriter?: (bytes: number) => void;
+    }).__twBudgetWriter;
+    writer?.(binding.gpuBuffer.size);
+  }
+  return binding.gpuBuffer;
+}
+
+/**
+ * §Phase 3 — read the pool's current aggregate byte count from
+ * whatever singleton binds the binding. Implemented via the
+ * `INTERNAL_STATE_KEY` Symbol + `WeakMap`-style stash on the wrapper;
+ * we fall back to `0` when the binding was not registered through a
+ * `ListBufferPool` (e.g. the test-suite helper that synthesises a
+ * `MutableBinding` directly).
+ */
+function bufferBudgetSnapshot(binding: MutableBinding): number {
+  // The pool's aggregate counter is private; we expose it via a
+  // closure handle stashed on the binding at creation time so
+  // `ensureBuffer` can read it without reaching for the pool instance.
+  // (`bind()` writes this closure in `createBinding`.)
+  const reader = (binding as MutableBinding & {
+    __twBudgetReader?: () => number;
+  }).__twBudgetReader;
+  return reader ? reader() : 0;
+}
+
+/**
+ * §Phase 3 — pool-facing helper that registers a budget reader on a
+ * binding so `ensureBuffer` can read the aggregate without holding a
+ * back-reference to the pool. Called from `ListBufferPool.bind` /
+ * `setDevice`.
+ */
+export function attachBudgetReader(
+  binding: MutableBinding,
+  reader: () => number,
+): void {
+  (binding as MutableBinding & { __twBudgetReader?: () => number }).__twBudgetReader = reader;
+}
+
 function syncFromHostImpl(
   binding: MutableBinding,
   device: GpuLikeDevice | null,
@@ -378,31 +575,19 @@ function syncFromHostImpl(
     setHostMirror(binding, data);
     return;
   }
-  const physicalBytes = data.length * BYTES_PER_ELEMENT[binding.dtype];
-  if (binding.gpuBuffer && binding.gpuBuffer.size < physicalBytes) {
-    try {
-      binding.gpuBuffer.destroy();
-    } catch {
-      /* swallow */
-    }
-    binding.gpuBuffer = null;
-  }
-  if (!binding.gpuBuffer) {
-    binding.gpuBuffer = device.createBuffer({
-      size: Math.max(physicalBytes, BYTES_PER_ELEMENT[binding.dtype]),
-      usage:
-        GPU_BUFFER_USAGE_STORAGE |
-        GPU_BUFFER_USAGE_COPY_DST |
-        GPU_BUFFER_USAGE_COPY_SRC,
-    });
-  }
+  // §Phase 3 — `ensureBuffer` is the single allocation point. The
+  // budget check + buffer creation + aggregate update all happen
+  // inside it.
+  ensureBuffer(binding, data.length, device);
   // For `byte` we need to upload a Uint32 view, not the raw Uint8Array
   // (otherwise WebGPU sees 1 byte per element instead of 4). We pack
   // into a fresh Uint32Array so the source buffer is not constrained
   // to a multiple of 4.
   const uploadView: ArrayBufferView =
     binding.dtype === 'byte' ? packBytesToU32(data as Uint8Array) : data;
-  device.queue.writeBuffer(binding.gpuBuffer, 0, uploadView);
+  if (binding.gpuBuffer) {
+    device.queue.writeBuffer(binding.gpuBuffer, 0, uploadView);
+  }
   setHostMirror(binding, data);
 }
 
@@ -420,11 +605,40 @@ function destroyBinding(binding: MutableBinding): void {
     } catch {
       /* swallow */
     }
+    const reader = (binding as MutableBinding & {
+      __twBudgetReader?: () => number;
+    }).__twBudgetReader;
+    if (reader) {
+      // We can't write to the pool's aggregate from here — instead the
+      // pool registers a writer closure when it creates the binding.
+      const writer = (binding as MutableBinding & {
+        __twBudgetWriter?: (bytes: number) => void;
+      }).__twBudgetWriter;
+      writer?.(-binding.gpuBuffer.size);
+    }
     binding.gpuBuffer = null;
   }
   binding.length = 0;
   // Drop the mirror too.
   setHostMirror(binding, emptyTypedArray(binding.dtype));
+}
+
+/**
+ * §Phase 3 — wire a binding to the owning pool so its buffer budget
+ * (de)allocations update `pool.totalBufferBytes`. Called from
+ * `ListBufferPool.bind` after `createBinding` returns the wrapper.
+ */
+export function attachBudgetWriters(
+  binding: MutableBinding,
+  pool: ListBufferPool,
+): void {
+  const mutable = binding as MutableBinding & {
+    __twBudgetWriter?: (bytes: number) => void;
+  };
+  mutable.__twBudgetWriter = (delta: number) => {
+    pool._bumpBudget(delta);
+  };
+  attachBudgetReader(binding, () => pool.bufferBudgetBytes());
 }
 
 function coerceToTypedArray(

@@ -78,6 +78,14 @@ export const FIXTURE_GENERATORS = {
     import('./make-gpu-kernel-diagnostics-fixture.mjs').then((m) =>
       m.makeGpuKernelDiagnosticsFixture(),
     ),
+  // §Phase 3 (gpu-kernel-dsl-phase3-spec §3.6) — multi-region
+  // fixture. Two `@compute` markers on distinct `control_repeat` blocks
+  // in the same sprite; both regions are adopted without diagnostic,
+  // and both share `@bind buff_r(2) rw f32` to exercise the cross-
+  // region slot overlap `console.debug` path. Loaded by
+  // `test/runtime/gpu-kernel/multi-region-fixture.test.ts`.
+  'multi-region-fixture.sb3': () =>
+    import('./make-multi-region-fixture.mjs').then((m) => m.makeMultiRegionFixture()),
 };
 
 /**

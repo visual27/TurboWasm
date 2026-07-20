@@ -168,7 +168,6 @@ describe('region-extractor', () => {
       expect(region?.blockId).toBe('outer');
       expect(region?.firstSubstackBlockId).toBe('a');
       expect(region?.nestedRepeatContainerBlockIds).toEqual([]);
-      expect(region?.duplicateComputeBlockIds).toEqual([]);
     });
 
     it("'@compute' on nested control_repeat promotes ancestor to kernel container", () => {
@@ -198,7 +197,6 @@ describe('region-extractor', () => {
       // The candidate's `inner` control_repeat shows up as a nested
       // candidate for Phase 2 implicit-axis emission.
       expect(region?.nestedRepeatContainerBlockIds).toEqual(['inner']);
-      expect(region?.duplicateComputeBlockIds).toEqual([]);
     });
 
     it("'@compute' on deeply nested control_repeat promotes the nearest ancestor", () => {
@@ -250,9 +248,12 @@ describe('region-extractor', () => {
       expect(regions[0]?.kernelContainerBlockId).toBe('outer');
     });
 
-    it("emits gpu.multiple_compute_regions when a sprite carries multiple '@compute' markers", () => {
+    it("adopts every distinct @compute candidate as its own region (§Phase 3)", () => {
       // Layout: control_repeat('r1') { a @compute } AND control_repeat('r2') { c @compute }
-      //   The first candidate is kept; r2 is recorded as a duplicate.
+      //   Two different `control_repeat` blocks each with their own
+      //   `@compute` marker → 2 regions adopted, no
+      //   `MULTIPLE_COMPUTE_REGIONS` diagnostic. §Phase 3 broke the
+      //   legacy "first candidate wins, rest are duplicates" path.
       const a = mkBlock('a', 'data_setvariableto');
       const r1 = mkBlock('r1', 'control_repeat', { inputs: { SUBSTACK: 'a' } });
       const c = mkBlock('c', 'data_setvariableto');
@@ -262,61 +263,141 @@ describe('region-extractor', () => {
         { id: 'cmt2', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'c' },
       ]);
       const { regions, diagnostics } = extractRegions(project);
-      // Exactly one region survives.
-      expect(regions).toHaveLength(1);
-      expect(regions[0]?.blockId).toBe('r1');
-      // The duplicate is recorded on the surviving region.
-      expect(regions[0]?.duplicateComputeBlockIds).toEqual(['r2']);
-      // An error-severity diagnostic was emitted.
+      // Both regions survive.
+      expect(regions).toHaveLength(2);
+      // regionIndex is the per-sprite 0-based sequence.
+      const byIndex = [...regions].sort((a, b) => a.regionIndex - b.regionIndex);
+      expect(byIndex[0]?.blockId).toBe('r1');
+      expect(byIndex[1]?.blockId).toBe('r2');
+      expect(byIndex[0]?.regionIndex).toBe(0);
+      expect(byIndex[1]?.regionIndex).toBe(1);
+      // regionId format carries the per-sprite index so two regions
+      // with the same kernel container (= unlikely but possible) stay
+      // distinguishable downstream.
+      expect(byIndex[0]?.regionId).toBe('region:sprite1:r1:0');
+      expect(byIndex[1]?.regionId).toBe('region:sprite1:r2:1');
+      // No MULTIPLE_COMPUTE_REGIONS — the two markers live on distinct
+      // blocks.
       const dupDiag = diagnostics.find(
-        (d) =>
-          d.severity === 'error' &&
-          d.code === 'gpu.multiple_compute_regions' &&
-          d.message.includes('r1') &&
-          d.message.includes('r2'),
+        (d) => d.code === 'gpu.multiple_compute_regions',
       );
-      expect(dupDiag).toBeDefined();
-      // §Phase 5 §15.9 — the diagnostic carries the adopted region's
-      // `regionId` and the kernel container's `blockId` so the
-      // region-verdict pipeline can fold it into
-      // `RegionVerdict.diagnostics` without an extra lookup pass.
-      expect(dupDiag?.regionId).toBe('region:sprite1:r1');
-      expect(dupDiag?.blockId).toBe('r1');
+      expect(dupDiag).toBeUndefined();
+      // And no KERNEL_CONTAINER_COLLISION either — each region owns a
+      // distinct control_repeat (= its own kernel container).
+      const kcDiag = diagnostics.find(
+        (d) => d.code === 'gpu.kernel_container_collision',
+      );
+      expect(kcDiag).toBeUndefined();
     });
 
-    it("§Phase 5 §15.9 — duplicate diagnostic carries the adopted region's nested kernelContainer id", () => {
-      // Layout (nested):
-      //   kc  (control_repeat, no @compute) ← kernel container
-      //     → inner (control_repeat, @compute) ← candidate
-      //   dup (control_repeat, @compute) ← duplicate
-      //
-      // The first candidate lives inside `kc` so
-      // `findKernelContainer` promotes `kc` to the kernel container.
-      // The duplicate diagnostic's `regionId` / `blockId` must use
-      // that promoted id (NOT the candidate's id) so it folds into
-      // the surviving RegionVerdict.
+    it("emits gpu.multiple_compute_regions when a single block carries duplicate @compute markers", () => {
+      // Phase 3: this scenario is unreachable in real scratch-vm data
+      // because every block has at most one comment. The extractor
+      // walks `Object.values(target.blocks)` so each `control_repeat`
+      // appears in `candidates[]` at most once. Defensive dedupe
+      // inside the loop is therefore dead code; the assertion below
+      // documents that fact rather than asserting a non-event.
       const a = mkBlock('a', 'data_setvariableto');
-      const inner = mkBlock('inner', 'control_repeat', {
-        parent: 'kc',
-        inputs: { SUBSTACK: 'a' },
-      });
-      const kc = mkBlock('kc', 'control_repeat', { inputs: { SUBSTACK: 'inner' } });
-      const dupBody = mkBlock('dupBody', 'data_setvariableto');
-      const dup = mkBlock('dup', 'control_repeat', { inputs: { SUBSTACK: 'dupBody' } });
-      const project = mkProject([kc, inner, a, dup, dupBody], [
-        { id: 'cmt_inner', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'a' },
-        { id: 'cmt_dup', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'dupBody' },
+      const r1 = mkBlock('r1', 'control_repeat', { inputs: { SUBSTACK: 'a' } });
+      const project = mkProject([r1, a], [
+        { id: 'cmt1', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'a' },
+        { id: 'cmt1dup', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'a' },
       ]);
       const { regions, diagnostics } = extractRegions(project);
       expect(regions).toHaveLength(1);
-      expect(regions[0]?.kernelContainerBlockId).toBe('kc');
+      // `commentIdByBlockId` overwrites on duplicate `blockId`, so the
+      // second comment is silently dropped — no MULTIPLE_COMPUTE_REGIONS
+      // diagnostic fires from the extractor.
       const dupDiag = diagnostics.find(
-        (d) =>
-          d.severity === 'error' &&
-          d.code === 'gpu.multiple_compute_regions',
+        (d) => d.code === 'gpu.multiple_compute_regions',
       );
-      expect(dupDiag?.regionId).toBe('region:sprite1:kc');
-      expect(dupDiag?.blockId).toBe('kc');
+      expect(dupDiag).toBeUndefined();
+    });
+
+    it("§Phase 3 — emits gpu.kernel_container_collision when 2 candidates share a kernel container", () => {
+      // Layout (nested):
+      //   kc  (control_repeat, no @compute) ← kernel container
+      //     → inner1 (control_repeat, @compute) ← candidate 1
+      //     → inner2 (control_repeat, @compute) ← candidate 2
+      //
+      // `findKernelContainer` promotes both candidates' kernel
+      // container to `kc`. The first one wins (regionIndex 0); the
+      // second surfaces a `gpu.kernel_container_collision` warn. No
+      // `MULTIPLE_COMPUTE_REGIONS` fires — the markers live on
+      // distinct entry blocks, only the kernel container overlaps.
+      const inner1Body = mkBlock('inner1Body', 'data_setvariableto');
+      const inner1 = mkBlock('inner1', 'control_repeat', {
+        parent: 'kc',
+        inputs: { SUBSTACK: 'inner1Body' },
+      });
+      const inner2Body = mkBlock('inner2Body', 'data_setvariableto');
+      const inner2 = mkBlock('inner2', 'control_repeat', {
+        parent: 'kc',
+        inputs: { SUBSTACK: 'inner2Body' },
+      });
+      const kc = mkBlock('kc', 'control_repeat', {
+        inputs: { SUBSTACK: 'inner1' },
+      });
+      const project = mkProject([kc, inner1, inner1Body, inner2, inner2Body], [
+        { id: 'cmt_inner1', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'inner1Body' },
+        { id: 'cmt_inner2', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'inner2Body' },
+      ]);
+      const { regions, diagnostics } = extractRegions(project);
+      // Only the first candidate is adopted; the second is dropped
+      // because the kernel container is already in use.
+      expect(regions).toHaveLength(1);
+      expect(regions[0]?.kernelContainerBlockId).toBe('kc');
+      expect(regions[0]?.regionId).toBe('region:sprite1:kc:0');
+      const kcDiag = diagnostics.find(
+        (d) =>
+          d.severity === 'warn' &&
+          d.code === 'gpu.kernel_container_collision',
+      );
+      expect(kcDiag).toBeDefined();
+      // The diagnostic's regionId points at the surviving region's
+      // id so the region-verdict pipeline can fold it into
+      // RegionVerdict.diagnostics without an extra lookup pass.
+      expect(kcDiag?.regionId).toBe('region:sprite1:kc:0');
+      expect(kcDiag?.blockId).toBe('kc');
+      // No MULTIPLE_COMPUTE_REGIONS — Phase 3 only emits that when the
+      // same block id carries duplicate markers.
+      const dupDiag = diagnostics.find(
+        (d) => d.code === 'gpu.multiple_compute_regions',
+      );
+      expect(dupDiag).toBeUndefined();
+    });
+
+    it("§Phase 3 — different kernel containers, even with nested @compute, do not collide", () => {
+      // Sanity: two nested candidates whose findKernelContainer
+      // results differ (= Phase 0 promotion lands on different
+      // ancestors) both survive. We hand-build a layout where one
+      // candidate's ancestor is kcA and the other's is kcB (top-level
+      // siblings) — the adopt loop should treat them as independent
+      // regions.
+      const a = mkBlock('a', 'data_setvariableto');
+      const b = mkBlock('b', 'data_setvariableto');
+      const innerA = mkBlock('innerA', 'control_repeat', {
+        parent: 'kcA',
+        inputs: { SUBSTACK: 'a' },
+      });
+      const kcA = mkBlock('kcA', 'control_repeat', {
+        inputs: { SUBSTACK: 'innerA' },
+      });
+      const innerB = mkBlock('innerB', 'control_repeat', {
+        parent: 'kcB',
+        inputs: { SUBSTACK: 'b' },
+      });
+      const kcB = mkBlock('kcB', 'control_repeat', {
+        inputs: { SUBSTACK: 'innerB' },
+      });
+      const project = mkProject([kcA, kcB, innerA, innerB, a, b], [
+        { id: 'cmt_a', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'a' },
+        { id: 'cmt_b', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'b' },
+      ]);
+      const { regions, diagnostics } = extractRegions(project);
+      expect(regions).toHaveLength(2);
+      expect(regions.map((r) => r.kernelContainerBlockId).sort()).toEqual(['kcA', 'kcB']);
+      expect(diagnostics).toEqual([]);
     });
   });
 });

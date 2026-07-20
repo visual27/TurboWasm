@@ -75,8 +75,11 @@ export {
   GPU_BUFFER_USAGE_COPY_SRC,
   GPU_BUFFER_USAGE_STORAGE,
   ListBufferPool,
+  attachBudgetWriters,
+  ensureBuffer,
 } from './list-buffer-binding';
 export type {
+  BindingRegionMetadata,
   GpuLikeBuffer,
   GpuLikeDevice,
   GpuLikeQueue,

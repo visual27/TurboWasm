@@ -17,7 +17,6 @@ function skeletonRegion(): ExtractedRegion {
     bodyBlockIds: ['a'],
     kernelContainerBlockId: 'r0',
     nestedRepeatContainerBlockIds: [],
-    duplicateComputeBlockIds: [],
     regionIndex: 0,
     inlinedPrototypeBlockIds: [],
     commentAnchorBlockId: 'a',

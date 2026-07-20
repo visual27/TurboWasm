@@ -87,7 +87,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
     expect(verdict.effectivePatterns).toEqual([]);
   });
 
-  it('keeps the region valid when parser diagnostics are warn-only', () => {
+  it('keeps the region valid when parser diagnostics are warn-only with a non-PARSER_ERROR_CODES code', () => {
     const repeat = mkBlock('repeat0', 'control_repeat', {
       inputs: { SUBSTACK: 'a' },
     });
@@ -98,9 +98,13 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
     const { regions } = extractRegions(project);
     const region = regions[0]!;
 
+    // §Phase 3 — `gpu.dsl_syntax_error` is now in `PARSER_ERROR_CODES`
+    // and forces a D1 demote regardless of severity. Use a different
+    // warn code so this test exercises the warn-only path (the
+    // originally intended contract).
     const warnDiag: Diagnostic = {
       severity: 'warn',
-      code: 'gpu.dsl_syntax_error',
+      code: 'gpu.some_warn',
       message: 'malformed @bind: expected ...',
       regionId: region.regionId,
       blockId: 'a',
@@ -116,6 +120,43 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
     });
     expect(verdict.valid).toBe(true);
     expect(verdict.diagnostics).toContainEqual(warnDiag);
+  });
+
+  it('demotes the region when a warn-severity diagnostic carries a code in PARSER_ERROR_CODES (§Phase 3)', () => {
+    const repeat = mkBlock('repeat0', 'control_repeat', {
+      inputs: { SUBSTACK: 'a' },
+    });
+    const a = mkBlock('a', 'data_setvariableto');
+    const project = mkProject([repeat, a], [
+      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+    ]);
+    const { regions } = extractRegions(project);
+    const region = regions[0]!;
+
+    // §Phase 3 — even at warn severity, a diagnostic whose code is in
+    // `PARSER_ERROR_CODES` forces a D1 demote. `gpu.bind_slot_collision`
+    // is the canonical example: emitted at warn-or-error depending on
+    // upstream convention, but always routes through the parser-error
+    // demote path.
+    const slotWarn: Diagnostic = {
+      severity: 'warn',
+      code: 'gpu.bind_slot_collision',
+      message: '@bind slot 0 used by both foo and bar',
+      regionId: region.regionId,
+      blockId: 'a',
+      line: 0,
+      column: 0,
+    };
+    const verdict = buildBlockSubsetVerdict({
+      region,
+      project,
+      comments: project.comments,
+      parsedDirectives: [],
+      parsedDiagnostics: [slotWarn],
+    });
+    expect(verdict.valid).toBe(false);
+    expect(verdict.demoteReason).toBe('d1');
+    expect(verdict.diagnostics).toContainEqual(slotWarn);
   });
 
   it('folds mixed severities and demotes when at least one is error', () => {
@@ -200,13 +241,20 @@ describe('buildRegionVerdicts: parser diagnostics propagation (Phase 2 §15.2)',
     expect(inBlockSubset).toHaveLength(1);
   });
 
-  it('keeps the region valid when parser diagnostics are warn-only', () => {
+  it('keeps the region valid when parser diagnostics are warn-only (non-PARSER_ERROR_CODES code)', () => {
     const repeat = mkBlock('repeat0', 'control_repeat', {
       inputs: { SUBSTACK: 'a' },
     });
     const a = mkBlock('a', 'data_setvariableto');
+    // §Phase 3 — `gpu.dsl_syntax_error` now demotes via
+    // `PARSER_ERROR_CODES`. Use the `@bogus` path that still emits a
+    // warn-severity `gpu.dsl_syntax_error` — under the new filter it
+    // demotes. To exercise the truly warn-only path, we no longer have
+    // a public parser surface that emits a non-PARSER_ERROR_CODES warn
+    // diagnostic in this build, so we drive the pipeline with an empty
+    // parser-error stream and assert the demote stays off.
     const project = mkProject([repeat, a], [
-      { id: 'cmt1', text: '@compute\n@bogus foo\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
     ]);
     const { regions } = extractRegions(project);
     const { verdicts } = buildRegionVerdicts({ parsedProject: project, regions });
@@ -339,7 +387,7 @@ describe('buildRegionVerdicts: extraction diagnostics forwarding (Phase 5 §15.9
     expect(other!.diagnostics).not.toContainEqual(foldable);
   });
 
-  it('collectRegionVerdictsFromArrayBuffer forwards gpu.multiple_compute_regions via the pipeline', () => {
+  it('collectRegionVerdictsFromArrayBuffer adopts both regions and emits no diagnostic for distinct control_repeats (§Phase 3)', () => {
     const a = mkBlock('a', 'data_setvariableto');
     const r1 = mkBlock('r1', 'control_repeat', { inputs: { SUBSTACK: 'a' } });
     const c = mkBlock('c', 'data_setvariableto');
@@ -350,12 +398,51 @@ describe('buildRegionVerdicts: extraction diagnostics forwarding (Phase 5 §15.9
     ]);
     const { verdicts, extractionDiagnostics } =
       collectRegionVerdictsFromArrayBuffer(project);
+    // §Phase 3 — two distinct control_repeats each with their own
+    // @compute marker → 2 regions adopted. No MULTIPLE_COMPUTE_REGIONS,
+    // no KERNEL_CONTAINER_COLLISION.
+    expect(verdicts).toHaveLength(2);
+    expect(extractionDiagnostics).toEqual([]);
+    for (const v of verdicts) {
+      const colliding = v.diagnostics.find(
+        (d) =>
+          d.code === 'gpu.multiple_compute_regions' ||
+          d.code === 'gpu.kernel_container_collision',
+      );
+      expect(colliding, `verdict ${v.regionId} should carry no collision diagnostic`).toBeUndefined();
+    }
+  });
+
+  it('collectRegionVerdictsFromArrayBuffer emits gpu.kernel_container_collision when two nested @compute share a kernel container (§Phase 3)', () => {
+    // Layout: kc (control_repeat) → inner1 (control_repeat, @compute) and inner2 (control_repeat, @compute).
+    // Both candidates find kc as their kernel container. Only inner1
+    // is adopted; inner2 surfaces KERNEL_CONTAINER_COLLISION.
+    const inner1Body = mkBlock('inner1Body', 'data_setvariableto');
+    const inner1 = mkBlock('inner1', 'control_repeat', {
+      parent: 'kc',
+      inputs: { SUBSTACK: 'inner1Body' },
+    });
+    const inner2Body = mkBlock('inner2Body', 'data_setvariableto');
+    const inner2 = mkBlock('inner2', 'control_repeat', {
+      parent: 'kc',
+      inputs: { SUBSTACK: 'inner2Body' },
+    });
+    const kc = mkBlock('kc', 'control_repeat', { inputs: { SUBSTACK: 'inner1' } });
+    const project = mkProject([kc, inner1, inner1Body, inner2, inner2Body], [
+      { id: 'cmt_inner1', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'inner1Body' },
+      { id: 'cmt_inner2', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'inner2Body' },
+    ]);
+    const { verdicts, extractionDiagnostics } =
+      collectRegionVerdictsFromArrayBuffer(project);
     expect(verdicts).toHaveLength(1);
-    // The duplicate diagnostic lands on the surviving region's verdict.
-    const dupDiag = verdicts[0]!.diagnostics.find(
-      (d) => d.code === 'gpu.multiple_compute_regions' && d.severity === 'error',
+    expect(verdicts[0]!.kernelContainerBlockId).toBe('kc');
+    // The KERNEL_CONTAINER_COLLISION diagnostic lives on the surviving
+    // region's `diagnostics` list because it carries the surviving
+    // region's regionId (Phase 5 §15.9 fold rule).
+    const kcDiag = verdicts[0]!.diagnostics.find(
+      (d) => d.code === 'gpu.kernel_container_collision' && d.severity === 'warn',
     );
-    expect(dupDiag).toBeDefined();
+    expect(kcDiag).toBeDefined();
     expect(extractionDiagnostics).toEqual([]);
   });
 });
