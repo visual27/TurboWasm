@@ -508,6 +508,79 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
     expect(result.wgsl).not.toMatch(/@group\(0\)\s+@binding\(/);
   });
 
+  describe('§Phase 4 (15.7) — explicit 16-byte stride padding in ScratchUniforms', () => {
+    /**
+     * §Phase 4 (15.7) — every scalar field is followed by an explicit
+     * `pad: vec3<u32>` placeholder so the WGSL struct's byte offsets
+     * line up with the host pack layout
+     * (`SCALAR_UNIFORM_HEADER_BYTES` + `SCALAR_UNIFORM_FIELD_STRIDE_BYTES`
+     * per field). Without the explicit padding, WGSL would pack
+     * adjacent 4-byte fields to 4-byte offsets and leave the runtime
+     * reading struct field values at the wrong offsets.
+     */
+    it('emits pad: vec3<u32> after every scalar field', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind buff_r(0) rw f32',
+          '@bind aabb_idx0(1) ro i32, scalar',
+          '@workgroup_size(64)',
+          '@repeat R0:global_x = 64',
+          '@map R0 <- 0',
+        ].join('\n'),
+        ['R0'],
+      );
+      const result = emitRegion(input);
+      // The struct should contain `aabb_idx0: i32` followed by a
+      // padding field. The exact name (`__tw_pad_<N>`) is implementation-
+      // defined; we check the structural shape (`vec3<u32>`).
+      expect(result.wgsl).toMatch(/aabb_idx0: i32,\s*\n\s*\w+_pad_\d+: vec3<u32>,/);
+    });
+
+    it('emits pad: vec3<u32> after every list length field', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind buff_r(0) rw f32',
+          '@bind aabb_w(1) ro f32',
+          '@workgroup_size(64)',
+          '@repeat R0:global_x = 64',
+          '@map R0 <- 0',
+        ].join('\n'),
+        ['R0'],
+      );
+      const result = emitRegion(input);
+      // Each list binding's `_length` field is followed by a `vec3<u32>` pad.
+      const lengthPadMatches = result.wgsl.match(
+        /\w+_length: u32,\s*\n\s*\w+_pad_\d+: vec3<u32>,/g,
+      );
+      expect(lengthPadMatches?.length).toBeGreaterThanOrEqual(2);
+    });
+
+    /**
+     * §Phase 4 (15.7) — `byte, scalar` emits as WGSL `i32` (host ABI
+     * keeps scalar-as-`i32` mapping). The padding still follows the
+     * 4-byte scalar value.
+     */
+    it('emits byte, scalar as i32 with vec3<u32> padding', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind byte_state(0) ro byte, scalar',
+          '@workgroup_size(64)',
+          '@repeat R0:global_x = 64',
+          '@map R0 <- 0',
+        ].join('\n'),
+        ['R0'],
+      );
+      const result = emitRegion(input);
+      expect(result.wgsl).toMatch(/byte_state: i32,\s*\n\s*\w+_pad_\d+: vec3<u32>,/);
+      // It must NOT be `byte_state: f32` (which would be the dtype for
+      // unquoted `f32`).
+      expect(result.wgsl).not.toMatch(/byte_state: f32/);
+    });
+  });
+
   describe('§Phase E+ — quoted names + formula sugar', () => {
     it('rewrites name[idx] subscript to scratch_list_read_f32 in emitted WGSL', () => {
       const { input } = makeVerdict(

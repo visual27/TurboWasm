@@ -34,9 +34,10 @@ import type { Kernel, KernelRegistry } from './kernel-registry';
 import {
   packScalarUniformBuffer,
   scalarUniformBufferSize,
+  type ListLengthBinding,
   type ScalarUniformBinding,
 } from './scalar-uniform-binding';
-import type { BindDirective, RegionVerdict } from './types';
+import type { RegionVerdict } from './types';
 
 /**
  * Structured dispatch plan (source of truth: `wgsl-emitter.ts:DispatchPlan`).
@@ -183,20 +184,20 @@ export interface DispatchContext {
   /** The verdict driving this dispatch (for diagnostics + binding lookup). */
   regionVerdict: RegionVerdict;
   /**
-   * Pre-resolved dispatch dims (x, y, z). When `dispatchPlan` is also
-   * provided AND `scalarBindings` is non-empty, the runtime evaluates
-   * the WGSL expression strings into numbers per dispatch (since
-   * scalar values like `aabb_idx0` change between iterations of the
-   * outer scratch loop). When `dispatchPlan` is omitted, `dims` is
-   * used as-is.
+   * Pre-resolved dispatch dims (x, y, z). Used as a fallback when
+   * `dispatchPlan` is absent (= the pre-Phase-3 contract). §Phase 4
+   * (15.5) no longer treats this as the primary dispatch size —
+   * `resolveDispatchDims` always evaluates `dispatchPlan` against
+   * the live host state when one is attached.
    */
   dims: { x: number; y: number; z: number };
   /**
    * §Phase 3 — WGSL expression dispatch plan from
-   * `wgsl-emitter.ts:computeDispatchPlan`. When present and
-   * `scalarBindings` is non-empty, the dispatcher reduces each axis
-   * expression to a number against the live host state on every
-   * dispatch.
+   * `wgsl-emitter.ts:computeDispatchPlan`. §Phase 4 (15.5) — when
+   * present, the dispatcher ALWAYS reduces each axis expression to
+   * a number against the live host state on every dispatch
+   * (regardless of whether scalar bindings are attached). When
+   * omitted, `dims` is used as-is.
    */
   dispatchPlan?: { x: DispatchExtentExpression; y: DispatchExtentExpression; z: DispatchExtentExpression };
   /**
@@ -214,6 +215,16 @@ export interface DispatchContext {
    *     scalar snapshot.
    */
   scalarBindings?: readonly ScalarUniformBinding[];
+  /**
+   * §Phase 4 (15.7/15.8) — list length slots for the
+   * `@group(1) @binding(0)` uniform buffer. These mirror the WGSL
+   * struct's `<list>_length` fields and are packed into the same
+   * buffer as the scalar fields (16-byte stride). When non-empty
+   * (regardless of `scalarBindings.length`), the dispatcher allocates
+   * the uniform buffer and binds group 1 so the WGSL body can read
+   * `u_scratch.<list>_length`.
+   */
+  listLengthBindings?: readonly ListLengthBinding[];
   /** Pipeline cache keyed by `canonicalKey`. */
   pipelines: Map<string, GPipeline>;
   /** Host-side runtime adapter. */
@@ -264,17 +275,19 @@ export async function dispatchKernel(
     if (!buildResult.ok) return demoteKernel(kernel, buildResult.message);
     const { pipeline } = buildResult;
 
-    // Build / refresh bind groups for any bindings whose GPUBuffer
-    // reference changed since last dispatch.
-    const binds = kernel.regionVerdict.directives.filter(
-      (d): d is BindDirective => d.kind === 'bind',
-    );
-    const bindings = binds.map((b) => ctx.pool.get(b.name)).filter((b) => !!b) as Array<{
-      gpuBuffer: unknown;
-    }>;
+    // §Phase 4 (15.6) — group-0 bind group uses `kernel.listBindings`
+    // (= `@bind` directives whose `storageKind !== 'scalar'`). Scalar
+    // bindings live on `@group(1) @binding(0)` and must NOT appear in
+    // group-0 entries. The pre-extracted list is computed at
+    // `register()` time so this hot loop does not re-filter on every
+    // dispatch.
+    const listBindings = kernel.listBindings;
+    const bindings = listBindings
+      .map((b) => ctx.pool.get(b.name))
+      .filter((b) => !!b) as Array<{ gpuBuffer: unknown }>;
     const bufRefs = bindings.map((b) => b.gpuBuffer);
     const staleRefs = !pipeline.bindingBuffers.every((old, i) => old === bufRefs[i]);
-    if (staleRefs || pipeline.bindGroups.size === 0) {
+    if (staleRefs || !pipeline.bindGroups.has(0)) {
       pipeline.bindingBuffers = bufRefs;
       if (ctx.device.createBindGroup) {
         const layout =
@@ -283,7 +296,7 @@ export async function dispatchKernel(
           0,
           ctx.device.createBindGroup({
             layout,
-            entries: binds.map((b, i) => ({
+            entries: listBindings.map((b, i) => ({
               binding: b.slot,
               resource: { buffer: bindings[i]?.gpuBuffer ?? null },
             })),
@@ -292,30 +305,50 @@ export async function dispatchKernel(
       }
     }
 
-    // §Phase 3 — refresh scalar uniform values before this dispatch
-    // and build (lazily, on first dispatch) the `@group(1)` bind group
+    // §Phase 3 (with §Phase 4 15.7/15.8 extensions) — refresh scalar
+    // uniform values + list length values before this dispatch and
+    // build (lazily, on first dispatch) the `@group(1)` bind group
     // that hosts the `ScratchUniforms` struct. The runtime adapter's
-    // `readScalar` is queried per dispatch so dynamic scalars
-    // (`aabb_idx0` mutated by an outer scratch loop) see the latest
-    // host value.
+    // `readScalar` / `listLength` are queried per dispatch so dynamic
+    // scalars (`aabb_idx0` mutated by an outer scratch loop) and
+    // list lengths (growing lists) see the latest host value.
+    //
+    // §Phase 4 (15.8) — the uniform buffer is also created for
+    // list-only kernels (= `scalarBindings.length === 0` but
+    // `listBindings.length > 0`) so the WGSL body can read
+    // `u_scratch.<list>_length` from `@group(1) @binding(0)`.
     const scalarBindings = ctx.scalarBindings ?? [];
-    if (scalarBindings.length > 0) {
+    const listLengthBindings = ctx.listLengthBindings ?? [];
+    const needsUniformBuffer =
+      scalarBindings.length > 0 || listLengthBindings.length > 0;
+    if (needsUniformBuffer) {
       const scalarValues = readScalarValues(scalarBindings, ctx);
-      ensureUniformBuffer(pipeline, scalarBindings, ctx);
-      writeScalarUniformBuffer(pipeline, scalarBindings, scalarValues, ctx);
+      const lengthValues = readListLengthValues(listLengthBindings, ctx);
+      ensureUniformBuffer(pipeline, scalarBindings, listLengthBindings, ctx);
+      writeScalarUniformBuffer(
+        pipeline,
+        scalarBindings,
+        scalarValues,
+        listLengthBindings,
+        lengthValues,
+        ctx,
+      );
       ensureUniformBindGroup(pipeline, ctx);
     }
 
-    // §Phase 3 — resolve dispatch dims from the WGSL expression plan
-    // when scalarBindings are present (so `aabb_idx0` reflects the
-    // latest host value); otherwise use the precomputed `ctx.dims`.
-    const dims = resolveDispatchDims(kernel, ctx, scalarBindings);
+    // §Phase 4 (15.5) — always evaluate the WGSL expression dispatch
+    // plan (scalar bindings no longer gate evaluation). `ctx.dims`
+    // remains the fallback when no `dispatchPlan` is attached (= the
+    // pre-Phase-3 contract is preserved).
+    const dims = resolveDispatchDims(ctx);
 
     const encoder = ctx.device.createCommandEncoder();
     const pass = encoder.beginComputePass();
     pass.setPipeline(pipeline.pipeline);
     pass.setBindGroup(0, pipeline.bindGroups.get(0) ?? null);
-    if (scalarBindings.length > 0) {
+    // §Phase 4 (15.8) — set group 1 whenever the kernel needs the
+    // uniform buffer (scalar + list-only paths).
+    if (needsUniformBuffer) {
       pass.setBindGroup(1, pipeline.bindGroups.get(1) ?? null);
     }
     pass.dispatchWorkgroups(
@@ -409,23 +442,23 @@ function demoteKernel(
 }
 
 /**
- * Pre-dispatch host-side work: ensure every `@bind` directive has a
- * pool binding sized to the current host list length, then sync the
- * host data in. Errors here (e.g. unknown list name) demote the
- * kernel rather than throwing into the VM.
+ * Pre-dispatch host-side work: ensure every list binding has a pool
+ * binding sized to the current host list length, then sync the host
+ * data in. Scalar bindings are NOT synced here — they go through
+ * `runtime.readScalar` in `dispatchKernel` after `ensurePipeline`
+ * succeeds (so dynamic scalars reflect the latest host state at the
+ * actual dispatch boundary).
  *
- * §Phase 3 — also allocates (lazily, on first dispatch) the
- * `@group(1) @binding(0)` uniform buffer when scalarBindings are
- * present. Scalar values themselves are refreshed inside
- * `dispatchKernel` (after `ensurePipeline` succeeded) so dynamic
- * scalars reflect the latest host state at the actual dispatch
- * boundary.
+ * §Phase 4 (15.6) — `kernel.listBindings` (= `@bind` with
+ * `storageKind !== 'scalar'`) is the iteration source. Scalar
+ * bindings are skipped because they don't have a `@group(0)` storage
+ * buffer to sync.
+ *
+ * Errors here (e.g. unknown list name) demote the kernel rather than
+ * throwing into the VM.
  */
 async function preDispatch(kernel: Kernel, ctx: DispatchContext): Promise<void> {
-  const binds = kernel.regionVerdict.directives.filter(
-    (d): d is BindDirective => d.kind === 'bind',
-  );
-  for (const bind of binds) {
+  for (const bind of kernel.listBindings) {
     let binding = ctx.pool.get(bind.name);
     if (!binding) binding = ctx.pool.bind(bind);
     const hostLen = ctx.runtime.listLength(bind.name);
@@ -438,21 +471,21 @@ async function preDispatch(kernel: Kernel, ctx: DispatchContext): Promise<void> 
 }
 
 /**
- * Post-dispatch readback: copy every `rw` binding's GPU buffer back
- * into the host list. Real WebGPU uses `copyBufferToBuffer` + a
+ * Post-dispatch readback: copy every `rw` list binding's GPU buffer
+ * back into the host list. Real WebGPU uses `copyBufferToBuffer` + a
  * staging `MAP_READ` buffer + `mapAsync`. Tests with a mock device
  * rely on `syncToHost` returning the host mirror without an actual
  * readback.
+ *
+ * §Phase 4 (15.6) — only list bindings are read back; scalar bindings
+ * are not storage buffers and don't need GPU→host sync.
  */
 async function postDispatch(
   kernel: Kernel,
   ctx: DispatchContext,
   encoder: GpuLikeCommandEncoder,
 ): Promise<void> {
-  const binds = kernel.regionVerdict.directives.filter(
-    (d): d is BindDirective => d.kind === 'bind',
-  );
-  for (const bind of binds) {
+  for (const bind of kernel.listBindings) {
     if (bind.readOnly) continue;
     const binding = ctx.pool.get(bind.name);
     if (!binding) continue;
@@ -582,18 +615,44 @@ function readScalarValues(
 }
 
 /**
+ * §Phase 4 (15.7/15.8) — snapshot live list length values for the
+ * uniform buffer. Missing names (= runtime adapter returned non-finite
+ * values) fall back to 0, matching the safe `packScalarUniformBuffer`
+ * contract. The packed `Uint32` form (`Math.floor` + `>>> 0`) is
+ * applied in the pack helper itself.
+ */
+function readListLengthValues(
+  bindings: readonly ListLengthBinding[],
+  ctx: DispatchContext,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const b of bindings) {
+    const raw = ctx.runtime.listLength(b.name);
+    const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
+    out.set(b.name, value);
+  }
+  return out;
+}
+
+/**
  * Lazily allocate the `@group(1) @binding(0)` uniform buffer on the
  * pipeline. Called once per kernel (= once per `canonicalKey`) before
- * the first dispatch that needs scalars.
+ * the first dispatch that needs the uniform buffer.
+ *
+ * §Phase 4 (15.8) — the buffer is sized to hold both scalar fields
+ * and list length fields when either is non-empty. Scalar-only and
+ * list-only kernels both trigger this path (= `scalarBindings.length
+ * > 0 || listLengthBindings.length > 0`).
  */
 function ensureUniformBuffer(
   pipeline: GPipeline,
-  bindings: readonly ScalarUniformBinding[],
+  scalarBindings: readonly ScalarUniformBinding[],
+  listLengthBindings: readonly ListLengthBinding[],
   ctx: DispatchContext,
 ): void {
   if (pipeline.uniformBuffer) return;
   if (!ctx.device || typeof ctx.device.createBuffer !== 'function') return;
-  const size = scalarUniformBufferSize(bindings);
+  const size = scalarUniformBufferSize(scalarBindings, listLengthBindings);
   pipeline.uniformBuffer = ctx.device.createBuffer({
     size,
     // UNIFORM (0x0040) | COPY_DST (0x0008). Mirrors the
@@ -604,19 +663,30 @@ function ensureUniformBuffer(
 }
 
 /**
- * Push the current scalar values into the uniform buffer via
- * `queue.writeBuffer`. Called on every dispatch so dynamic scalars
- * see the latest host value.
+ * Push the current scalar + list length values into the uniform
+ * buffer via `queue.writeBuffer`. Called on every dispatch so dynamic
+ * scalars + growing lists see the latest host value.
+ *
+ * §Phase 4 (15.7) — list length values are appended after the scalar
+ * fields with the same 16-byte stride, matching the WGSL struct's
+ * `pad: vec3<u32>` padding layout.
  */
 function writeScalarUniformBuffer(
   pipeline: GPipeline,
-  bindings: readonly ScalarUniformBinding[],
-  values: ReadonlyMap<string, number>,
+  scalarBindings: readonly ScalarUniformBinding[],
+  scalarValues: ReadonlyMap<string, number>,
+  listLengthBindings: readonly ListLengthBinding[],
+  lengthValues: ReadonlyMap<string, number>,
   ctx: DispatchContext,
 ): void {
   if (!pipeline.uniformBuffer) return;
   if (!ctx.device || typeof ctx.device.queue.writeBuffer !== 'function') return;
-  const buffer = packScalarUniformBuffer(bindings, values);
+  const buffer = packScalarUniformBuffer(
+    scalarBindings,
+    scalarValues,
+    listLengthBindings,
+    lengthValues,
+  );
   // `pipeline.uniformBuffer` is structurally typed as `unknown` (set from
   // a device-specific `createBuffer`). Cast through `unknown` to satisfy
   // the concrete `GpuLikeBuffer` signature of `writeBuffer` — the runtime
@@ -633,8 +703,8 @@ function writeScalarUniformBuffer(
 /**
  * Lazily build the `@group(1)` bind group that points at the uniform
  * buffer. Mirrors the group-0 cache-invalidation logic in
- * `dispatchKernel` but always reuses the same buffer (the scalar
- * values are refreshed in place via `writeBuffer`).
+ * `dispatchKernel` but always reuses the same buffer (the scalar /
+ * length values are refreshed in place via `writeBuffer`).
  */
 function ensureUniformBindGroup(pipeline: GPipeline, ctx: DispatchContext): void {
   if (!pipeline.uniformBuffer) return;
@@ -651,19 +721,26 @@ function ensureUniformBindGroup(pipeline: GPipeline, ctx: DispatchContext): void
 }
 
 /**
- * Resolve dispatch dims (x, y, z) from the WGSL expression plan when
- * scalar bindings are present (so dynamic scalars are read live on
- * every dispatch). When scalarBindings is empty, falls back to the
- * precomputed `ctx.dims` so existing callers that only know numeric
- * extents continue to work unchanged.
+ * §Phase 4 (15.5) — resolve dispatch dims (x, y, z) by evaluating the
+ * WGSL expression `dispatchPlan` against the live host state on every
+ * dispatch. The pre-Phase-4 short-circuit (`scalarBindings.length ===
+ * 0`) is removed so list-only kernels also see runtime list length
+ * fluctuations (= `ceil(N / 64)` reflects the current scratch list
+ * size).
+ *
+ * When `dispatchPlan` is absent (= the pre-Phase-3 contract),
+ * `ctx.dims` is returned unchanged so existing callers continue to
+ * work.
+ *
+ * Scalar values are read fresh per dispatch so dynamic scalars
+ * (`aabb_idx0` mutated by an outer scratch loop) reflect the latest
+ * host value; the same values feed `packScalarUniformBuffer` so the
+ * uniform buffer is consistent with the dispatch dimensions.
  */
-function resolveDispatchDims(
-  _kernel: Kernel,
-  ctx: DispatchContext,
-  scalarBindings: readonly ScalarUniformBinding[],
-): { x: number; y: number; z: number } {
+function resolveDispatchDims(ctx: DispatchContext): { x: number; y: number; z: number } {
   const plan = ctx.dispatchPlan;
-  if (!plan || scalarBindings.length === 0) return ctx.dims;
+  if (!plan) return ctx.dims;
+  const scalarBindings = ctx.scalarBindings ?? [];
   const values = readScalarValues(scalarBindings, ctx);
   const evalCtx: DispatchFormulaContext = {
     scalarBindings,

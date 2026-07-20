@@ -24,6 +24,23 @@ function makeBind(name: string, slot: number, readOnly: boolean): BindDirective 
   };
 }
 
+function makeScalarBind(
+  name: string,
+  slot: number,
+  opts: { dtype?: 'f32' | 'i32' | 'byte' } = {},
+): BindDirective {
+  return {
+    kind: 'bind',
+    name,
+    slot,
+    readOnly: true,
+    storageKind: 'scalar',
+    dtype: opts.dtype ?? 'f32',
+    line: 0,
+    column: 0,
+  };
+}
+
 function makeVerdict(blockId: string, binds: BindDirective[]): RegionVerdict {
   return {
     regionId: `region:sprite:${blockId}`,
@@ -716,5 +733,371 @@ describe('§Phase 3 — scalar uniform path', () => {
     expect(r2.ok).toBe(true);
     // 2 回目の方が readScalar の呼び出し回数が増えている (= refresh されている)
     expect(readScalarCount).toBeGreaterThan(afterFirstDispatch);
+  });
+});
+
+describe('§Phase 4 (15.6/15.7/15.8) — list/scalar split in bind groups', () => {
+  /**
+   * §Phase 4 (15.6) — group-0 bind group entries must contain only list
+   * bindings. Scalar bindings live on `@group(1) @binding(0)` and must
+   * never appear in group-0 entries. We verify by intercepting
+   * `createBindGroup` calls and inspecting the `entries` shape.
+   */
+  it('group-0 bind group does not include scalar bindings (15.6)', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+
+    // One list binding + one scalar binding on the same kernel. Without
+    // the §Phase 4 split, the scalar binding would slip into group-0.
+    const listBind = makeBind('buff_r', 0, false);
+    const scalarBind = makeScalarBind('aabb_idx0', 4);
+    const verdict = makeVerdict('b1', [listBind, scalarBind]);
+    registry.register(verdict, 'wgsl');
+
+    // Capture every `createBindGroup` call's `entries` field, tagged by
+    // the bind-group layout (`'auto'` → can't tell, but our mock
+    // returns a single `'auto'` layout for both groups).
+    const seenEntries: Array<Array<{ binding: number; resource: { buffer: unknown } }>> = [];
+    const originalCreateBindGroup = device.createBindGroup;
+    (device as unknown as { createBindGroup: typeof device.createBindGroup }).createBindGroup = (
+      desc,
+    ) => {
+      seenEntries.push(desc.entries);
+      const result = originalCreateBindGroup?.(desc);
+      return result;
+    };
+
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 1, y: 1, z: 1 },
+      dispatchPlan: { x: '1', y: '1', z: '1' },
+      scalarBindings: [{ name: 'aabb_idx0', wgslName: 'aabb_idx0', dtype: 'i32' }],
+      listLengthBindings: [{ name: 'buff_r', wgslName: 'buff_r_length' }],
+      pipelines: new Map(),
+      runtime: makeMockRuntime(),
+    };
+
+    const result = await dispatchKernel(verdict.regionId, ctx);
+    expect(result.ok).toBe(true);
+
+    // Two bind groups: one for group 0 (storage), one for group 1
+    // (uniform). The group-0 entry must reference ONLY the list
+    // binding's slot. The group-1 entry must reference slot 0 of the
+    // uniform buffer.
+    expect(seenEntries).toHaveLength(2);
+    expect(seenEntries[0]).toEqual([
+      { binding: 0, resource: { buffer: expect.anything() } },
+    ]);
+    expect(seenEntries[1]).toEqual([
+      { binding: 0, resource: { buffer: expect.anything() } },
+    ]);
+    // The list binding's slot is 0 — group-0 entries[0].binding === 0.
+    // If a scalar binding had slipped in, we'd see a second entry with
+    // binding: 4 (= scalar's slot).
+    expect(seenEntries[0]?.length).toBe(1);
+  });
+
+  /**
+   * §Phase 4 (15.8) — list-only kernels (= no scalar bindings, but
+   * list bindings present) must still bind `@group(1)` so the WGSL
+   * body can read `<list>_length`. Without this fix the WGSL struct
+   * field would exist but the uniform buffer would be unallocated,
+   * reading garbage at runtime.
+   */
+  it('list-only kernel binds group 1 with list length values (15.8)', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+
+    // List-only: scalar bindings absent. Without §Phase 4 (15.8), the
+    // dispatcher would skip the uniform buffer allocation AND skip
+    // `setBindGroup(1, ...)`, leaving `u_scratch.<list>_length`
+    // unreadable in the WGSL body.
+    const listBind = makeBind('buff_r', 0, true);
+    const verdict = makeVerdict('b1', [listBind]);
+    registry.register(verdict, 'wgsl');
+
+    const seenBindGroups = new Set<number>();
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 1, y: 1, z: 1 },
+      // No scalarBindings.
+      listLengthBindings: [{ name: 'buff_r', wgslName: 'buff_r_length' }],
+      pipelines: new Map(),
+      runtime: {
+        ...makeMockRuntime(),
+        listLength: () => 42,
+      },
+    };
+
+    // Capture which bind group indices get set on the compute pass.
+    (
+      device as unknown as {
+        createCommandEncoder: () => {
+          beginComputePass: () => {
+            setPipeline: (p: unknown) => void;
+            setBindGroup: (i: number, g: unknown) => void;
+            dispatchWorkgroups: (x: number, y: number, z: number) => void;
+            end: () => void;
+          };
+          finish: () => unknown;
+          copyBufferToBuffer: () => void;
+        };
+      }
+    ).createCommandEncoder = () => ({
+      beginComputePass: () => ({
+        setPipeline: () => undefined,
+        setBindGroup: (i: number, _g: unknown) => {
+          seenBindGroups.add(i);
+        },
+        dispatchWorkgroups: () => undefined,
+        end: () => undefined,
+      }),
+      finish: () => ({}),
+      copyBufferToBuffer: () => undefined,
+    });
+
+    const result = await dispatchKernel(verdict.regionId, ctx);
+    expect(result.ok).toBe(true);
+    // group 1 must be bound even when no scalar bindings exist.
+    expect(seenBindGroups.has(1)).toBe(true);
+    expect(seenBindGroups.has(0)).toBe(true);
+  });
+
+  /**
+   * §Phase 4 (15.5) — the WGSL expression dispatch plan must be
+   * evaluated even when scalar bindings are absent (= list-only
+   * kernel). `ctx.dims` is the fallback only, not the primary
+   * dispatch size. Without this fix, a list-only kernel with a
+   * non-trivial dispatchPlan would dispatch `(1, 1, 1)` regardless
+   * of the runtime list length.
+   */
+  it('evaluates dispatchPlan even when scalarBindings is empty (15.5)', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+
+    const listBind = makeBind('buff_r', 0, true);
+    const verdict = makeVerdict('b1', [listBind]);
+    registry.register(verdict, 'wgsl');
+    const kernel = registry.lookupById(verdict.regionId)!;
+    kernel.dispatchPlan = {
+      x: 'ceil(len(buff_r) / 64)',
+      y: '1',
+      z: '1',
+    };
+
+    const seenDims: Array<{ x: number; y: number; z: number }> = [];
+    (
+      device as unknown as {
+        createCommandEncoder: () => {
+          beginComputePass: () => {
+            setPipeline: (p: unknown) => void;
+            setBindGroup: (i: number, g: unknown) => void;
+            dispatchWorkgroups: (x: number, y: number, z: number) => void;
+            end: () => void;
+          };
+          finish: () => unknown;
+          copyBufferToBuffer: () => void;
+        };
+      }
+    ).createCommandEncoder = () => ({
+      beginComputePass: () => ({
+        setPipeline: () => undefined,
+        setBindGroup: () => undefined,
+        dispatchWorkgroups: (x, y, z) => {
+          seenDims.push({ x, y, z });
+        },
+        end: () => undefined,
+      }),
+      finish: () => ({}),
+      copyBufferToBuffer: () => undefined,
+    });
+
+    // First dispatch: list length = 100 → ceil(100/64) = 2
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 1, y: 1, z: 1 }, // fallback — should NOT be used
+      dispatchPlan: kernel.dispatchPlan,
+      listLengthBindings: [{ name: 'buff_r', wgslName: 'buff_r_length' }],
+      pipelines: new Map(),
+      runtime: {
+        ...makeMockRuntime(),
+        listLength: (name) => (name === 'buff_r' ? 100 : 0),
+      },
+    };
+
+    const r1 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r1.ok).toBe(true);
+    expect(seenDims[0]).toEqual({ x: 2, y: 1, z: 1 });
+
+    // Second dispatch: list length = 200 → ceil(200/64) = 4
+    (
+      ctx.runtime as { listLength: (n: string) => number }).listLength = () => 200;
+    const r2 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r2.ok).toBe(true);
+    expect(seenDims[1]).toEqual({ x: 4, y: 1, z: 1 });
+  });
+
+  /**
+   * §Phase 4 (15.5) — dispatchPlan evaluation failure falls back to
+   * `(1, 1, 1)` and emits a `gpu.dispatch_formula_eval_failed` warn.
+   * The previous (Phase 3) path required scalar bindings to gate
+   * evaluation; with §Phase 4 the gate is removed.
+   */
+  it('falls back to (1,1,1) when dispatchPlan evaluation fails (15.5)', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+
+    const listBind = makeBind('buff_r', 0, true);
+    const verdict = makeVerdict('b1', [listBind]);
+    registry.register(verdict, 'wgsl');
+    const kernel = registry.lookupById(verdict.regionId)!;
+    kernel.dispatchPlan = {
+      x: '__undeclared_identifier + 1', // ⇒ SyntaxError
+      y: '1',
+      z: '1',
+    };
+
+    const seenDims: Array<{ x: number; y: number; z: number }> = [];
+    (
+      device as unknown as {
+        createCommandEncoder: () => {
+          beginComputePass: () => {
+            setPipeline: (p: unknown) => void;
+            setBindGroup: (i: number, g: unknown) => void;
+            dispatchWorkgroups: (x: number, y: number, z: number) => void;
+            end: () => void;
+          };
+          finish: () => unknown;
+          copyBufferToBuffer: () => void;
+        };
+      }
+    ).createCommandEncoder = () => ({
+      beginComputePass: () => ({
+        setPipeline: () => undefined,
+        setBindGroup: () => undefined,
+        dispatchWorkgroups: (x, y, z) => {
+          seenDims.push({ x, y, z });
+        },
+        end: () => undefined,
+      }),
+      finish: () => ({}),
+      copyBufferToBuffer: () => undefined,
+    });
+
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 9, y: 9, z: 9 },
+      dispatchPlan: kernel.dispatchPlan,
+      pipelines: new Map(),
+      runtime: makeMockRuntime(),
+    };
+
+    const result = await dispatchKernel(verdict.regionId, ctx);
+    expect(result.ok).toBe(true);
+    // 評価失敗 ⇒ 0 (dispatch-formula-evaluator) ⇒ ceil/clamp ⇒ 1
+    expect(seenDims[0]).toEqual({ x: 1, y: 1, z: 1 });
+    // `gpu.dispatch_formula_eval_failed` warn が push されている
+    const warns = useErrorLogStore.getState().entries;
+    expect(warns.some((e) => e.message.includes('dispatch_formula_eval_failed'))).toBe(true);
+  });
+
+  /**
+   * §Phase 4 (15.7) — list length fields pack into the same uniform
+   * buffer as scalar fields, with the same 16-byte stride. The
+   * runtime adapter's `listLength` is queried per dispatch so a
+   * growing list sees the latest length.
+   */
+  it('packs list length values into the uniform buffer (15.7)', async () => {
+    const registry = new KernelRegistry();
+    const device = makeMockDevice();
+    const pool = new ListBufferPool({ device });
+
+    const listBind = makeBind('buff_r', 0, true);
+    const scalarBind = makeScalarBind('aabb_idx0', 4, { dtype: 'i32' });
+    const verdict = makeVerdict('b1', [listBind, scalarBind]);
+    registry.register(verdict, 'wgsl');
+
+    // Capture every writeBuffer call's data payload.
+    const writes: Array<{ data: Uint8Array }> = [];
+    const originalWriteBuffer = device.queue.writeBuffer;
+    device.queue.writeBuffer = (
+      _buf: unknown,
+      _offset: number,
+      data: BufferSource,
+    ) => {
+      const view = data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+      writes.push({ data: view });
+      // Re-cast the BufferSource to an ArrayBufferView so the underlying
+      // `writeBuffer` signature is satisfied. The mock implementation
+      // doesn't actually inspect the buffer type.
+      const viewData: Uint8Array =
+        data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+      originalWriteBuffer?.(
+        _buf as Parameters<typeof originalWriteBuffer>[0],
+        _offset,
+        viewData,
+      );
+    };
+
+    let runtimeListLength = 17;
+    const runtimeScalar = 42;
+    const ctx: DispatchContext = {
+      device,
+      registry,
+      pool,
+      regionVerdict: verdict,
+      dims: { x: 1, y: 1, z: 1 },
+      dispatchPlan: { x: '1', y: '1', z: '1' },
+      scalarBindings: [{ name: 'aabb_idx0', wgslName: 'aabb_idx0', dtype: 'i32' }],
+      listLengthBindings: [{ name: 'buff_r', wgslName: 'buff_r_length' }],
+      pipelines: new Map(),
+      runtime: {
+        readList: (_name, len) => new Float32Array(len),
+        writeList: () => undefined,
+        readScalar: () => runtimeScalar,
+        writeScalar: () => true,
+        listLength: () => runtimeListLength,
+      },
+    };
+
+    const result = await dispatchKernel(verdict.regionId, ctx);
+    expect(result.ok).toBe(true);
+    // One writeBuffer call for the uniform buffer (= 16-byte header
+    // + 16-byte scalar + 16-byte length = 48 bytes).
+    const uniformWrites = writes.filter((w) => w.data.byteLength === 48);
+    expect(uniformWrites.length).toBeGreaterThanOrEqual(1);
+    // Decode the packed buffer: header (16 zero bytes) + scalar value
+    // at offset 16 (= 42 as i32 little-endian) + length at offset 32
+    // (= 17 as u32 little-endian).
+    const buf = uniformWrites[0]!.data;
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    expect(view.getInt32(16, true)).toBe(42);
+    expect(view.getUint32(32, true)).toBe(17);
+
+    // Changing the runtime list length affects the next dispatch's pack.
+    runtimeListLength = 99;
+    writes.length = 0;
+    const r2 = await dispatchKernel(verdict.regionId, ctx);
+    expect(r2.ok).toBe(true);
+    const second = writes.filter((w) => w.data.byteLength === 48)[0];
+    expect(second).toBeDefined();
+    const view2 = new DataView(second!.data.buffer, second!.data.byteOffset, second!.data.byteLength);
+    expect(view2.getUint32(32, true)).toBe(99);
   });
 });

@@ -62,6 +62,13 @@ export const FIXTURE_GENERATORS = {
   // `npm run fixtures:setup` produces both fixtures in one pass.
   'expo-fixture-nested.sb3': () =>
     import('./make-expo-fixture.mjs').then((m) => m.makeNestedExpoFixture()),
+  // §Phase 4 (15.7) — byte-scalar variant. Same legacy layout but the
+  // `@compute` region carries `@bind byte_state(3) ro byte, scalar` so
+  // the WGSL↔host ABI byte→i32 mapping is exercised. Used by
+  // `verify-gpu-kernel.mjs` and unit tests in
+  // `test/runtime/gpu-kernel/scalar-uniform-binding.test.ts`.
+  'expo-fixture-byte-scalar.sb3': () =>
+    import('./make-expo-fixture.mjs').then((m) => m.makeByteScalarExpoFixture()),
 };
 
 /**

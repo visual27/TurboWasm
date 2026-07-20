@@ -31,6 +31,7 @@ import type {
   RuntimeAdapter,
 } from './__dispatch-kernel-sync';
 import { dispatchKernel } from './__dispatch-kernel-sync';
+import type { ListLengthBinding } from './scalar-uniform-binding';
 import type {
   ApplyGpuKernelsOptions,
   ApplyGpuKernelsResult,
@@ -140,10 +141,10 @@ function installDispatcher(options: ApplyGpuKernelsOptions): void {
       registry: options.registry,
       pool: options.pool,
       regionVerdict: kernel.regionVerdict,
-      // Legacy fallback dims (1, 1, 1). With §Phase 3 scalar bindings
-      // present, the dispatcher overrides these per-dispatch from
-      // `kernel.dispatchPlan` + the live scalar snapshot. The fallback
-      // only fires when scalarBindings is empty (= legacy fixture path).
+      // §Phase 4 (15.5) — `dims` is now the fallback only. When
+      // `kernel.dispatchPlan` is attached (the common path) the
+      // dispatcher evaluates the WGSL expression per dispatch against
+      // live host state, so `dims` is never reached.
       dims: { x: 1, y: 1, z: 1 },
       pipelines: pipelines as Map<string, unknown> as DispatchContext['pipelines'],
       runtime,
@@ -156,6 +157,26 @@ function installDispatcher(options: ApplyGpuKernelsOptions): void {
     if (kernel.dispatchPlan) ctx.dispatchPlan = kernel.dispatchPlan;
     if (kernel.scalarBindings && kernel.scalarBindings.length > 0) {
       ctx.scalarBindings = kernel.scalarBindings;
+    }
+    // §Phase 4 (15.7/15.8) — derive list length bindings from the
+    // kernel's list bindings so the uniform buffer (= `@group(1)
+    // @binding(0)`) carries the live `<list>_length` slots for every
+    // list binding, regardless of whether scalar bindings are
+    // attached. This is what makes list-only kernels readable in the
+    // WGSL body (group 1 is bound, list length fields are packed).
+    const listLengthBindings: ListLengthBinding[] = kernel.listBindings.map((b) => ({
+      name: b.name,
+      // The WGSL field name = `<storage_name>_length`. The emitter's
+      // rename pass may produce a hashed `internalName` for quoted
+      // bindings, but we look it up via the rename table at apply
+      // time. The dispatcher doesn't need the hashed form here
+      // because it never writes the WGSL struct field name into the
+      // GPU buffer — `packScalarUniformBuffer` only cares about the
+      // host list length value keyed by `name`.
+      wgslName: `${b.name}_length`,
+    }));
+    if (listLengthBindings.length > 0) {
+      ctx.listLengthBindings = listLengthBindings;
     }
     try {
       return dispatchKernel(kernel.id, ctx).then(

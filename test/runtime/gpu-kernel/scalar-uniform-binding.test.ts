@@ -11,12 +11,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  createListLengthBindings,
   createScalarUniformBindings,
   packScalarUniformBuffer,
+  readListLengthUniformBuffer,
   readScalarUniformBuffer,
   SCALAR_UNIFORM_FIELD_STRIDE_BYTES,
   SCALAR_UNIFORM_HEADER_BYTES,
   scalarUniformBufferSize,
+  type ListLengthBinding,
   type ScalarUniformBinding,
 } from '@/runtime/gpu-kernel/scalar-uniform-binding';
 import type { BindDirective } from '@/runtime/gpu-kernel/types';
@@ -264,5 +267,136 @@ describe('readScalarUniformBuffer (round-trip)', () => {
   it('returns 0 when bindings is empty', () => {
     const buf = packScalarUniformBuffer([], {});
     expect(readScalarUniformBuffer(buf, [], 0)).toBe(0);
+  });
+});
+
+describe('§Phase 4 (15.7) — list length slot in uniform buffer', () => {
+  /**
+   * §Phase 4 (15.7) — `createListLengthBindings` builds `ListLengthBinding[]`
+   * from non-scalar `@bind` directives, using the `lengthNames` map
+   * (= `<storage_name>_length`) as the WGSL field name.
+   */
+  it('createListLengthBindings emits one entry per list binding', () => {
+    const directives = [
+      makeBind('buff_r', 1, { kind: 'list', dtype: 'f32' }),
+      makeBind('aabb_w', 2, { kind: 'list', dtype: 'f32' }),
+      makeBind('aabb_idx0', 4, { kind: 'scalar', dtype: 'i32' }),
+    ];
+    const lengthNames = new Map<string, string>([
+      ['buff_r', 'buff_r_length'],
+      ['aabb_w', 'aabb_w_length'],
+    ]);
+    const result = createListLengthBindings(directives, {}, lengthNames);
+    expect(result).toEqual([
+      { name: 'buff_r', wgslName: 'buff_r_length' },
+      { name: 'aabb_w', wgslName: 'aabb_w_length' },
+    ]);
+  });
+
+  /**
+   * §Phase 4 (15.7) — `scalarUniformBufferSize` includes list length
+   * fields in the byte count when present. Without length bindings,
+   * the result matches the pre-Phase-4 contract (= header + N * stride).
+   */
+  it('scalarUniformBufferSize extends with lengthBindings', () => {
+    const scalars: ScalarUniformBinding[] = [
+      { name: 'a', wgslName: 'a', dtype: 'f32' },
+    ];
+    const lengths: ListLengthBinding[] = [
+      { name: 'l1', wgslName: 'l1_length' },
+      { name: 'l2', wgslName: 'l2_length' },
+    ];
+    // header (16) + 1 scalar (16) + 2 lengths (32) = 64
+    expect(scalarUniformBufferSize(scalars, lengths)).toBe(
+      SCALAR_UNIFORM_HEADER_BYTES + 3 * SCALAR_UNIFORM_FIELD_STRIDE_BYTES,
+    );
+    // No length bindings ⇒ matches the pre-Phase-4 contract.
+    expect(scalarUniformBufferSize(scalars)).toBe(
+      SCALAR_UNIFORM_HEADER_BYTES + SCALAR_UNIFORM_FIELD_STRIDE_BYTES,
+    );
+  });
+
+  /**
+   * §Phase 4 (15.7) — list length values pack after the scalar fields
+   * with the same 16-byte stride. The scalar field's i32 value stays
+   * at offset 16 (= header size); the length's u32 value lands at
+   * offset 32.
+   */
+  it('packScalarUniformBuffer writes list length values at 16-byte stride', () => {
+    const scalars: ScalarUniformBinding[] = [
+      { name: 'idx', wgslName: 'idx', dtype: 'i32' },
+    ];
+    const lengths: ListLengthBinding[] = [
+      { name: 'buff_r', wgslName: 'buff_r_length' },
+    ];
+    const buf = packScalarUniformBuffer(
+      scalars,
+      { idx: 42 },
+      lengths,
+      { buff_r: 128 },
+    );
+    expect(buf.byteLength).toBe(
+      SCALAR_UNIFORM_HEADER_BYTES + 2 * SCALAR_UNIFORM_FIELD_STRIDE_BYTES,
+    );
+    const view = new DataView(buf);
+    // Header bytes 0..15 — all zero (= runtime leaves it unused).
+    expect(view.getInt32(16, true)).toBe(42);
+    expect(view.getUint32(32, true)).toBe(128);
+    expect(readScalarUniformBuffer(buf, scalars, 0)).toBe(42);
+    expect(readListLengthUniformBuffer(buf, lengths, scalars, 0)).toBe(128);
+  });
+
+  /**
+   * §Phase 4 (15.7) — `byte, scalar` maps to WGSL `i32` in the
+   * host pack helper. The struct field is `i32`, the host value
+   * is packed with `setInt32`, and `readScalarUniformBuffer`
+   * round-trips correctly through the scalar dtype.
+   */
+  it('byte, scalar is packed as i32 with 16-byte stride', () => {
+    const scalars: ScalarUniformBinding[] = [
+      { name: 'byte_state', wgslName: 'byte_state', dtype: 'i32' },
+    ];
+    const buf = packScalarUniformBuffer(scalars, { byte_state: 200 });
+    expect(readScalarUniformBuffer(buf, scalars, 0)).toBe(200);
+    const view = new DataView(buf);
+    expect(view.getInt32(SCALAR_UNIFORM_HEADER_BYTES, true)).toBe(200);
+  });
+
+  /**
+   * §Phase 4 (15.7) — non-finite / negative length values are floored
+   * and clamped to non-negative u32 (host ABI contract: length is a
+   * non-negative count).
+   */
+  it('list length values are clamped to non-negative u32', () => {
+    const lengths: ListLengthBinding[] = [
+      { name: 'buff_r', wgslName: 'buff_r_length' },
+    ];
+    // -10 ⇒ 0 (Math.max(0, ...))
+    const buf1 = packScalarUniformBuffer([], {}, lengths, { buff_r: -10 });
+    expect(readListLengthUniformBuffer(buf1, lengths, [], 0)).toBe(0);
+    // NaN ⇒ 0 (Math.floor(NaN) === NaN, Math.max(0, NaN) === NaN,
+    // `>>> 0` of NaN is 0).
+    const buf2 = packScalarUniformBuffer([], {}, lengths, { buff_r: Number.NaN });
+    expect(readListLengthUniformBuffer(buf2, lengths, [], 0)).toBe(0);
+    // 3.7 ⇒ 3 (Math.floor)
+    const buf3 = packScalarUniformBuffer([], {}, lengths, { buff_r: 3.7 });
+    expect(readListLengthUniformBuffer(buf3, lengths, [], 0)).toBe(3);
+  });
+
+  /**
+   * §Phase 4 (15.7) — readListLengthUniformBuffer accounts for the
+   * scalar field count when computing offsets. With 2 scalars + 1
+   * length, the length lives at offset 48 (= header + 2*stride).
+   */
+  it('readListLengthUniformBuffer accounts for preceding scalar fields', () => {
+    const scalars: ScalarUniformBinding[] = [
+      { name: 'a', wgslName: 'a', dtype: 'f32' },
+      { name: 'b', wgslName: 'b', dtype: 'f32' },
+    ];
+    const lengths: ListLengthBinding[] = [
+      { name: 'l1', wgslName: 'l1_length' },
+    ];
+    const buf = packScalarUniformBuffer(scalars, { a: 1, b: 2 }, lengths, { l1: 99 });
+    expect(readListLengthUniformBuffer(buf, lengths, scalars, 0)).toBe(99);
   });
 });

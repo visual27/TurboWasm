@@ -698,6 +698,17 @@ function createBindingNames(bindings: readonly BindDirective[]): Map<string, str
  * `{wgslName}: {f32|i32}` fields before the list length fields. Scalar
  * uniforms share one `@group(1) @binding(0)` slot; their values are
  * written via `__dispatch-kernel-sync.ts:packScalarUniformBuffer`.
+ *
+ * §Phase 4 (15.7) — explicit 16-byte stride alignment. Every 4-byte
+ * scalar field is followed by an explicit `pad: vec3<u32>` (12 bytes)
+ * placeholder so the WGSL struct's field layout matches the host pack
+ * layout (`SCALAR_UNIFORM_HEADER_BYTES` + `SCALAR_UNIFORM_FIELD_STRIDE_BYTES`
+ * per field — see `scalar-uniform-binding.ts`). Without the explicit
+ * padding, WGSL would pack adjacent 4-byte fields to 4-byte offsets and
+ * leave the runtime reading struct field values at the wrong offsets.
+ * The `byte, scalar` dtype maps to WGSL `i32` (host ABI keeps the
+ * scalar-as-`i32` mapping; the byte-array ↔ array<u32> 2-step
+ * representation is for list bindings only).
  */
 function emitUniforms(
   bindings: readonly BindDirective[],
@@ -705,13 +716,19 @@ function emitUniforms(
   scalarFieldNames: ReadonlyMap<string, string> = new Map(),
 ): string {
   const fields: string[] = [];
+  let padCounter = 0;
+  const nextPadName = (): string => `__tw_pad_${padCounter++}`;
   // Scalar fields come first so that the host upload layout (16-byte
   // header + 16-byte stride) lines up with the WGSL struct field order.
   for (const binding of bindings) {
     if (binding.storageKind !== 'scalar') continue;
     const wgslName = scalarFieldNames.get(binding.name) ?? binding.name;
-    const wgslType = binding.dtype === 'i32' ? 'i32' : 'f32';
+    // `byte` maps to `i32` for scalar context (host ABI keeps the
+    // scalar-as-`i32` mapping — see `scalar-uniform-binding.ts`).
+    const wgslType = binding.dtype === 'i32' || binding.dtype === 'byte' ? 'i32' : 'f32';
     fields.push(`  ${wgslName}: ${wgslType},`);
+    // 12 bytes padding to round the field up to the 16-byte stride.
+    fields.push(`  ${nextPadName()}: vec3<u32>,`);
   }
   // List length fields follow. The trailing underscore prefix avoids
   // collision with scalar fields when the user names both a list and a
@@ -721,6 +738,8 @@ function emitUniforms(
     if (binding.storageKind === 'scalar') continue;
     const name = lengthNames.get(binding.name) ?? safeIdentifier(`${binding.name}_length`);
     fields.push(`  ${name}: u32,`);
+    // 12 bytes padding for the same 16-byte stride invariant.
+    fields.push(`  ${nextPadName()}: vec3<u32>,`);
   }
   if (fields.length === 0) fields.push('  __tw_padding: u32,');
   return `struct ScratchUniforms {\n${fields.join('\n')}\n};\n@group(1) @binding(0) var<uniform> u_scratch: ScratchUniforms;`;

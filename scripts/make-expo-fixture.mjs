@@ -67,6 +67,12 @@ const outPath = resolve(outDir, 'expo-fixture.sb3');
 // workspace. The two fixtures share block-builder helpers but produce
 // different scratch layouts — `verify-gpu-kernel.mjs` exercises both.
 const nestedOutPath = resolve(outDir, 'expo-fixture-nested.sb3');
+// §Phase 4 (15.7) — byte-scalar fixture path. Tests the WGSL↔host ABI
+// for `@bind ..., byte, scalar` (= `dtype: 'byte'` + `storageKind:
+// 'scalar'`). Used by `verify-gpu-kernel.mjs` (TURBOWASM_VARIANT=byte
+// — optional) and unit tests that pin the byte-ABI mapping in
+// `scalar-uniform-binding.test.ts`.
+const byteScalarOutPath = resolve(outDir, 'expo-fixture-byte-scalar.sb3');
 
 function md5hex(buf) {
   return createHash('md5').update(buf).digest('hex');
@@ -123,6 +129,26 @@ const COMPUTE_COMMENT_TEXT = [
   // dispatch-count semantics — R0 is the iteration counter, not the
   // bound. The legacy block tree (`repeat(aabb_w length)` with body
   // reading `buff_r[R0]`) is unchanged.
+  '@repeat R0:global_x = len(aabb_w)',
+  '@map R0 <- 0',
+].join('\n');
+
+// §Phase 4 (15.7) — byte-scalar DSL. Mirrors the legacy
+// `COMPUTE_COMMENT_TEXT` but adds a `@bind ..., byte, scalar`
+// directive to exercise the host ABI byte→i32 mapping for scalar
+// uniforms. Used by `makeByteScalarExpoFixture()` below.
+const BYTE_SCALAR_COMPUTE_COMMENT_TEXT = [
+  '@compute',
+  '@bind tmp0(0) ro f32',
+  '@bind buff_r(1) rw f32',
+  '@bind aabb_w(2) ro f32',
+  // §Phase 4 (15.7) — byte-typed scalar uniform. Host ABI: i32
+  // (= single 4-byte slot in the uniform buffer, no array<u32>
+  // mapping). The runtime adapter's `readScalar('byte_state')`
+  // returns an integer in `[0, 255]` and `packScalarUniformBuffer`
+  // packs it as `setInt32(...)`.
+  '@bind byte_state(3) ro byte, scalar',
+  '@workgroup_size(64)',
   '@repeat R0:global_x = len(aabb_w)',
   '@map R0 <- 0',
 ].join('\n');
@@ -411,6 +437,24 @@ function whenFlagClicked() {
 // --- Project assembly ----------------------------------------------------
 
 function buildProject() {
+  return buildLegacyProject({ computeCommentText: COMPUTE_COMMENT_TEXT });
+}
+
+function buildByteScalarProject() {
+  return buildLegacyProject({
+    computeCommentText: BYTE_SCALAR_COMPUTE_COMMENT_TEXT,
+    byteScalar: true,
+  });
+}
+
+/**
+ * §Phase 4 (15.7) — refactored legacy-fixture builder. `buildProject()`
+ * and `buildByteScalarProject()` both delegate here with different
+ * `@compute` comment text. The block tree is identical between the two
+ * fixtures; only the @compute directive text differs (so the byte-scalar
+ * variant picks up `@bind byte_state(3) ro byte, scalar`).
+ */
+function buildLegacyProject({ computeCommentText, byteScalar = false }) {
   resetCounter();
 
   const stageSvg =
@@ -514,7 +558,7 @@ function buildProject() {
       width: 280,
       height: 160,
       minimized: false,
-      text: COMPUTE_COMMENT_TEXT,
+      text: computeCommentText,
     },
   };
 
@@ -548,6 +592,10 @@ function buildProject() {
   const stageVars = {
     tmp0: ['tmp0', 0, 0, 0],
     result: ['result', 0, 0, 0],
+    // §Phase 4 (15.7) — `byte_state` is the scalar uniform referenced
+    // by the byte-scalar variant. Mirrors `tmp0` (initial value 0)
+    // for parity with the legacy fixture.
+    ...(byteScalar ? { byte_state: ['byte_state', 0, 0, 0] } : {}),
   };
 
   const stageTarget = {
@@ -637,6 +685,30 @@ export async function makeExpoFixture() {
   }
   await writeProject(project, svgAssets, outPath);
   return outPath;
+}
+
+/**
+ * §Phase 4 (15.7) — write `expo-fixture-byte-scalar.sb3` into
+ * `.test-fixtures/`. Sibling of `makeExpoFixture()` (legacy layout)
+ * but adds `@bind byte_state(3) ro byte, scalar` to the @compute
+ * region. Used by `verify-gpu-kernel.mjs` (TURBOWASM_VARIANT=byte —
+ * optional) and unit tests that pin the byte-ABI mapping in
+ * `scalar-uniform-binding.test.ts`.
+ */
+export async function makeByteScalarExpoFixture() {
+  const project = buildByteScalarProject();
+  const svgAssets = {};
+  for (const target of project.targets) {
+    if (!target.costumes) continue;
+    for (const c of target.costumes) {
+      if (c.dataFormat === 'svg' && c.svg) {
+        svgAssets[c.md5ext] = c.svg;
+        delete c.svg;
+      }
+    }
+  }
+  await writeProject(project, svgAssets, byteScalarOutPath);
+  return byteScalarOutPath;
 }
 
 // --- Phase 4: nested @compute fixture (legacy layout preserved above) -----
@@ -1007,17 +1079,24 @@ if (invokedDirectly) {
   mkdirSync(outDir, { recursive: true });
   // CLI: `node scripts/make-expo-fixture.mjs` writes the legacy
   // `expo-fixture.sb3`. `node scripts/make-expo-fixture.mjs nested`
-  // writes the Phase 4 nested `expo-fixture-nested.sb3`. Anything else
-  // writes both, which is what `npm run fixtures:setup` relies on.
+  // writes the Phase 4 nested `expo-fixture-nested.sb3`.
+  // `node scripts/make-expo-fixture.mjs byte-scalar` writes the Phase 4
+  // (15.7) `expo-fixture-byte-scalar.sb3` with `@bind ..., byte, scalar`.
+  // Anything else writes all three, which is what `npm run fixtures:setup`
+  // relies on (the byte-scalar entry is also picked up via
+  // `ensure-test-fixtures.mjs`).
   const arg = process.argv[2];
   const run = async () => {
     if (arg === 'nested') {
       await makeNestedExpoFixture();
     } else if (arg === 'legacy') {
       await makeExpoFixture();
+    } else if (arg === 'byte-scalar') {
+      await makeByteScalarExpoFixture();
     } else {
       await makeExpoFixture();
       await makeNestedExpoFixture();
+      await makeByteScalarExpoFixture();
     }
   };
   run().catch((err) => {

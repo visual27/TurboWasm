@@ -60,6 +60,27 @@ export interface Kernel {
    */
   scalarBindings: readonly ScalarUniformBinding[];
   /**
+   * §Phase 4 (15.8) — list bindings (= `@bind` directives whose
+   * `storageKind` is not `'scalar'`). The dispatcher filters
+   * `regionVerdict.directives` once at register time and stores the
+   * result here so:
+   *
+   *   - group-0 bind group construction (15.6) only sees list
+   *     bindings (scalar bindings are skipped — they live on
+   *     `@group(1) @binding(0)` instead);
+   *   - group-1 bind group construction (15.8) is triggered even for
+   *     list-only kernels (= `scalarBindings.length === 0` but
+   *     `listBindings.length > 0`) so list length fields stay readable
+   *     in the WGSL body;
+   *   - `preDispatch` / `postDispatch` only sync list bindings (not
+   *     scalar — scalars go through `runtime.readScalar`).
+   *
+   * Canonical key unchanged: the directive metadata is already
+   * captured in `regionVerdict.directives`, and `storageKind` is
+   * preserved by `stripDirectiveVolatile`.
+   */
+  listBindings: readonly BindDirective[];
+  /**
    * The verdict that produced this kernel. Held for diagnostics and for
    * re-register scenarios (project reload, device-lost).
    */
@@ -121,6 +142,12 @@ export class KernelRegistry {
       workgroupSize: { x: 1, y: 1, z: 1 },
       dispatchPlan: { x: '1', y: '1', z: '1' },
       scalarBindings: [],
+      // §Phase 4 (15.8) — pre-extract list bindings at register time
+      // so the dispatcher doesn't need to filter on every dispatch.
+      // Scalar bindings are excluded (they live on group 1, not group 0).
+      listBindings: regionVerdict.directives.filter(
+        (d): d is BindDirective => d.kind === 'bind' && d.storageKind !== 'scalar',
+      ),
       jsOnly: false,
       jsOnlyReason: '',
     };
