@@ -148,6 +148,18 @@ export const PARSER_ERROR_CODES: ReadonlySet<string> = new Set([
   'gpu.max_removed',
   'gpu.multiple_compute_regions',
   'gpu.bind_slot_collision',
+  // §Phase 4 — repeat-path RESOLUTION errors from
+  // `repeat-path-resolver.ts` (path-not-found / path-duplicate). The
+  // parser-emitted `repeat_path_invalid` (malformed DSL attribute)
+  // also routes through here because the owning region can never
+  // recover from a malformed `repeatPath=...` suffix. The RESOLVER-emitted
+  // `repeat_path_required` (no self-directive) is intentionally NOT in
+  // the fatal set — regions with no `@repeat` directive at all still
+  // work via the emitter's `emitTimesFromScratch` fallback that reads
+  // `inputs.TIMES` from the kernel container.
+  'gpu.repeat_path_invalid',
+  'gpu.repeat_path_not_found',
+  'gpu.repeat_path_duplicate',
 ]);
 
 export interface ClassifyBlockSubsetInput {

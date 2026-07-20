@@ -539,13 +539,14 @@ function buildLegacyProject({ computeCommentText, byteScalar = false }) {
   allBlocks[repeat.id] = repeat.block;
 
   // ===== Comments =====
-  // The @compute comment must be attached to the first substack block
-  // (= the list-write in this layout). Decorating the legacy
-  // `procedures_prototype` placeholder is no longer needed — the pow2
-  // computation is now inline.
+  // §Phase 4 (Form A): the `@compute` marker sits on the `control_repeat`
+  // block itself (= the kernel container). The body of the region is the
+  // repeat's SUBSTACK, starting at the list-write below. The legacy v9
+  // layout (marker on the substack first block) was hard-removed in
+  // Phase 4 — see `gpu-kernel-dsl-phase4-spec.md` §4.1.
   const comments = {
     cmt_compute: {
-      blockId: writeBlock.id,
+      blockId: repeat.id,
       x: 200,
       y: 300,
       width: 280,

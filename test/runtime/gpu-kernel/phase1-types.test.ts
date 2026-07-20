@@ -48,8 +48,11 @@ function minimalProjectWithCompute(): ParsedProject {
         blocks: { a: body, repeat0: repeat },
       },
     ],
+    // §Phase 4 — Form A: the `@compute` marker lives on the
+    // `control_repeat` block itself (= kernel container), not on the
+    // body's first substack block.
     comments: {
-      cmt1: { text: '@compute\n@bind tmp0(0) ro\n', blockId: 'a' },
+      cmt1: { text: '@compute\n@bind tmp0(0) ro\n', blockId: 'repeat0' },
     },
   };
 }
@@ -81,9 +84,10 @@ describe('Phase 1: ExtractedRegion type extensions', () => {
     const region = regions[0]!;
     expect(region.regionIndex).toBe(0);
     expect(region.inlinedPrototypeBlockIds).toEqual([]);
-    // Phase 1-3 invariant: commentAnchorBlockId === firstSubstackBlockId.
-    // Phase 4 will break this when the comment moves to control_repeat
-    // itself; the breaking change updates this assertion.
-    expect(region.commentAnchorBlockId).toBe(region.firstSubstackBlockId);
+    // §Phase 4 — Form A: the marker sits on the kernel container
+    // (= the control_repeat itself), so commentAnchorBlockId equals
+    // blockId and kernelContainerBlockId.
+    expect(region.commentAnchorBlockId).toBe(region.blockId);
+    expect(region.commentAnchorBlockId).toBe(region.kernelContainerBlockId);
   });
 });

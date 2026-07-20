@@ -59,7 +59,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
     });
     const a = mkBlock('a', 'data_setvariableto');
     const project = mkProject([repeat, a], [
-      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n', blockId: 'repeat0' },
     ]);
     const { regions } = extractRegions(project);
     const region = regions[0]!;
@@ -69,7 +69,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
       code: 'gpu.dsl_syntax_error',
       message: '@max is removed in v9; use runtime list length instead',
       regionId: region.regionId,
-      blockId: 'a',
+      blockId: 'repeat0',
       line: 0,
       column: 0,
     };
@@ -93,7 +93,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
     });
     const a = mkBlock('a', 'data_setvariableto');
     const project = mkProject([repeat, a], [
-      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n', blockId: 'repeat0' },
     ]);
     const { regions } = extractRegions(project);
     const region = regions[0]!;
@@ -107,7 +107,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
       code: 'gpu.some_warn',
       message: 'malformed @bind: expected ...',
       regionId: region.regionId,
-      blockId: 'a',
+      blockId: 'repeat0',
       line: 0,
       column: 0,
     };
@@ -128,7 +128,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
     });
     const a = mkBlock('a', 'data_setvariableto');
     const project = mkProject([repeat, a], [
-      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n', blockId: 'repeat0' },
     ]);
     const { regions } = extractRegions(project);
     const region = regions[0]!;
@@ -143,7 +143,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
       code: 'gpu.bind_slot_collision',
       message: '@bind slot 0 used by both foo and bar',
       regionId: region.regionId,
-      blockId: 'a',
+      blockId: 'repeat0',
       line: 0,
       column: 0,
     };
@@ -165,7 +165,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
     });
     const a = mkBlock('a', 'data_setvariableto');
     const project = mkProject([repeat, a], [
-      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n', blockId: 'repeat0' },
     ]);
     const { regions } = extractRegions(project);
     const region = regions[0]!;
@@ -175,7 +175,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
       code: 'gpu.dsl_syntax_error',
       message: 'unknown directive',
       regionId: region.regionId,
-      blockId: 'a',
+      blockId: 'repeat0',
       line: 0,
       column: 0,
     };
@@ -184,7 +184,7 @@ describe('buildBlockSubsetVerdict: parser-error demote (Phase 2 §15.2)', () => 
       code: 'gpu.dsl_syntax_error',
       message: '@max is removed in v9',
       regionId: region.regionId,
-      blockId: 'a',
+      blockId: 'repeat0',
       line: 1,
       column: 0,
     };
@@ -223,7 +223,7 @@ describe('buildRegionVerdicts: parser diagnostics propagation (Phase 2 §15.2)',
     const a = mkBlock('a', 'data_setvariableto');
     const project = mkProject([repeat, a], [
       // `@bogus foo` triggers the unknown-directive diagnostic at warn severity.
-      { id: 'cmt1', text: '@compute\n@bogus foo\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n@bogus foo\n', blockId: 'repeat0' },
     ]);
     const { regions } = extractRegions(project);
     const { verdicts } = buildRegionVerdicts({ parsedProject: project, regions });
@@ -254,7 +254,7 @@ describe('buildRegionVerdicts: parser diagnostics propagation (Phase 2 §15.2)',
     // diagnostic in this build, so we drive the pipeline with an empty
     // parser-error stream and assert the demote stays off.
     const project = mkProject([repeat, a], [
-      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n', blockId: 'repeat0' },
     ]);
     const { regions } = extractRegions(project);
     const { verdicts } = buildRegionVerdicts({ parsedProject: project, regions });
@@ -277,7 +277,7 @@ describe('buildRegionVerdicts: extraction diagnostics forwarding (Phase 5 §15.9
     });
     const a = mkBlock('a', 'data_setvariableto');
     const project = mkProject([repeat, a], [
-      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n', blockId: 'repeat0' },
     ]);
     const { regions } = extractRegions(project);
     const region = regions[0]!;
@@ -306,7 +306,7 @@ describe('buildRegionVerdicts: extraction diagnostics forwarding (Phase 5 §15.9
     });
     const a = mkBlock('a', 'data_setvariableto');
     const project = mkProject([repeat, a], [
-      { id: 'cmt1', text: '@compute\n', blockId: 'a' },
+      { id: 'cmt1', text: '@compute\n', blockId: 'repeat0' },
     ]);
     const { regions } = extractRegions(project);
 
@@ -358,8 +358,8 @@ describe('buildRegionVerdicts: extraction diagnostics forwarding (Phase 5 §15.9
         },
       ],
       comments: {
-        cmtA: { text: '@compute\n', blockId: 'a' },
-        cmtB: { text: '@compute\n', blockId: 'b' },
+        cmtA: { text: '@compute\n', blockId: 'repeatA' },
+        cmtB: { text: '@compute\n', blockId: 'repeatB' },
       },
     };
     const { regions } = extractRegions(project);
@@ -393,8 +393,8 @@ describe('buildRegionVerdicts: extraction diagnostics forwarding (Phase 5 §15.9
     const c = mkBlock('c', 'data_setvariableto');
     const r2 = mkBlock('r2', 'control_repeat', { inputs: { SUBSTACK: 'c' } });
     const project = mkProject([r1, a, r2, c], [
-      { id: 'cmt1', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'a' },
-      { id: 'cmt2', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'c' },
+      { id: 'cmt1', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'r1' },
+      { id: 'cmt2', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'r2' },
     ]);
     const { verdicts, extractionDiagnostics } =
       collectRegionVerdictsFromArrayBuffer(project);
@@ -413,10 +413,13 @@ describe('buildRegionVerdicts: extraction diagnostics forwarding (Phase 5 §15.9
     }
   });
 
-  it('collectRegionVerdictsFromArrayBuffer emits gpu.kernel_container_collision when two nested @compute share a kernel container (§Phase 3)', () => {
-    // Layout: kc (control_repeat) → inner1 (control_repeat, @compute) and inner2 (control_repeat, @compute).
-    // Both candidates find kc as their kernel container. Only inner1
-    // is adopted; inner2 surfaces KERNEL_CONTAINER_COLLISION.
+  it('§Phase 4 — two Form A regions with distinct kernel containers both survive (no KERNEL_CONTAINER_COLLISION)', () => {
+    // Layout (Phase 4 Form A): each `@compute` marker sits on its own
+    // `control_repeat` (= kernel container). There is no shared
+    // ancestor-promote path; the Phase 3 `KERNEL_CONTAINER_COLLISION`
+    // concept is gone (each region owns a distinct kernel container
+    // from the start). We pin this invariant here so a future
+    // accidental reintroduction is caught.
     const inner1Body = mkBlock('inner1Body', 'data_setvariableto');
     const inner1 = mkBlock('inner1', 'control_repeat', {
       parent: 'kc',
@@ -429,20 +432,21 @@ describe('buildRegionVerdicts: extraction diagnostics forwarding (Phase 5 §15.9
     });
     const kc = mkBlock('kc', 'control_repeat', { inputs: { SUBSTACK: 'inner1' } });
     const project = mkProject([kc, inner1, inner1Body, inner2, inner2Body], [
-      { id: 'cmt_inner1', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'inner1Body' },
-      { id: 'cmt_inner2', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'inner2Body' },
+      { id: 'cmt_inner1', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'inner1' },
+      { id: 'cmt_inner2', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'inner2' },
     ]);
     const { verdicts, extractionDiagnostics } =
       collectRegionVerdictsFromArrayBuffer(project);
-    expect(verdicts).toHaveLength(1);
-    expect(verdicts[0]!.kernelContainerBlockId).toBe('kc');
-    // The KERNEL_CONTAINER_COLLISION diagnostic lives on the surviving
-    // region's `diagnostics` list because it carries the surviving
-    // region's regionId (Phase 5 §15.9 fold rule).
-    const kcDiag = verdicts[0]!.diagnostics.find(
-      (d) => d.code === 'gpu.kernel_container_collision' && d.severity === 'warn',
+    // Both regions adopted: inner1 and inner2 each carry their own
+    // @compute marker on a distinct control_repeat (= kernel container).
+    expect(verdicts).toHaveLength(2);
+    const containerIds = verdicts.map((v) => v.kernelContainerBlockId).sort();
+    expect(containerIds).toEqual(['inner1', 'inner2']);
+    // The KERNEL_CONTAINER_COLLISION diagnostic was retired in Phase 4.
+    const kcDiag = verdicts.flatMap((v) => v.diagnostics).find(
+      (d) => d.code === 'gpu.kernel_container_collision',
     );
-    expect(kcDiag).toBeDefined();
+    expect(kcDiag).toBeUndefined();
     expect(extractionDiagnostics).toEqual([]);
   });
 });

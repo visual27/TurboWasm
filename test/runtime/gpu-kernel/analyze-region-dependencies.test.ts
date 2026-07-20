@@ -21,7 +21,7 @@ function makeVerdict(
     diagnostics: [],
     parallelAxes: [],
     kernelContainerBlockId: blockId,
-    nestedRepeatContainerBlockIds: [],
+    
     firstSubstackBlockId: '',
   };
 }

@@ -58,7 +58,7 @@ describe('region-verdict-pipeline: per-region @bind slot uniqueness (§Phase 3 �
         // Two @bind at slot 0 in the same region → collision.
         text:
           '@compute\n@bind foo(0) ro f32\n@bind bar(0) rw f32\n@workgroup_size(64)\n@repeat R0:global_x = 4\n@map R0 <- 0\n',
-        blockId: 'a',
+        blockId: 'repeat0',
       },
     ]);
     const { verdicts } = collectRegionVerdictsFromArrayBuffer(project);
@@ -89,7 +89,7 @@ describe('region-verdict-pipeline: per-region @bind slot uniqueness (§Phase 3 �
         id: 'cmt1',
         text:
           '@compute\n@bind foo(0) ro f32\n@bind bar(1) rw f32\n@bind baz(2) ro f32\n@workgroup_size(64)\n@repeat R0:global_x = 4\n@map R0 <- 0\n',
-        blockId: 'a',
+        blockId: 'repeat0',
       },
     ]);
     const { verdicts } = collectRegionVerdictsFromArrayBuffer(project);
@@ -132,12 +132,12 @@ describe('region-verdict-pipeline: cross-region @bind slot overlap (§Phase 3 §
         cmtA: {
           text:
             '@compute\n@bind tmp0(0) ro f32\n@bind shared(2) rw f32\n@workgroup_size(64)\n@repeat R0:global_x = 4\n@map R0 <- 0\n',
-          blockId: 'a',
+          blockId: 'repeatA',
         },
         cmtB: {
           text:
             '@compute\n@bind tmp1(1) ro f32\n@bind shared(2) ro f32\n@workgroup_size(32)\n@repeat R1:global_x = 4\n@map R1 <- 0\n',
-          blockId: 'b',
+          blockId: 'repeatB',
         },
       },
     };

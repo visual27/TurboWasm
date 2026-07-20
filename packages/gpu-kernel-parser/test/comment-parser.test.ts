@@ -22,13 +22,13 @@ describe('parseComputeComment', () => {
     expect(packageSource).toBe(runtimeSource);
   });
 
-  it('parses @bind, @workgroup_size, @repeat, @map in a single comment (§15.3 — @max removed)', () => {
+  it('parses @bind, @workgroup_size, @repeat, @map in a single comment (§Phase 4 — repeatPath required)', () => {
     const text = [
       '@compute',
       '@bind scratch_list(0) rw f32',
       '@bind tmp0(1) ro',
       '@workgroup_size(64)',
-      '@repeat R0:global_x = aabb_width',
+      '@repeat R0:global_x = aabb_width, repeatPath="self"',
       '@map idx0 <- R0',
     ].join('\n');
 
@@ -58,9 +58,12 @@ describe('parseComputeComment', () => {
       kind: 'repeat',
       name: 'R0',
       axis: 'global_x',
+      repeatPath: 'self',
     });
     // §Phase 2 (15.3): the `max` field is gone from RepeatDirective.
     expect(repeat && 'max' in repeat ? (repeat as { max?: number }).max : undefined).toBeUndefined();
+    // §Phase 4: the user-facing `blockId=` suffix was removed.
+    expect(repeat && 'boundBlockId' in repeat ? (repeat as { boundBlockId?: string }).boundBlockId : undefined).toBeUndefined();
     const map = result.directives.find((d) => d.kind === 'map');
     expect(map).toMatchObject({ kind: 'map', var: 'idx0' });
   });
@@ -88,6 +91,66 @@ describe('parseComputeComment', () => {
       (d) => d.code === 'gpu.dsl_syntax_error' && d.severity === 'error',
     );
     expect(diag).toBeDefined();
+  });
+
+  it('rejects @repeat without trailing repeatPath as gpu.repeat_path_required (§Phase 4)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@repeat R0:global_x = aabb_width\n'),
+      REGION,
+    );
+    expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+    const diag = result.diagnostics.find((d) => d.code === 'gpu.repeat_path_required');
+    expect(diag).toBeDefined();
+    expect(diag?.severity).toBe('error');
+  });
+
+  it('rejects legacy blockId= on @repeat as gpu.repeat_path_invalid (§Phase 4)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@repeat R0:global_x = aabb_width, blockId="abc"\n'),
+      REGION,
+    );
+    expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+    const diag = result.diagnostics.find((d) => d.code === 'gpu.repeat_path_invalid');
+    expect(diag).toBeDefined();
+    expect(diag?.severity).toBe('error');
+  });
+
+  it('rejects legacy blockId= on @map as a syntax error (§Phase 4)', () => {
+    const result = parseComputeComment(
+      mkComment('@compute\n@map idx <- R0, blockId="abc"\n'),
+      REGION,
+    );
+    expect(result.directives.find((d) => d.kind === 'map')).toBeUndefined();
+    const diag = result.diagnostics.find(
+      (d) => d.code === 'gpu.dsl_syntax_error' && d.message.includes('blockId='),
+    );
+    expect(diag).toBeDefined();
+    expect(diag?.severity).toBe('error');
+  });
+
+  it('accepts a numeric repeatPath (e.g. "0", "0.1", "1.2.3") (§Phase 4)', () => {
+    for (const path of ['self', '0', '0.1', '1.2.3']) {
+      const result = parseComputeComment(
+        mkComment(`@compute\n@repeat R0:global_x = aabb_width, repeatPath="${path}"\n`),
+        REGION,
+      );
+      const repeat = result.directives.find((d) => d.kind === 'repeat');
+      expect(repeat).toMatchObject({ repeatPath: path });
+    }
+  });
+
+  it('rejects malformed repeatPath values (§Phase 4)', () => {
+    for (const path of ['', '00', '01', 'self.0', '.0', '0.', '0..1', '-1', '1e2']) {
+      const result = parseComputeComment(
+        mkComment(`@compute\n@repeat R0:global_x = aabb_width, repeatPath="${path}"\n`),
+        REGION,
+      );
+      expect(result.directives.find((d) => d.kind === 'repeat')).toBeUndefined();
+      const diag = result.diagnostics.find(
+        (d) => d.code === 'gpu.repeat_path_invalid' && d.severity === 'error',
+      );
+      expect(diag).toBeDefined();
+    }
   });
 
   it('flags an unknown directive', () => {

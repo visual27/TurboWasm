@@ -106,8 +106,10 @@ describe('make-expo-fixture.mjs: legacy COMPUTE_COMMENT_TEXT shape', () => {
   it('legacy fixture body uses operator_mathop chain (pow2 inlined as e^(ln(2)*v))', async () => {
     // §Phase 2 — the legacy fixture's @compute body now carries the
     // operator_mathop chain instead of the decorative pow2 prototype.
-    // Walk the block tree from the @compute comment and assert the
-    // expected reporters (ln, e ^, math_number(2), data_replaceitemoflist).
+    // §Phase 4 — Form A: the `@compute` marker sits on the kernel
+    // container (= `control_repeat` block) itself, not on the body
+    // entry. We walk from the marker into the body via SUBSTACK to
+    // assert the operator_mathop chain and the actual parallel write.
     const out = await makeExpoFixture();
     const project = await readProjectJson(out);
     const sprite = project.targets.find((t) => !t.isStage);
@@ -116,7 +118,16 @@ describe('make-expo-fixture.mjs: legacy COMPUTE_COMMENT_TEXT shape', () => {
       c.text.trim().startsWith('@compute'),
     );
     expect(computeComment).toBeDefined();
-    const bodyEntry = sprite!.blocks[computeComment!.blockId];
+    // §Phase 4 — the @compute marker attaches to a control_repeat
+    // (= kernel container). The body entry is `inputs.SUBSTACK`'s
+    // head block, which is the list-write below.
+    const kernelContainer = sprite!.blocks[computeComment!.blockId];
+    expect(kernelContainer, '@compute marker must point at a block').toBeDefined();
+    expect(kernelContainer!.opcode).toBe('control_repeat');
+    const substackRef = (kernelContainer!.inputs as Record<string, unknown>)['SUBSTACK'];
+    expect(Array.isArray(substackRef)).toBe(true);
+    const substackId = (substackRef as unknown[])[1] as string;
+    const bodyEntry = sprite!.blocks[substackId];
     expect(bodyEntry, '@compute body entry must be a block').toBeDefined();
     expect(bodyEntry!.opcode).toBe('data_replaceitemoflist');
 

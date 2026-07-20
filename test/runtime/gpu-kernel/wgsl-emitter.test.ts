@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseComputeComment } from '@/runtime/gpu-kernel/comment-parser';
+import { resolveRepeatPaths } from '@/runtime/gpu-kernel/repeat-path-resolver';
 import {
   clampWorkgroupSize,
   emitRegion,
@@ -7,7 +8,7 @@ import {
 } from '@/runtime/gpu-kernel/wgsl-emitter';
 import type {
   AxisFinal,
-  EffectivePattern,
+  ExtractedRegion,
   ParsedProject,
   RawBlock,
   RegionVerdict,
@@ -37,9 +38,23 @@ function makeVerdict(
   workgroupLimits?: EmitInput['workgroupLimits'],
 ): { regionVerdict: RegionVerdict; input: EmitInput } {
   const parsed = parseComputeComment({ blockId: 'body', text: source }, 'region');
+  const region: ExtractedRegion = {
+    regionId: 'region',
+    blockId: 'repeat',
+    spriteId: 'sprite',
+    commentId: 'body',
+    firstSubstackBlockId: '',
+    bodyBlockIds: [],
+    kernelContainerBlockId: 'repeat',
+    repeatPathTable: { self: 'repeat' },
+    regionIndex: 0,
+    inlinedPrototypeBlockIds: [],
+    commentAnchorBlockId: 'repeat',
+  };
+  const resolved = resolveRepeatPaths(region, parsed.directives);
   const axes: RegionVerdict['axes'] = {};
   const parallelAxes: RegionVerdict['parallelAxes'] = [];
-  for (const directive of parsed.directives) {
+  for (const directive of resolved.directives) {
     if (directive.kind !== 'repeat') continue;
     const finalAxis = axisOverrides[directive.name] ?? directive.axis;
     axes[directive.name] = {
@@ -55,14 +70,14 @@ function makeVerdict(
     regionId: 'region',
     blockId: 'repeat',
     spriteId: 'sprite',
-    directives: parsed.directives,
+    directives: resolved.directives,
     blockSubset: { valid: true, diagnostics: [] },
     axes,
     cascade: { valid: true, diagnostics: [], topoOrder },
-    diagnostics: parsed.diagnostics,
+    diagnostics: [...parsed.diagnostics, ...resolved.diagnostics],
     parallelAxes,
     kernelContainerBlockId: 'repeat',
-    nestedRepeatContainerBlockIds: [],
+
     firstSubstackBlockId: '',
   };
   return {
@@ -108,8 +123,13 @@ describe('wgsl-emitter', () => {
     );
     const result = emitRegion(input);
 
-    expect(result.wgsl).toContain('for (let R0: u32 = 0; R0 < N; R0 = R0 + 1)');
-    expect(result.wgsl).toContain('for (var R0: u32 = 0u;');
+    // §Phase 4: the emitter uses WGSL `{ var; loop { if break }; }` shape
+    // instead of `for(;;)` because WGSL doesn't have a native for-loop in
+    // its portable profile. The counter is renamed through the same
+    // table as the directive name (`R0`).
+    expect(result.wgsl).toMatch(/var R0: u32 = 0u;/);
+    expect(result.wgsl).toMatch(/loop \{/);
+    expect(result.wgsl).toMatch(/if \(R0 >= u32\(N\)\) \{ break; \}/);
     expect(result.wgsl).toContain('// dispatchWorkgroups(1, 1, 1)');
     expect(result.dispatchPlan.x).toBe('1');
   });
@@ -742,86 +762,81 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
 });
 
 /**
- * Phase 2 (nested-parallelization-03-phase2 §4.4) — golden tests for
- * nested `@compute` layout (`fn expo` style). The `makeNestedVerdict`
- * helper builds a RegionVerdict with `nestedRepeatContainerBlockIds` set,
- * bypassing `extractRegions` so unit tests don't depend on the SB3 loader.
+ * §Phase 4 — Form A end-to-end tests for the WGSL emitter.
+ *
+ * The Form A layout is: `@compute` lives on a `control_repeat` itself
+ * (= kernel container). Its `SUBSTACK` body is the region body. Inner
+ * `control_repeat` blocks become either dispatch axes (when an
+ * `@repeat …, repeatPath="self"` directive resolves onto them) or
+ * sequential `for ()` loops (when no directive matches).
  */
-describe('wgsl-emitter: Phase 2 nested @compute', () => {
-  function makeNestedVerdict(options: {
+describe('wgsl-emitter (§Phase 4 Form A)', () => {
+  function mathNumber(id: string, value: number): RawBlock {
+    return block(id, 'math_number', { fields: { NUM: [String(value), null] } });
+  }
+
+  function makeFormAVerdict(options: {
     commentText: string;
     kernelContainerBlockId: string;
-    candidateBlockId: string;
-    nestedRepeatIds: readonly string[];
-    bodyBlocks?: RawBlock[];
-    effectivePatterns?: EffectivePattern[];
-    /** extra blocks besides kernel container + candidate, indexed by id. */
+    /** extra blocks indexed by id. `kernelContainerBlockId` is built automatically. */
     extraBlocks?: Record<string, RawBlock>;
-    axisOverrides?: Record<string, AxisFinal>;
+    bodyFirstSubstackId?: string;
+    workgroupLimits?: EmitInput['workgroupLimits'];
   }): { regionVerdict: RegionVerdict; parsedProject: ParsedProject; input: EmitInput } {
-    const parsed = parseComputeComment(
-      { blockId: 'cmt', text: options.commentText },
-      'region:nested',
-    );
     const spriteBlocks: Record<string, RawBlock> = {
       [options.kernelContainerBlockId]: block(
         options.kernelContainerBlockId,
         'control_repeat',
         {
-          inputs: { SUBSTACK: options.bodyBlocks?.[0]?.id ?? null },
-        },
-      ),
-      [options.candidateBlockId]: block(
-        options.candidateBlockId,
-        'control_repeat',
-        {
-          inputs: { SUBSTACK: options.bodyBlocks?.[0]?.id ?? null },
+          inputs: { SUBSTACK: options.bodyFirstSubstackId ?? null },
         },
       ),
     };
     if (options.extraBlocks) Object.assign(spriteBlocks, options.extraBlocks);
-    if (options.bodyBlocks) {
-      for (const b of options.bodyBlocks) spriteBlocks[b.id] = b;
-    }
-    const axes: RegionVerdict['axes'] = {};
-    const parallelAxes: RegionVerdict['parallelAxes'] = [];
-    for (const directive of parsed.directives) {
-      if (directive.kind !== 'repeat') continue;
-      const finalAxis = options.axisOverrides?.[directive.name] ?? directive.axis;
-      axes[directive.name] = {
-        requestedAxis: directive.axis,
-        finalAxis,
-        diagnostics: [],
-      };
-      if (finalAxis !== 'sequential') {
-        parallelAxes.push({ repeatName: directive.name, axis: finalAxis });
-      }
-    }
-    // nested layout: candidate.SUBSTACK 先頭 (= @compute ブロック) を body
-    // entry として明示する。candidate が SUBSTACK を持たない (空 body) テスト
-    // では kernel container を fallback として使う。
-    const candidateBlock = spriteBlocks[options.candidateBlockId];
-    const candidateSubstack =
-      candidateBlock && typeof candidateBlock.inputs['SUBSTACK'] === 'string'
-        ? (candidateBlock.inputs['SUBSTACK'] as string)
-        : '';
-    const regionVerdict: RegionVerdict = {
-      regionId: 'region:nested',
+
+    const region: ExtractedRegion = {
+      regionId: `region:${options.kernelContainerBlockId}`,
       blockId: options.kernelContainerBlockId,
       spriteId: 'sprite',
-      directives: parsed.directives,
-      blockSubset: {
-        valid: true,
+      commentId: 'cmt',
+      firstSubstackBlockId: options.bodyFirstSubstackId ?? '',
+      bodyBlockIds: [],
+      kernelContainerBlockId: options.kernelContainerBlockId,
+      repeatPathTable: { self: options.kernelContainerBlockId },
+      regionIndex: 0,
+      inlinedPrototypeBlockIds: [],
+      commentAnchorBlockId: options.kernelContainerBlockId,
+    };
+    const parsed = parseComputeComment(
+      { blockId: 'cmt', text: options.commentText },
+      region.regionId,
+    );
+    const resolved = resolveRepeatPaths(region, parsed.directives);
+    const axes: RegionVerdict['axes'] = {};
+    const parallelAxes: RegionVerdict['parallelAxes'] = [];
+    for (const directive of resolved.directives) {
+      if (directive.kind !== 'repeat') continue;
+      axes[directive.name] = {
+        requestedAxis: directive.axis,
+        finalAxis: directive.axis,
         diagnostics: [],
-        ...(options.effectivePatterns ? { effectivePatterns: options.effectivePatterns } : {}),
-      },
+      };
+      if (directive.axis !== 'sequential') {
+        parallelAxes.push({ repeatName: directive.name, axis: directive.axis });
+      }
+    }
+    const regionVerdict: RegionVerdict = {
+      regionId: region.regionId,
+      blockId: region.blockId,
+      spriteId: region.spriteId,
+      directives: resolved.directives,
+      blockSubset: { valid: true, diagnostics: [] },
       axes,
       cascade: { valid: true, diagnostics: [], topoOrder: [] },
-      diagnostics: parsed.diagnostics,
+      diagnostics: [...parsed.diagnostics, ...resolved.diagnostics],
       parallelAxes,
-      kernelContainerBlockId: options.kernelContainerBlockId,
-      nestedRepeatContainerBlockIds: options.nestedRepeatIds,
-      firstSubstackBlockId: candidateSubstack,
+      kernelContainerBlockId: region.kernelContainerBlockId,
+      firstSubstackBlockId: region.firstSubstackBlockId,
     };
     const parsedProject: ParsedProject = {
       targets: [{ id: 'sprite', isStage: false, blocks: spriteBlocks }],
@@ -830,188 +845,15 @@ describe('wgsl-emitter: Phase 2 nested @compute', () => {
     return {
       regionVerdict,
       parsedProject,
-      input: { regionVerdict, parsedProject },
+      input: options.workgroupLimits
+        ? { regionVerdict, parsedProject, workgroupLimits: options.workgroupLimits }
+        : { regionVerdict, parsedProject },
     };
   }
 
-  function mathNumber(id: string, value: number): RawBlock {
-    return block(id, 'math_number', { fields: { NUM: [String(value), null] } });
-  }
-
-  it('nested @compute emits Ry:global_y + Rx0:global_x in dispatch plan', () => {
-    // Kernel container: repeat(64)
-    //   candidate: repeat(100)
-    //     [empty body — no scratch writes]
-    const k1 = 'k1';
-    const c1 = 'c1';
-    const { regionVerdict, parsedProject, input } = makeNestedVerdict({
-      commentText: [
-        '@compute',
-        '@bind aabb_w(0) ro f32',
-        '@bind aabb_h(1) ro f32',
-        '@bind buff_r(2) rw f32',
-        '@workgroup_size(64)',
-        // No explicit @repeat — implicit axes only
-      ].join('\n'),
-      kernelContainerBlockId: k1,
-      candidateBlockId: c1,
-      nestedRepeatIds: [c1],
-      extraBlocks: {
-        k1: block(k1, 'control_repeat', { inputs: { TIMES: [2, 'kc-times'] } }),
-        c1: block(c1, 'control_repeat', { inputs: { TIMES: [2, 'cand-times'] } }),
-        'kc-times': mathNumber('kc-times', 64),
-        'cand-times': mathNumber('cand-times', 100),
-      },
-    });
-    const result = emitRegion(input);
-    // dispatchWorkgroups comment: y = ceil(64 / 1) from kernel container,
-    // x = ceil(100 / 64) from candidate. Axis formulas appear in the
-    // dispatch comment (Phase 2 mirrors legacy behavior: parallel axes
-    // are documented via dispatchWorkgroups but not emitted as `let`
-    // bindings — the runtime reads them through __tw_gid.x/y).
-    expect(result.dispatchPlan.y).toMatch(/ceil\(64/);
-    expect(result.dispatchPlan.x).toMatch(/ceil\(100/);
-    expect(result.wgsl).toContain('// dispatchWorkgroups(ceil(100 / 64), ceil(64 / 1), 1)');
-    // Kernel signature uses global_invocation_id for both dims.
-    expect(result.wgsl).toContain('@builtin(global_invocation_id) __tw_gid: vec3<u32>');
-    // No diagnostics — implicit axes resolved cleanly.
-    expect(
-      result.diagnostics.filter((d) => d.code === 'gpu.implicit_axis_unsupported'),
-    ).toHaveLength(0);
-    // suppress unused-warning for locals
-    void regionVerdict;
-    void parsedProject;
-  });
-
-  it('legacy outer @compute preserves existing behavior (no implicit axes generated)', () => {
-    // legacy: nestedRepeatIds が空 → implicit axis を生成しない。
-    // 出力 WGSL は既存 legacy テストの挙動と一致する。
-    const { input } = makeVerdict(
-      [
-        '@compute',
-        '@bind buff_r(0) rw f32',
-        // §Phase 2 (15.3): `, max=<uint>` removed.
-        '@repeat R0:global_x = 32',
-        '@workgroup_size(64)',
-        '@map R0 <- 0',
-      ].join('\n'),
-      ['R0'],
-    );
-    const result = emitRegion(input);
-    // Ry は生成されない
-    expect(result.wgsl).not.toContain('Ry: u32');
-    expect(result.wgsl).not.toContain('Rx0: u32');
-    // explicit R0 はそのまま
-    expect(result.wgsl).toMatch(/let R0:/);
-    expect(result.dispatchPlan.x).toBe('ceil(32 / 64)');
-  });
-
-  it('skip-logic excludes data_changevariableby (iteration advance) blocks from body', () => {
-    const k1 = 'k1';
-    const c1 = 'c1';
-    const advanceBlock = block('advance-1', 'data_changevariableby', {
-      inputs: { VALUE: [2, 'advance-val'] },
-      fields: { VARIABLE: ['idx1', null] },
-    });
-    const advanceVal = mathNumber('advance-val', 1);
-    const advanceBlockId = 'advance-1';
-    const { input } = makeNestedVerdict({
-      commentText: [
-        '@compute',
-        '@bind idx1(0) ro f32',
-        '@bind buff_r(1) rw f32',
-        '@workgroup_size(64)',
-      ].join('\n'),
-      kernelContainerBlockId: k1,
-      candidateBlockId: c1,
-      nestedRepeatIds: [c1],
-      bodyBlocks: [advanceBlock],
-      extraBlocks: {
-        k1: block(k1, 'control_repeat', { inputs: { TIMES: [2, 'kc-times'] } }),
-        c1: block(c1, 'control_repeat', {
-          inputs: { SUBSTACK: advanceBlockId, TIMES: [2, 'cand-times'] },
-        }),
-        'kc-times': mathNumber('kc-times', 64),
-        'cand-times': mathNumber('cand-times', 100),
-        'advance-val': advanceVal,
-      },
-      effectivePatterns: [
-        {
-          kind: 'iteration-advance',
-          pattern: {
-            kind: 'iteration-advance',
-            varName: 'idx1',
-            delta: 1,
-            blockId: advanceBlockId,
-            source: 'auto-detected',
-          },
-        },
-      ],
-    });
-    const result = emitRegion(input);
-    // data_changevariableby は GPU 側で処理済みなので skip
-    expect(result.wgsl).not.toContain('data_changevariableby');
-    expect(result.wgsl).not.toContain('advance-1');
-    // let-binding for the inner expression も作られない
-    expect(result.wgsl).not.toMatch(/let __tw_expr_advance-1/);
-  });
-
-  it('skip-logic excludes data_itemoflist (read) blocks from body', () => {
-    const k1 = 'k1';
-    const c1 = 'c1';
-    const itemRead = block('item-read', 'data_itemoflist', {
-      inputs: {
-        LIST: { name: 'buff_r' },
-        INDEX: [2, 'idx-shadow'],
-      },
-      fields: { LIST: ['buff_r', null] },
-    });
-    const idxShadow = mathNumber('idx-shadow', 0);
-    const { input } = makeNestedVerdict({
-      commentText: [
-        '@compute',
-        '@bind buff_r(0) ro f32',
-        '@bind tmp0(1) ro f32',
-        '@workgroup_size(64)',
-      ].join('\n'),
-      kernelContainerBlockId: k1,
-      candidateBlockId: c1,
-      nestedRepeatIds: [c1],
-      bodyBlocks: [itemRead],
-      extraBlocks: {
-        k1: block(k1, 'control_repeat', { inputs: { TIMES: [2, 'kc-times'] } }),
-        c1: block(c1, 'control_repeat', {
-          inputs: { SUBSTACK: 'item-read', TIMES: [2, 'cand-times'] },
-        }),
-        'kc-times': mathNumber('kc-times', 64),
-        'cand-times': mathNumber('cand-times', 100),
-        'idx-shadow': idxShadow,
-      },
-      effectivePatterns: [
-        {
-          kind: 'indirect-access',
-          pattern: {
-            kind: 'indirect-access',
-            scratchListName: 'buff_r',
-            indexExpr: 'idx-shadow',
-            opcode: 'data_itemoflist',
-            blockId: 'item-read',
-            access: 'read',
-            source: 'auto-detected',
-          },
-        },
-      ],
-    });
-    const result = emitRegion(input);
-    // item-read block は skip される
-    expect(result.wgsl).not.toContain('item-read');
-    // ただし data_replaceitemoflist (write) は skip されないので別ブロックで検証
-  });
-
-  it('data_replaceitemoflist (write) stays in body (not in skip-set)', () => {
-    const k1 = 'k1';
-    const c1 = 'c1';
-    const writeBlock = block('write', 'data_replaceitemoflist', {
+  it('Form A: @compute on control_repeat with @repeat repeatPath="self" emits parallel dispatch', () => {
+    const r0 = 'r0';
+    const write = block('write', 'data_replaceitemoflist', {
       inputs: {
         LIST: { name: 'buff_r' },
         INDEX: [2, 'idx-shadow'],
@@ -1020,100 +862,123 @@ describe('wgsl-emitter: Phase 2 nested @compute', () => {
       fields: { LIST: ['buff_r', null] },
     });
     const idxShadow = mathNumber('idx-shadow', 0);
-    const { input } = makeNestedVerdict({
+    const { regionVerdict, parsedProject, input } = makeFormAVerdict({
       commentText: [
         '@compute',
         '@bind buff_r(0) rw f32',
         '@workgroup_size(64)',
+        '@repeat R0:global_x = 32, repeatPath="self"',
+        '@map R0 <- 0',
       ].join('\n'),
-      kernelContainerBlockId: k1,
-      candidateBlockId: c1,
-      nestedRepeatIds: [c1],
-      bodyBlocks: [writeBlock],
+      kernelContainerBlockId: r0,
+      bodyFirstSubstackId: 'write',
       extraBlocks: {
-        // `extraBlocks` 上書きで k1 の SUBSTACK が消えないよう、明示的に
-        // 'write' を維持する。`emitRegion` は `regionVerdict.blockId` (= k1)
-        // の SUBSTACK から body entry を探す。
-        k1: block(k1, 'control_repeat', {
-          inputs: { SUBSTACK: 'write', TIMES: [2, 'kc-times'] },
+        [r0]: block(r0, 'control_repeat', {
+          inputs: { SUBSTACK: 'write', TIMES: [2, 'r0-times'] },
         }),
-        c1: block(c1, 'control_repeat', { inputs: { TIMES: [2, 'cand-times'] } }),
-        'kc-times': mathNumber('kc-times', 64),
-        'cand-times': mathNumber('cand-times', 100),
+        'r0-times': mathNumber('r0-times', 100),
+        write,
         'idx-shadow': idxShadow,
       },
-      effectivePatterns: [],  // write は effectivePatterns に入らない (= 契約)
     });
+    void regionVerdict;
+    void parsedProject;
     const result = emitRegion(input);
-    // write は WGSL body に scratch_list_write_f32 として残る。
+    // Single-axis dispatch: x = ceil(32 / 64), y = z = 1.
+    expect(result.dispatchPlan.x).toBe('ceil(32 / 64)');
+    expect(result.dispatchPlan.y).toBe('1');
+    expect(result.dispatchPlan.z).toBe('1');
+    expect(result.wgsl).toContain('@compute @workgroup_size(64,1,1)');
+    expect(result.wgsl).toContain('@builtin(global_invocation_id) __tw_gid: vec3<u32>');
+    // Write body is preserved (data_replaceitemoflist is actual parallel work).
     expect(result.wgsl).toContain('scratch_list_write_f32(&buff_r');
   });
 
-  it('explicit @repeat Ry drops implicit Ry (no duplicate axis)', () => {
-    const k1 = 'k1';
-    const c1 = 'c1';
-    const { input } = makeNestedVerdict({
-      commentText: [
-        '@compute',
-        '@bind aabb_w(0) ro f32',
-        '@workgroup_size(64)',
-        // §Phase 2 (15.3): `, max=<uint>` removed.
-        '@repeat Ry:global_y = 32',  // explicit Ry
-      ].join('\n'),
-      kernelContainerBlockId: k1,
-      candidateBlockId: c1,
-      nestedRepeatIds: [c1],
-      extraBlocks: {
-        k1: block(k1, 'control_repeat', { inputs: { TIMES: [2, 'kc-times'] } }),
-        c1: block(c1, 'control_repeat', { inputs: { TIMES: [2, 'cand-times'] } }),
-        'kc-times': mathNumber('kc-times', 64),
-        'cand-times': mathNumber('cand-times', 100),
+  it('Form A: nested control_repeat without @repeat directive emits a for() loop', () => {
+    const r0 = 'r0';
+    const inner = 'inner';
+    // r0 is kernel container with one inner control_repeat inside its body.
+    const innerBody = block('innerBody', 'data_replaceitemoflist', {
+      inputs: {
+        LIST: { name: 'buff_r' },
+        INDEX: [2, 'idx-shadow'],
+        ITEM: { value: '1' },
       },
+      fields: { LIST: ['buff_r', null] },
     });
-    const result = emitRegion(input);
-    // dispatch plan: y dimension is computed exactly once (= explicit @repeat
-    // formula `32` で ceil(32 / 1) → 32). Implicit Ry が重複生成されていれば
-    // `max(ceil(32 / 1), ceil(64 / 1))` の形になるはず。
-    expect(result.dispatchPlan.y).toBe('ceil(32 / 1)');
-    expect(result.dispatchPlan.x).toMatch(/ceil\(100/);
-    // `gpu.implicit_axis_unsupported` は出ない (= explicit drop 成功)。
-    expect(
-      result.diagnostics.filter((d) => d.code === 'gpu.implicit_axis_unsupported'),
-    ).toHaveLength(0);
-  });
-
-  it('unsupported loop count formula → d2 demote + sequential wrapper', () => {
-    const k1 = 'k1';
-    const c1 = 'c1';
-    const unsupported = block('unsupported', 'sensing_daysSince2000', {
-      fields: { CURRENTMENU: ['daysSince2000', null] },
-    });
-    const { input } = makeNestedVerdict({
+    const idxShadow = mathNumber('idx-shadow', 0);
+    const { input } = makeFormAVerdict({
       commentText: [
         '@compute',
         '@bind buff_r(0) rw f32',
         '@workgroup_size(64)',
+        '@repeat R0:global_x = 32, repeatPath="self"',
+        '@map R0 <- 0',
       ].join('\n'),
-      kernelContainerBlockId: k1,
-      candidateBlockId: c1,
-      nestedRepeatIds: [c1],
+      kernelContainerBlockId: r0,
+      bodyFirstSubstackId: inner,
       extraBlocks: {
-        k1: block(k1, 'control_repeat', { inputs: { TIMES: [2, 'unsupported'] } }),
-        c1: block(c1, 'control_repeat', { inputs: { TIMES: [2, 'cand-times'] } }),
-        unsupported,
-        'cand-times': mathNumber('cand-times', 100),
+        [r0]: block(r0, 'control_repeat', {
+          inputs: { SUBSTACK: inner, TIMES: [2, 'r0-times'] },
+        }),
+        [inner]: block(inner, 'control_repeat', {
+          inputs: { SUBSTACK: 'innerBody', TIMES: [2, 'inner-times'] },
+        }),
+        'innerBody': innerBody,
+        'r0-times': mathNumber('r0-times', 100),
+        'inner-times': mathNumber('inner-times', 4),
+        'idx-shadow': idxShadow,
       },
     });
     const result = emitRegion(input);
-    // gpu.implicit_axis_unsupported diagnostic が発火。
+    // No repeatPath="self"/"0"/etc on `inner` → emitter wraps its body in a WGSL `for`.
+    // The counter defaults to `__tw_counter_<hash>` for unannotated
+    // inner repeats; the formula evaluates the scratch `inputs.TIMES`
+    // chain (`math_number 4` → `4.0`).
+    expect(result.wgsl).toMatch(/loop \{[\s\S]*if \(__tw_counter_\w+ >= u32\(4\.0\)\) \{ break; \}/);
+    // Outer dispatch still uses the single-axis formula.
+    expect(result.dispatchPlan.x).toBe('ceil(32 / 64)');
+  });
+
+  it('Form A: missing repeatPath on @repeat defaults to repeatPath="self"', () => {
+    // §Phase 4 — the parser defaults `repeatPath` to 'self' when the
+    // user omits the suffix, so v9-shape DSL (`@repeat R0:global_x = N`)
+    // still produces a usable directive without rewriting every fixture.
+    // The resolver validates resolution against the region's table.
+    const r0 = 'r0';
+    const write = block('write', 'data_replaceitemoflist', {
+      inputs: {
+        LIST: { name: 'buff_r' },
+        INDEX: [2, 'idx-shadow'],
+        ITEM: { value: '1' },
+      },
+      fields: { LIST: ['buff_r', null] },
+    });
+    const idxShadow = mathNumber('idx-shadow', 0);
+    const { input } = makeFormAVerdict({
+      commentText: [
+        '@compute',
+        '@bind buff_r(0) rw f32',
+        '@workgroup_size(64)',
+        '@repeat R0:global_x = 32',
+      ].join('\n'),
+      kernelContainerBlockId: r0,
+      bodyFirstSubstackId: 'write',
+      extraBlocks: {
+        [r0]: block(r0, 'control_repeat', {
+          inputs: { SUBSTACK: 'write', TIMES: [2, 'r0-times'] },
+        }),
+        'r0-times': mathNumber('r0-times', 100),
+        write,
+        'idx-shadow': idxShadow,
+      },
+    });
+    const result = emitRegion(input);
+    // Resolver found 'self' (= kernel container 'r0') in the table — no
+    // gpu.repeat_path_required diagnostic.
     expect(
-      result.diagnostics.some((d) => d.code === 'gpu.implicit_axis_unsupported'),
-    ).toBe(true);
-    // Ry は sequential 降格 → for-loop に巻かれる。
-    expect(result.wgsl).toMatch(/for\s*\(\s*var\s+Ry:/);
-    // Rx0 はそのまま parallel のまま → dispatch plan x に出る。
-    expect(result.dispatchPlan.x).toMatch(/ceil\(100/);
-    // y dimension は sequential 降格 → 1 (= dispatch しない)
-    expect(result.dispatchPlan.y).toBe('1');
+      result.diagnostics.some((d) => d.code === 'gpu.repeat_path_required'),
+    ).toBe(false);
+    expect(result.dispatchPlan.x).toBe('ceil(32 / 64)');
   });
 });

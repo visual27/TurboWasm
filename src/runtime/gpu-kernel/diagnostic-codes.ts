@@ -68,8 +68,41 @@ export const GPU_DIAGNOSTIC_CODES = {
    * Phase 1 (gpu-kernel-dsl-phase1-spec §1.1) — reserved for Phase 4.
    * A `@repeat` directive with a parallel axis omitted the required
    * `boundBlockId="<id>"` attribute → D1 demote. Severity `error`.
+   *
+   * Phase 4 (gpu-kernel-dsl-phase4-spec §4.4): the user-facing
+   * `blockId="<id>"` attribute on `@repeat` was replaced by
+   * `repeatPath="<path>"`. The diagnostic stays in the catalogue as
+   * a string literal but the runtime no longer emits it (the parser
+   * now produces `gpu.repeat_path_required` / `gpu.repeat_path_invalid`
+   * instead).
    */
   BOUND_BLOCK_REQUIRED: 'gpu.bound_block_required',
+  /**
+   * Phase 4 (gpu-kernel-dsl-phase4-spec §4.4): `@repeat` directive
+   * omitted the required `repeatPath="<path>"` attribute. Severity
+   * `error`. The owning region D1-demotes (region-verdict-pipeline
+   * folds this through `PARSER_ERROR_CODES`).
+   */
+  REPEAT_PATH_REQUIRED: 'gpu.repeat_path_required',
+  /**
+   * Phase 4 (gpu-kernel-dsl-phase4-spec §4.4): `repeatPath="<path>"`
+   * attribute is malformed (unquoted, empty, or fails the lexical
+   * grammar). Severity `error`. The owning region D1-demotes.
+   */
+  REPEAT_PATH_INVALID: 'gpu.repeat_path_invalid',
+  /**
+   * Phase 4 (gpu-kernel-dsl-phase4-spec §4.4): `repeatPath` value does
+   * not resolve to any `control_repeat` block in the region's
+   * `repeatPathTable`. Severity `error`. The owning region D1-demotes.
+   */
+  REPEAT_PATH_NOT_FOUND: 'gpu.repeat_path_not_found',
+  /**
+   * Phase 4 (gpu-kernel-dsl-phase4-spec §4.4): `repeatPath` is used
+   * more than once in the same region, or two paths resolve to the
+   * same `control_repeat` block. Severity `error`. The owning region
+   * D1-demotes.
+   */
+  REPEAT_PATH_DUPLICATE: 'gpu.repeat_path_duplicate',
   /**
    * Phase 1 (gpu-kernel-dsl-phase1-spec §1.1) — reserved for Phase 5.
    * `procedure-inliner` exceeded `MAX_INLINING_DEPTH` (16) or detected

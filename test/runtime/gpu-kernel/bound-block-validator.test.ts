@@ -9,6 +9,7 @@ function repeat(name: string, boundBlockId?: string): RepeatDirective {
     axis: 'global_x',
     formula: 'formula',
     blockId: 'r0',
+    repeatPath: 'self',
     ...(boundBlockId ? { boundBlockId } : {}),
     line: 0,
     column: 0,

@@ -217,7 +217,10 @@ function buildProject() {
 
   const comments = {
     cmt_compute_a: {
-      blockId: aSubstack.id,
+      // §Phase 4 — Form A: the `@compute` marker sits on the
+      // `control_repeat` itself (= the kernel container), not on the
+      // body's first substack block.
+      blockId: repeatA.id,
       x: 200,
       y: 300,
       width: 280,
@@ -226,7 +229,7 @@ function buildProject() {
       text: REGION_A_COMMENT,
     },
     cmt_compute_b: {
-      blockId: bSubstack.id,
+      blockId: repeatB.id,
       x: 200,
       y: 540,
       width: 280,

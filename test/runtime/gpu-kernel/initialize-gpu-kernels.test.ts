@@ -21,7 +21,7 @@ function makeVerdict(blockId: string, valid = true): RegionVerdict {
     diagnostics: [],
     parallelAxes: [],
     kernelContainerBlockId: blockId,
-    nestedRepeatContainerBlockIds: [],
+    
     firstSubstackBlockId: '',
   };
 }
@@ -205,7 +205,7 @@ describe('initializeGpuKernels', () => {
       ],
       comments: {
         cmt_compute: {
-          blockId: 'body',
+          blockId: 'repeat0',
           text: [
             '@compute',
             // Reserved keyword — triggers `gpu.identifier_collision` (warn).
@@ -280,7 +280,7 @@ describe('initializeGpuKernels', () => {
       ],
       comments: {
         cmt_compute: {
-          blockId: 'body',
+          blockId: 'repeat0',
           text: [
             '@compute',
             '@bind safe_name(0) ro f32',

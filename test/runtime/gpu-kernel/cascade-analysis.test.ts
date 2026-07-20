@@ -16,7 +16,7 @@ function skeletonRegion(): ExtractedRegion {
     firstSubstackBlockId: 'a',
     bodyBlockIds: ['a'],
     kernelContainerBlockId: 'r0',
-    nestedRepeatContainerBlockIds: [],
+    repeatPathTable: { self: 'b1' },
     regionIndex: 0,
     inlinedPrototypeBlockIds: [],
     commentAnchorBlockId: 'a',

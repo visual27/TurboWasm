@@ -17,19 +17,6 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   extensionSandboxMode: 'worker',
   turboWasmAccelerationEnabled: true,
   enableWebgpu: true,
-  /**
-   * Phase 4 (nested-parallelization-05-phase4 §3.5). Default `false` —
-   * existing users keep the legacy outer-only `@compute` layout until they
-   * explicitly opt in. The toggle in the Settings dialog (TurboWasm
-   * section) flips the runtime path that
-   * {@link import('@/runtime/player.ts').bootstrapGpuKernels} uses when a
-   * project's `@compute` marker sits on a nested `control_repeat`
-   * (= kernel container is the candidate's nearest `control_repeat`
-   * ancestor, not the candidate itself). `false` keeps the legacy JS path
-   * for nested layouts; `true` lets the new nested-parallelization path
-   * attempt GPU dispatch.
-   */
-  nestedParallelizationEnabled: false,
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
@@ -84,8 +71,13 @@ export const STORAGE_KEYS = {
 // nearest ancestor). v8 → v9 migration seeds the field with `false`
 // so existing users keep the legacy outer-only behaviour until they
 // explicitly opt in. Older payloads are read and migrated on the fly —
-// see `src/lib/persistence.ts`.
-export const STORAGE_VERSION = 9;
+// see `src/lib/persistence.ts`. Bumped to 10 when
+// `advanced.nestedParallelizationEnabled` was retired alongside the v9
+// nested-parallelization feature itself (Phase 4 BREAKING — see
+// `gpu-kernel-dsl-phase4-spec.md`). The field is gone from the
+// `AdvancedSettings` type and is silently dropped on the v9 → v10 read
+// so a saved `true` value does not leak through into a fresh session.
+export const STORAGE_VERSION = 10;
 
 /**
  * Default value for `enableWasm` when no user preference has been

@@ -253,14 +253,17 @@ function buildProject() {
   allBlocks[dupRepeat.id] = dupRepeat.block;
 
   // ===== Comments =====
-  // Both comments are @compute markers. They live on the FIRST substack
-  // block of each repeat (per spec §3.1). Under Phase 3 both regions
-  // are adopted — the diagnostic that drives the panel's "1 error"
-  // assertion is now `gpu.bind_slot_collision` from the first region
-  // (the duplicate `@bind` at slot 0 inside the same region).
+  // §Phase 4 — Form A: both @compute markers live on each region's
+  // kernel container (= the `control_repeat` block itself), not on
+  // the substack entry. The first region carries `@max length=1000`
+  // (removed in v9) → parser emits `gpu.dsl_syntax_error` (severity
+  // `error`) → `PARSER_ERROR_CODES` filter demotes the region to D1.
+  // The second region carries `@bind let(0) ro f32` (reserved keyword)
+  // → the emitter renames it and surfaces `gpu.identifier_collision`
+  // (warn), which the ErrorLogPanel filters out (warn-only is info).
   const comments = {
     cmt_compute_a: {
-      blockId: substackFirst.id,
+      blockId: repeat.id,
       x: 200,
       y: 300,
       width: 280,
@@ -269,15 +272,12 @@ function buildProject() {
       text: DIAGNOSTICS_COMMENT_TEXT,
     },
     cmt_compute_b: {
-      blockId: dupBody.id,
+      blockId: dupRepeat.id,
       x: 200,
       y: 520,
       width: 280,
       height: 200,
       minimized: false,
-      // §Phase 3 — second region survives D1 (no `@max`, no slot
-      // collision) and emits `gpu.identifier_collision` (warn) when
-      // it renames the `let` reserved-keyword binding.
       text: DIAGNOSTICS_SECOND_COMMENT_TEXT,
     },
   };

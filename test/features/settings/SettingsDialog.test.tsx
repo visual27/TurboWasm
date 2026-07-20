@@ -105,7 +105,9 @@ describe('SettingsDialog — layout', () => {
     expect(within(turboSection).getByText('TurboWasm Acceleration')).toBeInTheDocument();
     expect(within(turboSection).getByText('Enable WebGPU')).toBeInTheDocument();
     expect(within(turboSection).getByText('Enable WASM')).toBeInTheDocument();
-    expect(within(turboSection).getByText('Nested @compute (Experimental)')).toBeInTheDocument();
+    // §Phase 4 — the `Nested @compute (Experimental)` toggle was
+    // retired. The TurboWasm section ends at `Enable WASM`.
+    expect(within(turboSection).queryByText('Nested @compute (Experimental)')).toBeNull();
   });
 
   it('does NOT render the retired GPU Kernels row', () => {
@@ -292,7 +294,7 @@ describe('SettingsDialog — Enable WebGPU toggle (renamed from GPU Kernels)', (
   });
 });
 
-describe('SettingsDialog — Nested @compute toggle (Phase 4 opt-in)', () => {
+describe('SettingsDialog — Nested @compute toggle (§Phase 4 BREAKING: removed)', () => {
   beforeEach(() => {
     useSettingsStore.setState({
       theme: 'system',
@@ -305,53 +307,27 @@ describe('SettingsDialog — Nested @compute toggle (Phase 4 opt-in)', () => {
     });
   });
 
-  it('defaults the toggle to OFF (safe migration default)', () => {
+  it('no longer renders the Nested @compute toggle', () => {
+    // Phase 4 retired the v9 nested-parallelization feature alongside
+    // its opt-in toggle. The Settings dialog must not surface the
+    // toggle anymore.
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const toggle = screen.getByLabelText('Nested @compute toggle') as HTMLButtonElement;
-    expect(toggle.getAttribute('data-state')).toBe('unchecked');
-    expect(useSettingsStore.getState().advanced.nestedParallelizationEnabled).toBe(false);
+    expect(screen.queryByLabelText('Nested @compute toggle')).toBeNull();
   });
 
-  it('flips the toggle ON and propagates to the store', async () => {
-    const user = userEvent.setup();
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const toggle = screen.getByLabelText('Nested @compute toggle');
-    await user.click(toggle);
-    expect(useSettingsStore.getState().advanced.nestedParallelizationEnabled).toBe(true);
-  });
-
-  it('places the Nested @compute toggle after Enable WASM inside the TurboWasm section', () => {
+  it('the TurboWasm section ends with the Enable WASM row', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const turboSection = screen
       .getByTestId('settings-section-turbowasm')
       .closest('section') as HTMLElement;
-    const labels = Array.from(turboSection.querySelectorAll('label')).map((el) => el.textContent ?? '');
+    const labels = Array.from(turboSection.querySelectorAll('label')).map(
+      (el) => el.textContent ?? '',
+    );
     const wasmIdx = labels.findIndex((l) => l === 'Enable WASM');
-    const nestedIdx = labels.findIndex((l) => l?.startsWith('Nested @compute'));
     expect(wasmIdx).toBeGreaterThanOrEqual(0);
-    expect(nestedIdx).toBeGreaterThan(wasmIdx);
-  });
-
-  it('does NOT force nestedParallelizationEnabled back to true on "Set as default"', async () => {
-    // Unlike `enableWebgpu`, this toggle is a power-user opt-in. Locking
-    // it OFF must survive "Set as default" — see AGENTS.md §GPU Kernels
-    // (M1–M7) and nested-parallelization-05-phase4 §3.7.
-    const user = userEvent.setup();
-    useSettingsStore.getState().patchAdvanced({ nestedParallelizationEnabled: false });
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    await user.click(screen.getByTestId('settings-set-default'));
-    const s = useSettingsStore.getState();
-    expect(s.advanced.nestedParallelizationEnabled).toBe(false);
-    expect(s.defaultAdvanced.nestedParallelizationEnabled).toBe(false);
-  });
-
-  it('persists an opt-in across "Set as default" so a reload keeps it on', async () => {
-    const user = userEvent.setup();
-    useSettingsStore.getState().patchAdvanced({ nestedParallelizationEnabled: true });
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    await user.click(screen.getByTestId('settings-set-default'));
-    const s = useSettingsStore.getState();
-    expect(s.defaultAdvanced.nestedParallelizationEnabled).toBe(true);
+    // No "Nested @compute" row anywhere.
+    const nestedIdx = labels.findIndex((l) => l?.startsWith('Nested @compute'));
+    expect(nestedIdx).toBe(-1);
   });
 });
 

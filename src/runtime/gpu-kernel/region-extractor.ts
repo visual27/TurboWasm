@@ -2,44 +2,28 @@
  * Walk an SB3 `project.json`-shaped tree and find the regions defined by
  * `@compute` block comments on `control_repeat` blocks.
  *
- * Region definition (spec §3.1):
+ * Region definition (§Phase 4, gpu-kernel-dsl-phase4-spec §4.1 — Form A):
  *
  *   region entrance:
- *     a `control_repeat` block whose `inputs.SUBSTACK` points at a
- *     substack; the *first* substack block carries a comment whose text
- *     starts with `@compute`.
+ *     a `control_repeat` block that *itself* carries a comment whose
+ *     text starts with `@compute`. The anchor IS the kernel container.
  *   region body:
- *     every block reachable from that first substack via `next` traversal,
- *     including sub-repeats inside it.
+ *     every block reachable from the kernel container's
+ *     `inputs.SUBSTACK` head via `next` traversal, including sub-repeats
+ *     inside it.
  *
- * Repeat-until / while / forever are NOT allowed as region entrances
- * (§4.6). We extract them anyway (so the block-subsetter can D1-demote
- * them), but we never call their substack a region body.
+ * Non-`control_repeat` anchors (legacy first-substack position, non-repeat
+ * blocks, repeatUntil/while/forever) surface a
+ * `gpu.legacy_compute_comment_position` warning once per anchor and are
+ * skipped — no region is created. Anchor-level multi-comment cases
+ * (same block carrying duplicate `@compute` markers) emit
+ * `gpu.multiple_compute_regions` once and the first marker wins.
  *
- * §Phase 0 (nested-parallelization-01-phase0 §3.7): the candidate
- * (`@compute`-marked `control_repeat`) and the kernel container are
- * distinguished. The kernel container is the candidate's *nearest
- * ancestor* `control_repeat` — or the candidate itself when no ancestor
- * exists (= legacy outer-only layout). This lets `fn expo` style
- * nested layouts carry their `@compute` marker on the deepest
- * `control_repeat` while still emitting WGSL over the surrounding loop.
- *
- * §Phase 3 (gpu-kernel-dsl-phase3-spec §3.1) — multiple `@compute`
- * regions per sprite. The extractor now adopts *every* distinct
- * `@compute` candidate as its own `ExtractedRegion`. The dedupe keys
- * are:
- *
- *   1. Same candidate `blockId` carrying more than one `@compute` marker
- *      → `MULTIPLE_COMPUTE_REGIONS` (severity `error`), no extra region.
- *   2. Same kernel container shared by 2+ adopted regions
- *      → `KERNEL_CONTAINER_COLLISION` (severity `warn`), only the first
- *      adopted region survives (the rest are dropped).
- *
- * Cross-region slot overlap on `@bind` is intentionally allowed; the
- * cross-region overlap path is detected at `region-verdict-pipeline.ts`
- * and surfaced via `console.debug` only (spec §3.2 + AGENTS.md policy
- * that all diagnostics flow through `ErrorLogPanel` — info-level
- * outputs are excluded).
+ * §Phase 4: `findKernelContainer` / ancestor promotion / kernel-container
+ * collision logic was removed. The comment anchor IS the kernel
+ * container, and the path table (`repeatPathTable`) is built alongside
+ * the region so the resolver (`repeat-path-resolver.ts`) can map user
+ * `@repeat` directives onto concrete `control_repeat` block ids.
  */
 
 import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
@@ -47,7 +31,9 @@ import { extractBlockReference } from './block-reference';
 import type {
   Diagnostic,
   ExtractedRegion,
+  ParsedComment,
   ParsedProject,
+  ParsedTarget,
   RawBlock,
 } from './types';
 
@@ -62,154 +48,110 @@ export interface RegionExtractionResult {
 export function extractRegions(project: ParsedProject): RegionExtractionResult {
   const regions: ExtractedRegion[] = [];
   const diagnostics: Diagnostic[] = [];
-
-  // Per spec §3.1: the `@compute` comment lives on the first substack
-  // block, not on the `control_repeat` itself. Index comments by their
-  // owning blockId so we can look up "what comment does block X carry".
-  const commentIdByBlockId = new Map<string, string>();
-  for (const [commentId, comment] of Object.entries(project.comments)) {
-    if (!comment || !comment.blockId) continue;
-    commentIdByBlockId.set(comment.blockId, commentId);
-  }
+  // §Phase 4: warn-once per non-Form-A anchor so users upgrading from
+  // v9 fixtures see one diagnostic per malformed marker rather than
+  // one per (anchor, sprite) pair. The set is keyed by `blockId` so
+  // a single anchor's two markers deduplicate.
+  const warnedLegacyAnchors = new Set<string>();
 
   for (const target of project.targets) {
-    // Phase 0/3: collect every `@compute`-marked control_repeat in this
-    // sprite. From Phase 3 onward every candidate becomes its own
-    // region; the duplicates and collisions are surfaced via
-    // diagnostics rather than silently dropped.
-    const candidates: RawBlock[] = [];
-    for (const block of Object.values(target.blocks)) {
-      if (!block) continue;
-      if (block.opcode !== 'control_repeat') continue;
-      const firstSubstackId = readSubstackId(block);
-      if (!firstSubstackId) continue;
-      const entryBlock = target.blocks[firstSubstackId];
-      if (!entryBlock) continue;
-      const commentId = commentIdByBlockId.get(entryBlock.id);
-      if (!commentId) continue;
-      const comment = project.comments[commentId];
-      if (!comment) continue;
-      if (!comment.text.trim().startsWith('@compute')) continue;
-      candidates.push(block);
-    }
+    const candidates = collectComputeAnchorCandidates(target, project.comments);
     if (candidates.length === 0) continue;
 
-    // Phase 3: per-candidate loop. Each candidate either becomes a
-    // region or is skipped (and a diagnostic is emitted) when:
-    //   - a prior candidate already adopted the same `blockId`
-    //     (`MULTIPLE_COMPUTE_REGIONS`, error), or
-    //   - a prior candidate already adopted the same kernel container
-    //     (`KERNEL_CONTAINER_COLLISION`, warn).
-    //
-    // The `regionIndex` increments only for adopted regions so the
-    // index forms a 0..N-1 sequence with no holes (= every region's
-    // index equals its position in the sprite-local adopted list).
-    const seenCandidateBlockIds = new Map<string, ExtractedRegion>();
-    const usedKernelContainers = new Map<string, ExtractedRegion>();
+    // §Phase 4: per-candidate adoption with kernel-container
+    // collision removed. The anchor IS the kernel container, so two
+    // distinct anchors on two distinct control_repeats always
+    // survive independently. Two markers on the same anchor produce
+    // a `MULTIPLE_COMPUTE_REGIONS` error and only the first wins.
+    const seenCandidateBlockIds = new Set<string>();
     let regionIndex = 0;
-    for (const candidate of candidates) {
-      // Defensive dedupe: a single `control_repeat` should not appear
-      // twice in `candidates[]`, but if duplicate comments point at
-      // the same entry block we still surface the diagnostic and skip.
-      const existingRegion = seenCandidateBlockIds.get(candidate.id);
-      if (existingRegion) {
-        const regionId = `region:${target.id}:${existingRegion.kernelContainerBlockId}:${existingRegion.regionIndex}`;
+    for (const { block, commentId } of candidates) {
+      if (seenCandidateBlockIds.has(block.id)) {
+        const regionId = `region:${target.id}:${block.id}:${regionIndex - 1}`;
         diagnostics.push({
           severity: 'error',
           code: GPU_DIAGNOSTIC_CODES.MULTIPLE_COMPUTE_REGIONS,
           regionId,
-          blockId: existingRegion.kernelContainerBlockId,
+          blockId: block.id,
           message:
-            `control_repeat block ${candidate.id} has multiple @compute markers; pick one`,
+            `control_repeat block ${block.id} has multiple @compute markers; pick one`,
         });
         continue;
       }
 
-      const kernelContainer = findKernelContainer(candidate, target.blocks);
-      const kernelContainerId = kernelContainer.id;
-
-      // Same kernel container already adopted by an earlier candidate?
-      // Surface the warn and skip — the earlier region keeps its slot.
-      const existingContainer = usedKernelContainers.get(kernelContainerId);
-      if (existingContainer) {
-        const regionId = `region:${target.id}:${existingContainer.kernelContainerBlockId}:${existingContainer.regionIndex}`;
-        diagnostics.push({
-          severity: 'warn',
-          code: GPU_DIAGNOSTIC_CODES.KERNEL_CONTAINER_COLLISION,
-          regionId,
-          blockId: kernelContainerId,
-          message:
-            `kernel container ${kernelContainerId} is shared by multiple @compute regions; only the first is adopted`,
-        });
+      // §Phase 4: anchor gating. The only accepted opcode is
+      // `control_repeat`. Anything else surfaces
+      // `gpu.legacy_compute_comment_position` once and is skipped.
+      if (block.opcode !== 'control_repeat') {
+        if (!warnedLegacyAnchors.has(block.id)) {
+          warnedLegacyAnchors.add(block.id);
+          diagnostics.push({
+            severity: 'warn',
+            code: GPU_DIAGNOSTIC_CODES.LEGACY_COMPUTE_COMMENT_POSITION,
+            blockId: block.id,
+            message:
+              `@compute on non-control_repeat block ('${block.opcode}') is removed in v10; ` +
+              `attach the marker to a control_repeat block to adopt a region`,
+          });
+        }
         continue;
       }
 
-      // The body entry is the candidate's substack head when nested, or
-      // the kernel container's substack head when the candidate is the
-      // outermost control_repeat (legacy case).
-      const isNested = candidate.id !== kernelContainer.id;
-      let bodyEntry: RawBlock;
-      let commentBlockId: string;
-      if (isNested) {
-        const candidateSubId = readSubstackId(candidate);
-        if (!candidateSubId) continue;
-        const candidateEntry = target.blocks[candidateSubId];
-        if (!candidateEntry) continue;
-        bodyEntry = candidateEntry;
-        commentBlockId = candidateEntry.id;
-      } else {
-        const kernelSubId = readSubstackId(kernelContainer);
-        if (!kernelSubId) continue;
-        const kernelEntry = target.blocks[kernelSubId];
-        if (!kernelEntry) continue;
-        bodyEntry = kernelEntry;
-        commentBlockId = kernelEntry.id;
+      const substackId = readSubstackId(block);
+      if (!substackId) {
+        if (!warnedLegacyAnchors.has(block.id)) {
+          warnedLegacyAnchors.add(block.id);
+          diagnostics.push({
+            severity: 'warn',
+            code: GPU_DIAGNOSTIC_CODES.LEGACY_COMPUTE_COMMENT_POSITION,
+            blockId: block.id,
+            message:
+              `@compute on control_repeat '${block.id}' has no SUBSTACK body; region skipped`,
+          });
+        }
+        continue;
       }
-
-      const commentId = commentIdByBlockId.get(commentBlockId);
-      if (!commentId) continue;
+      const substackEntry = target.blocks[substackId];
+      if (!substackEntry) {
+        if (!warnedLegacyAnchors.has(block.id)) {
+          warnedLegacyAnchors.add(block.id);
+          diagnostics.push({
+            severity: 'warn',
+            code: GPU_DIAGNOSTIC_CODES.LEGACY_COMPUTE_COMMENT_POSITION,
+            blockId: block.id,
+            message:
+              `@compute on control_repeat '${block.id}' points at a missing SUBSTACK head; region skipped`,
+          });
+        }
+        continue;
+      }
 
       const bodyIds = walkSubstackBody(
         target.blocks,
-        bodyEntry,
-        new Set([kernelContainerId]),
+        substackEntry,
+        new Set([block.id]),
+      );
+      const repeatPathTable = buildRepeatPathTable(
+        block,
+        target.blocks,
       );
 
-      // Phase 0: every control_repeat visible from the body — *excluding*
-      // the kernel container itself — is a candidate for Phase 2's
-      // implicit-axis emission. The `@compute` candidate itself is also a
-      // target when nested, but it sits *outside* the walk (the walk
-      // starts at the candidate's substack head) so we add it explicitly.
-      const nestedRepeatContainerBlockIds: string[] = [];
-      if (isNested) {
-        nestedRepeatContainerBlockIds.push(candidate.id);
-      }
-      for (const id of bodyIds) {
-        if (id === kernelContainerId) continue;
-        if (id === candidate.id) continue;
-        const b = target.blocks[id];
-        if (b && b.opcode === 'control_repeat') {
-          nestedRepeatContainerBlockIds.push(id);
-        }
-      }
-
-      const regionId = `region:${target.id}:${kernelContainerId}:${regionIndex}`;
+      const regionId = `region:${target.id}:${block.id}:${regionIndex}`;
       const region: ExtractedRegion = {
         regionId,
-        blockId: kernelContainerId,
+        blockId: block.id,
         spriteId: target.id,
         commentId,
-        firstSubstackBlockId: commentBlockId,
+        firstSubstackBlockId: substackEntry.id,
         bodyBlockIds: bodyIds,
-        kernelContainerBlockId: kernelContainerId,
-        nestedRepeatContainerBlockIds,
+        kernelContainerBlockId: block.id,
+        repeatPathTable,
         regionIndex,
         inlinedPrototypeBlockIds: [],
-        commentAnchorBlockId: commentBlockId,
+        commentAnchorBlockId: block.id,
       };
 
-      seenCandidateBlockIds.set(candidate.id, region);
-      usedKernelContainers.set(kernelContainerId, region);
+      seenCandidateBlockIds.add(block.id);
       regions.push(region);
       regionIndex += 1;
     }
@@ -218,35 +160,106 @@ export function extractRegions(project: ParsedProject): RegionExtractionResult {
   return { regions, diagnostics };
 }
 
+interface AnchorCandidate {
+  block: RawBlock;
+  commentId: string;
+}
+
 /**
- * Promote a `@compute`-marked candidate to a kernel container.
+ * Collect every block that carries an `@compute` comment and decide
+ * whether it qualifies as a Phase 4 Form A anchor.
  *
- * Walks the candidate's `parent` chain and returns the nearest ancestor
- * whose opcode is `control_repeat`. When no such ancestor exists (the
- * candidate is sprite-level / topLevel), the candidate itself is
- * returned unchanged — this matches the legacy behaviour where the
- * `@compute` marker sits on the only control_repeat in the sprite.
+ * §Phase 4:
+ *   - `opcode === 'control_repeat'` ⇒ accept as anchor (kernel
+ *     container itself).
+ *   - `opcode === 'control_repeat_until' / 'control_while' /
+ *     'control_forever'` ⇒ warn-once + skip (these loop shapes are
+ *     never supported as region entrances).
+ *   - Any other opcode (legacy first-substack marker, sibling
+ *     block, etc.) ⇒ warn-once + skip.
  *
- * §Phase 0 (nested-parallelization-01-phase0 §3.7). Stops at the first
- * `control_repeat` ancestor; outer scratch loops further up the chain
- * remain ordinary scratch and are not promoted.
+ * The function returns both the adopted candidates AND the warning
+ * diagnostics inline so the caller can fold them into the result
+ * without re-walking the block tree.
  */
-function findKernelContainer(
-  candidate: RawBlock,
-  blocks: Record<string, RawBlock>,
-): RawBlock {
-  let current: RawBlock | undefined = candidate;
-  while (current) {
-    const parentId: string | null = current.parent;
-    if (typeof parentId !== 'string') break;
-    const parent: RawBlock | undefined = blocks[parentId];
-    if (!parent) break;
-    if (parent.opcode === 'control_repeat' && parent.id !== candidate.id) {
-      return parent;
-    }
-    current = parent;
+function collectComputeAnchorCandidates(
+  target: ParsedTarget,
+  projectComments: Record<string, ParsedComment>,
+): AnchorCandidate[] {
+  const candidates: AnchorCandidate[] = [];
+  // Each `@compute` comment is its own candidate — even when two
+  // markers share a `blockId`. The per-candidate loop downstream is
+  // responsible for emitting `MULTIPLE_COMPUTE_REGIONS` when the same
+  // anchor carries duplicate markers.
+  for (const [commentId, comment] of Object.entries(projectComments)) {
+    if (!comment || !comment.blockId) continue;
+    if (!comment.text.trim().startsWith('@compute')) continue;
+    const owner = target.blocks[comment.blockId];
+    if (!owner) continue;
+    candidates.push({ block: owner, commentId });
   }
-  return candidate;
+  return candidates;
+}
+
+/**
+ * Build the `repeatPathTable` for a kernel container. Walks each
+ * repeat's `SUBSTACK` `next` chain and counts direct-child
+ * `control_repeat` siblings only. Non-repeat sibling blocks are not
+ * counted, so inserting ordinary scratch statements between repeats
+ * does not shift any numeric path.
+ *
+ * Each segment is a non-negative integer without leading zeros. The
+ * table maps `'self'` to the kernel container, `'0'` / `'1'` / ...
+ * to direct children, `'0.0'` / `'0.1'` / ... to grandchildren, etc.
+ *
+ * `control_if` and other branch sub-stacks are *not* visited —
+ * v10 leaves nested-`if` repeats out of scope. `SUBSTACK2` is also
+ * ignored.
+ */
+function buildRepeatPathTable(
+  kernelContainer: RawBlock,
+  blocks: Record<string, RawBlock>,
+): Readonly<Record<string, string>> {
+  const table: Record<string, string> = { self: kernelContainer.id };
+  visitRepeatChildren(kernelContainer, '', blocks, table, new Set());
+  return Object.freeze(table);
+}
+
+function visitRepeatChildren(
+  parent: RawBlock,
+  parentPath: string,
+  blocks: Record<string, RawBlock>,
+  table: Record<string, string>,
+  visited: Set<string>,
+): void {
+  if (visited.has(parent.id)) return;
+  visited.add(parent.id);
+
+  const substackId = readSubstackId(parent);
+  if (!substackId) return;
+  const entry = blocks[substackId];
+  if (!entry) return;
+
+  let childIndex = 0;
+  let cursor: RawBlock | undefined = entry;
+  const localVisited = new Set<string>();
+  while (cursor) {
+    if (localVisited.has(cursor.id)) break;
+    localVisited.add(cursor.id);
+    if (cursor.opcode === 'control_repeat') {
+      const segment = String(childIndex);
+      const fullPath = parentPath.length === 0 ? segment : `${parentPath}.${segment}`;
+      if (!Object.prototype.hasOwnProperty.call(table, fullPath)) {
+        table[fullPath] = cursor.id;
+      }
+      visitRepeatChildren(cursor, fullPath, blocks, table, visited);
+      childIndex += 1;
+    }
+    const nextId: string | null = cursor.next;
+    if (typeof nextId !== 'string') break;
+    cursor = blocks[nextId];
+    if (!cursor) break;
+  }
 }
 
 /**
@@ -266,7 +279,7 @@ function readSubstackId(block: RawBlock): string | null {
  * Walk a substack body. We collect every block reachable from `entry`
  * via `next`, and recursively into any substack / branch inputs we find
  * — but we deliberately do NOT follow `next` across the boundary where a
- * block itself is the repeat's entrance (we'd loop).
+ * block itself is the kernel container (we'd loop).
  */
 function walkSubstackBody(
   blocks: Record<string, RawBlock>,

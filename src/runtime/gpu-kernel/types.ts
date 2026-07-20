@@ -146,7 +146,7 @@ export interface WorkgroupSizeDirective {
 }
 
 /**
- * `@repeat R<i>[:<axis>] = <formula>[, blockId="<id>"]`.
+ * `@repeat R<i>[:<axis>] = <formula>, repeatPath="<path>"`.
  *
  * `name` is e.g. `R0`. `axis` defaults to `'sequential'` (the safe
  * fallback) when omitted. `formula` is the raw text after `=` —
@@ -157,13 +157,29 @@ export interface WorkgroupSizeDirective {
  * `internalName` in `for` bindings and `let` references; cascade-analysis
  * still keys on `name` so canonical keys remain stable across quoting.
  *
+ * `repeatPath` (§Phase 4): structural target identifier — either
+ * `self` (= the kernel container that carries the `@compute` marker)
+ * or a numeric path (`0`, `0.1`, `1.2.3`, ...) where each segment
+ * indexes direct-child `control_repeat` siblings of the parent.
+ * Non-repeat sibling blocks are not counted, so adding ordinary
+ * scratch statements does not shift the path. The runtime resolver
+ * (`repeat-path-resolver.ts`) maps the path onto a concrete
+ * `control_repeat` block id; the resolver's output lives on
+ * `ResolvedRepeatDirective.resolvedRepeatBlockId` (NOT here).
+ *
+ * `blockId` is the `@compute` comment anchor — in Phase 4 that is the
+ * kernel container's `control_repeat` block id (the comment sits on
+ * the `control_repeat` itself, not on its first substack block). It
+ * is **not** a repeat target.
+ *
  * `boundBlockId` (§Phase 0, nested-parallelization-00-overview §1.1):
- * optional trailing `, blockId="<id>"` that names the scratch block
- * (typically a `data_changevariableby` / `data_itemoflist`) the directive
- * is pointing at — i.e. the iteration-advance / indirect-access site
- * that Phase 1 will register into the emitter's skip-set. Distinct from
- * `blockId` (which is the *owning* control_repeat block the directive's
- * comment sits on). Volatile: NOT included in canonical key.
+ * optional pattern-metadata field. The user-facing DSL no longer
+ * writes `blockId=` (Phase 4 replaces it with `repeatPath=`); this
+ * field is reserved for the runtime-only skip-site metadata used by
+ * `iteration-advance-pattern` / `indirect-access-pattern`. Distinct
+ * from `resolvedRepeatBlockId` (the repeat container) and from
+ * `blockId` (the comment anchor). Volatile: NOT included in canonical
+ * key.
  *
  * §Phase 2 (15.3): the inline `, max=<uint>` suffix was removed in v9.
  * The dispatch cap is derived from the runtime list length (see
@@ -175,11 +191,18 @@ export interface RepeatDirective {
   internalName?: string;
   axis: AxisFinal;
   formula: string;
+  /**
+   * §Phase 4 — structural repeat target. `self` for the kernel
+   * container; otherwise a numeric path of sibling-repeat indices.
+   * Resolved to a concrete `control_repeat` block id by
+   * `repeat-path-resolver.ts` downstream of parsing.
+   */
+  repeatPath: string;
   /** The repeat's `control_repeat` block id, for diagnostics. */
   blockId: string;
   /**
-   * Phase 0: explicit binding to a scratch block in the body
-   * (e.g. `data_changevariableby`). Volatile — excluded from canonical key.
+   * Runtime-only pattern-site metadata. Not user-authored in Phase 4.
+   * Volatile — excluded from canonical key.
    */
   boundBlockId?: string;
   line: number;
@@ -200,9 +223,11 @@ export interface RepeatDirective {
  * stable across quote-stripping.
  *
  * `boundBlockId` (§Phase 0, nested-parallelization-00-overview §1.1):
- * optional trailing `, blockId="<id>"` that names the scratch block
- * (typically a `data_itemoflist` read) the directive is pointing at.
- * Volatile: NOT included in canonical key.
+ * runtime-only pattern-site metadata. The user-facing DSL no longer
+ * writes `blockId=` on `@map` (Phase 4 keeps the parser strict and
+ * rejects it as a syntax error); this field is reserved for
+ * `indirect-access-pattern` callers. Volatile: NOT included in
+ * canonical key.
  */
 export interface MapDirective {
   kind: 'map';
@@ -212,8 +237,8 @@ export interface MapDirective {
   /** The owning region's `control_repeat` block id, for diagnostics. */
   blockId: string;
   /**
-   * Phase 0: explicit binding to a scratch block in the body
-   * (e.g. `data_itemoflist` for read). Volatile — excluded from canonical key.
+   * Runtime-only pattern-site metadata. Not user-authored in Phase 4.
+   * Volatile — excluded from canonical key.
    */
   boundBlockId?: string;
   line: number;
@@ -224,6 +249,31 @@ export type ParsedDirective =
   | BindDirective
   | WorkgroupSizeDirective
   | RepeatDirective
+  | MapDirective;
+
+/**
+ * §Phase 4 — a `@repeat` directive whose `repeatPath` has been resolved
+ * onto a concrete `control_repeat` block id by
+ * `repeat-path-resolver.ts`. `resolvedRepeatBlockId` is the runtime
+ * resolution; canonical keys must NOT include it (the user-authored
+ * `repeatPath` already determines equality across save-as-new-project
+ * renumberings).
+ */
+export interface ResolvedRepeatDirective extends RepeatDirective {
+  resolvedRepeatBlockId: string;
+}
+
+/**
+ * §Phase 4 — every `@repeat` inside `RegionVerdict.directives` is a
+ * `ResolvedRepeatDirective`. The union still carries the same surface
+ * (parser output + resolution metadata) so downstream code can keep
+ * using the `ParsedDirective` shape but the runtime guarantees a
+ * `resolvedRepeatBlockId` for every `@repeat`.
+ */
+export type ResolvedParsedDirective =
+  | BindDirective
+  | WorkgroupSizeDirective
+  | ResolvedRepeatDirective
   | MapDirective;
 
 /**
@@ -269,53 +319,64 @@ export interface ParsedProject {
  * `@compute` region per spec §4.5 — that becomes a D1 demote of the
  * outer region).
  *
- * §Phase 0 (nested-parallelization-01-phase0 §3.2): `blockId` is unified
- * with `kernelContainerBlockId`. In the legacy case (outer `@compute`),
- * the candidate and kernel container are identical; in the nested case
- * (`@compute` on a deeper `control_repeat`), `blockId` is promoted to
- * the ancestor's id (= kernel container). All downstream code that
- * referenced `region.blockId` therefore continues to refer to the
- * kernel container — including `kernel-registry.ts` and
- * `block-subset.ts`.
+ * §Phase 4: `blockId`, `kernelContainerBlockId`, and
+ * `commentAnchorBlockId` all point at the same `control_repeat` block
+ * (the kernel container) because the `@compute` marker now sits on
+ * the `control_repeat` itself. `firstSubstackBlockId` is the kernel
+ * container's `inputs.SUBSTACK` head — distinct from the comment
+ * anchor. `nestedRepeatContainerBlockIds` was removed in Phase 4; the
+ * `repeatPathTable` field replaces it as the resolver's source of
+ * truth for `@repeat` target lookup.
  */
 export interface ExtractedRegion {
   regionId: string;
   /**
-   * Kernel container's `control_repeat` block id. Phase 0 unified with
-   * `kernelContainerBlockId`. In the legacy case this equals the
-   * `@compute`-marked candidate's id.
+   * Kernel container's `control_repeat` block id. Phase 4 unifies this
+   * with `kernelContainerBlockId` and `commentAnchorBlockId` (the
+   * `@compute` marker lives on the same block).
    */
   blockId: string;
   spriteId: string;
   commentId: string;
+  /**
+   * Kernel container's `inputs.SUBSTACK` head. Distinct from
+   * `blockId` in Phase 4 because the body lives one level below the
+   * kernel container.
+   */
   firstSubstackBlockId: string;
   /**
-   * Flat list of every block id reachable from the entry substack via
-   * `next` traversal. The block-subsetter then walks each block's
-   * `inputs.SUBSTACK` / `inputs.SUBSTACK2` separately to find any
-   * nested control blocks — a nested `@compute` here triggers D1 on the
-   * outer region.
+   * Flat list of every block id reachable from the kernel container's
+   * substack via `next` traversal. The block-subsetter then walks each
+   * block's `inputs.SUBSTACK` / `inputs.SUBSTACK2` separately to find
+   * any nested control blocks — a nested `@compute` here triggers D1
+   * on the outer region.
    */
   bodyBlockIds: string[];
   /**
-   * Phase 0: kernel container's `control_repeat` block id. Identical to
-   * `blockId`. Phase 2 will use this as the implicit-axis carrier for
-   * nested `@compute` layouts.
+   * Phase 4: kernel container's `control_repeat` block id. Identical
+   * to `blockId` because the `@compute` marker sits on the container
+   * itself.
    */
   kernelContainerBlockId: string;
   /**
-   * Phase 0: list of body-side `control_repeat` block ids that are
-   * candidates for implicit axis emission in Phase 2. Includes the
-   * `@compute` candidate itself when nested. Empty for the legacy
-   * (outer-only) layout.
+   * §Phase 4: structural repeat-path table indexed by `repeatPath`.
+   * `self` always points at the kernel container. Numeric paths
+   * (`'0'`, `'0.1'`, ...) point at direct-child `control_repeat`
+   * siblings counted along each repeat's `SUBSTACK` `next` chain.
+   * Non-repeat sibling blocks are not counted, so inserting ordinary
+   * scratch statements does not shift any numeric path.
+   *
+   * `repeat-path-resolver.ts` reads this table to resolve each
+   * `@repeat` directive's `repeatPath` onto a concrete `control_repeat`
+   * block id (`ResolvedRepeatDirective.resolvedRepeatBlockId`).
    */
-  nestedRepeatContainerBlockIds: string[];
+  repeatPathTable: Readonly<Record<string, string>>;
   /**
    * Phase 1 (gpu-kernel-dsl-phase1-spec §1.2): per-sprite region index
    * (0-based). Disambiguates region ids when a sprite carries multiple
-   * `@compute` regions (Phase 3). In Phase 1-2 the extractor emitted at
-   * most one region per sprite; from Phase 3 onward this is incremented
-   * per adopted candidate.
+   * `@compute` regions. In Phase 1-2 the extractor emitted at most one
+   * region per sprite; from Phase 3 onward this is incremented per
+   * adopted candidate.
    */
   regionIndex: number;
   /**
@@ -325,12 +386,11 @@ export interface ExtractedRegion {
    */
   inlinedPrototypeBlockIds: readonly string[];
   /**
-   * Phase 1 (gpu-kernel-dsl-phase1-spec §1.2): scratch block id that
-   * directly carries the `@compute` comment marker. In Phase 1-3 this
-   * carries the same value as `firstSubstackBlockId` (= first substack
-   * entry block) because the legacy layout puts the marker there;
-   * Phase 4 switches to `control_repeat`-level loose position and
-   * `commentAnchorBlockId` diverges from `firstSubstackBlockId`.
+   * Phase 4: scratch block id that directly carries the `@compute`
+   * comment marker. Always equal to `blockId` / `kernelContainerBlockId`
+   * because the marker now sits on the kernel container itself; kept on
+   * the type for downstream diagnostic helpers that surface a stable
+   * block id even when sub-tree discovery shifts.
    */
   commentAnchorBlockId: string;
 }
@@ -385,6 +445,11 @@ export interface IterationAdvancePattern {
  * key 計算 (`kernel-registry.ts:stripDirectiveVolatile`) には関与しない
  * (= 自動採番で命名揺れがあっても canonical 同一性を維持)。
  */
+// §Phase 4 — implicit-axis generation was retired along with the
+// v9 nested-parallelization feature. Every `@repeat` directive now
+// resolves structurally via `repeatPathTable`. The interface stays
+// exported as a historical reference; nothing in the codebase
+// references it anymore. Remove this block in Phase 6.
 export interface ImplicitAxis {
   /** axis name (e.g. 'Ry', 'Rx0', 'Rx1'). 自動採番。 */
   name: string;
@@ -492,12 +557,25 @@ export interface CascadeVerdict {
 /**
  * The full verdict for one region. The runtime consults this in M5
  * (kernel-registry) to decide whether to build a pipeline.
+ *
+ * §Phase 4: `nestedRepeatContainerBlockIds` and `implicitAxes` were
+ * removed. Repeats are resolved structurally via
+ * `ResolvedRepeatDirective.resolvedRepeatBlockId`; the emitter
+ * consults the `repeatByBlockId` map to decide whether a target
+ * `control_repeat` runs in parallel, sequential `for`, or is left
+ * implicit (= `@repeat` directive missing).
  */
 export interface RegionVerdict {
   regionId: string;
   blockId: string;
   spriteId: string;
-  directives: ParsedDirective[];
+  /**
+   * §Phase 4: every `@repeat` here is a `ResolvedRepeatDirective` with
+   * `resolvedRepeatBlockId` populated. The union lets downstream code
+   * keep using `ParsedDirective`-style discriminants while the runtime
+   * guarantees a resolved block id for repeat lookup.
+   */
+  directives: ResolvedParsedDirective[];
   blockSubset: BlockSubsetVerdict;
   axes: Record<string, AxisVerdict>;
   cascade: CascadeVerdict;
@@ -505,46 +583,22 @@ export interface RegionVerdict {
   /**
    * Convenience: the WGSL emitter only needs to look at this. It is the
    * list of every axis that survived D2 demote and will run in
-   * parallel. Sequential axes are folded back into a for-loop in WGSL
-   * (or, more simply, the kernel is just skipped and JS runs).
+   * parallel. Sequential axes are folded back into a `for` loop in
+   * WGSL at the structural position of the target `control_repeat`.
    */
   parallelAxes: { repeatName: string; axis: AxisFinal }[];
   /**
-   * Phase 2: kernel container's `control_repeat` block id (= `blockId`
-   * と同値、Phase 0 で unification 済み)。`wgsl-emitter.ts` が
-   * `RegionVerdict.blockId` と比較して nested/legacy を分岐するために
-   * 持つが、現状は `blockId` と同義なので参照しない。
+   * Phase 4: kernel container's `control_repeat` block id. Always
+   * identical to `blockId` because the `@compute` marker sits on the
+   * container itself. Kept on the verdict for downstream helpers that
+   * need to distinguish the kernel container from the comment anchor
+   * when sub-tree discovery shifts.
    */
   kernelContainerBlockId: string;
   /**
-   * Phase 2: candidate's substack head (= `@compute` マーカーが
-   * 付いた control_repeat の SUBSTACK 先頭ブロック)。`wgsl-emitter.ts`
-   * が body entry として使う。
-   *
-   * - legacy (outer-only): kernel container の substack head (= `@compute`
-   *   ブロック) と同一。
-   * - nested: candidate の substack head。kernel container の substack
-   *   head ではない (= そこに `@compute` は付かない)。
+   * Phase 4: kernel container's `inputs.SUBSTACK` head. The emitter
+   * uses this as the body entry point (NOT the `@compute` marker
+   * block).
    */
   firstSubstackBlockId: string;
-  /**
-   * Phase 2: body 内の control_repeat blockId 一覧 (candidate を含む、
-   * kernel container は除外)。`collectImplicitAxes` 入力の source。
-   *
-   * - legacy (outer-only) レイアウトでは空配列。
-   * - nested レイアウトでは `[candidateId, ...bodyRepeats]`。
-   * - candidate が nested の場合の第一要素 = `Rx0` に対応する control_repeat。
-   */
-  nestedRepeatContainerBlockIds: readonly string[];
-  /**
-   * Phase 2: `collectImplicitAxes` で生成された implicit axis 群。
-   * `region-verdict-pipeline.ts:buildRegionVerdicts` 出口では空配列
-   * (= emitter 入口で再計算される)。`kernel-registry.ts` が
-   * `RegionVerdict` を保持して `__exposeForBrowserVerify` から観測する
-   * ケースでは emitter 計算後の値が入る。
-   *
-   * canonical key 計算には関与しない (`stripVolatile` がこのフィールドを
-   * 見ないため、scratch block 構造の変化で canonical key は不変)。
-   */
-  implicitAxes?: readonly ImplicitAxis[];
 }

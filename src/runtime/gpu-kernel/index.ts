@@ -10,6 +10,8 @@
 export * from './types';
 export { parseComputeComment } from './comment-parser';
 export { extractRegions, getBlockOrUndefined } from './region-extractor';
+export { resolveRepeatPaths } from './repeat-path-resolver';
+export type { ResolveRepeatPathsResult } from './repeat-path-resolver';
 export { buildBlockSubsetVerdict, classifyBlockSubset } from './block-subset';
 export type { BuildBlockSubsetVerdictInput } from './block-subset';
 export {
@@ -43,14 +45,6 @@ export type {
   WorkgroupLimits,
   WorkgroupSize,
 } from './wgsl-emitter';
-export {
-  axisToRepeatDirective,
-  collectImplicitAxes,
-} from './implicit-axis';
-export type {
-  CollectImplicitAxesInput,
-  CollectImplicitAxesResult,
-} from './implicit-axis';
 export {
   buildScratchBlockExprContext,
   scratchBlockToWgslExpr,

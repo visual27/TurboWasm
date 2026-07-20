@@ -13,19 +13,24 @@ index ebf1951..f61fa33 100644
 +        //   * writes the kernel result back into the bound buffers,
 +        //   * returns a DispatchResult; `{ ok: true, demoted: false }` means
 +        //     "handled, skip the JS path"; any other shape (including
-+        //     `{ ok: false, demoted: true }` from a D4 demote, or `false`)
++        //     `{ ok: false, demoted: true }` from a D4 demote, or
++        //     `{ ok: false, demoted: false }` for an unregistered kernel)
 +        //     means "fall through to the JS path".
-+        // Async (Promise<DispatchResult>) dispatches are awaited via the
-+        // vendored sequencer's Promise support, so the dispatcher can
-+        // safely do `await queue.onSubmittedWorkDone()` + `mapAsync`.
++        // Async (Promise<DispatchResult>) dispatches are returned to the
++        // vendored sequencer, which awaits Promise-typed primitive
++        // return values. This keeps the JS body single-execute: a single
++        // Promise resolution drives one explicit fall-through branch
++        // startBranch call, eliminating the detached `.then()` race that
++        // could double-execute the body if the user pressed the green flag
++        // faster than the GPU.
 +        // NOTE: we MUST inspect `handled.ok && !handled.demoted` rather
 +        // than just `handled` — a `{ ok:false, demoted:true }` object is
 +        // truthy, so a bare `if (handled) skip-body` would silently drop
 +        // the JS body on D4 demote.
 +        // Throw safety (§19.5 #33): wrap the synchronous call in
-+        // try/catch and surface rejections via `.then(fulfilled,
-+        // rejected)` so a buggy dispatcher cannot freeze the VM
-+        // primitive. Both paths fall through to the JS body on error.
++        // try/catch; async rejections are surfaced via `.then(_, rejected)`
++        // so a buggy dispatcher cannot freeze the VM primitive. Both
++        // paths fall through to the JS body on error.
 +        const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
 +        if (typeof __twGpuBlockId === 'string') {
 +            const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
@@ -37,23 +42,19 @@ index ebf1951..f61fa33 100644
 +                    if (typeof console !== 'undefined' && console.error) {
 +                        console.error('[gpu-kernel] dispatcher hook threw:', __twGpuErr);
 +                    }
-+                    __twGpuResult = false;
++                    __twGpuResult = { ok: false, demoted: true };
 +                }
 +                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
-+                    // Async dispatch — yield the thread so the Promise
-+                    // can resolve. On resolution we run the JS path
-+                    // manually if the dispatcher fell through.
-+                    if (util && typeof util.yield === 'function') {
-+                        util.yield();
-+                    }
-+                    Promise.resolve(__twGpuResult).then(function (handled) {
-+                        // D4-safe judgment: only treat as handled when the
-+                        // dispatcher explicitly says so. `null`/`undefined`/
-+                        // `false` and any failure shape all fall through
-+                        // to the JS body.
++                    // Return the Promise so the vendored sequencer awaits
++                    // its resolution before the next VM step. The fallback
++                    // branch startBranch() runs only on a fall-through
++                    // result (any `!handled.ok || handled.demoted` shape)
++                    // so the JS body executes exactly once.
++                    return Promise.resolve(__twGpuResult).then(function (handled) {
 +                        if (!handled || !handled.ok || handled.demoted) {
-+                            // Dispatcher fell back. Run the JS path
-+                            // manually for this iteration.
++                            // Dispatcher fell back. Initialise the loop
++                            // counter and start the branch manually so
++                            // the JS body runs exactly once.
 +                            if (typeof util.stackFrame.loopCounter === 'undefined') {
 +                                util.stackFrame.loopCounter = times;
 +                            }
@@ -74,12 +75,18 @@ index ebf1951..f61fa33 100644
 +                            util.startBranch(1, true);
 +                        }
 +                    });
-+                    return;
 +                }
-+                // Sync return path. Boolean false → fall through; any
-+                // other truthy non-`{ok:true,demoted:false}` shape is
-+                // conservatively also a fall-through.
-+                if (__twGpuResult === true) {
++                // Sync return path. The dispatcher must now return a
++                // structured DispatchResult; treat only an explicit
++                // `{ ok: true, demoted: false }` as handled. Any other
++                // shape (including `{ ok: false, demoted: false }` for
++                // an unregistered kernel) falls through.
++                if (
++                    __twGpuResult &&
++                    typeof __twGpuResult === 'object' &&
++                    __twGpuResult.ok === true &&
++                    __twGpuResult.demoted === false
++                ) {
 +                    return;
 +                }
 +            }
@@ -105,11 +112,10 @@ index ebf1951..f61fa33 100644
 +                    if (typeof console !== 'undefined' && console.error) {
 +                        console.error('[gpu-kernel] dispatcher hook threw:', __twGpuErr);
 +                    }
-+                    __twGpuResult = false;
++                    __twGpuResult = { ok: false, demoted: true };
 +                }
 +                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
-+                    if (util && typeof util.yield === 'function') util.yield();
-+                    Promise.resolve(__twGpuResult).then(function (handled) {
++                    return Promise.resolve(__twGpuResult).then(function (handled) {
 +                        if (!handled || !handled.ok || handled.demoted) {
 +                            if (!condition) util.startBranch(1, true);
 +                        }
@@ -119,9 +125,15 @@ index ebf1951..f61fa33 100644
 +                        }
 +                        if (!condition) util.startBranch(1, true);
 +                    });
++                }
++                if (
++                    __twGpuResult &&
++                    typeof __twGpuResult === 'object' &&
++                    __twGpuResult.ok === true &&
++                    __twGpuResult.demoted === false
++                ) {
 +                    return;
 +                }
-+                if (__twGpuResult === true) return;
 +            }
 +        }
          // If the condition is false (repeat UNTIL), start the branch.
@@ -131,9 +143,9 @@ index ebf1951..f61fa33 100644
  
      repeatWhile (args, util) {
          const condition = Cast.toBoolean(args.CONDITION);
-+        // TurboWasm: GPU hook. See `repeat` for sync/async semantics.
-+        // Throw safety (§19.5 #33): sync call wrapped in try/catch;
-+        // async path uses `.then(_, rejected)`.
++        // TurboWasm: identical hook to `repeat` above. See `repeat` for
++        // the sync/async dispatch contract. Throw safety (§19.5 #33):
++        // sync call wrapped in try/catch; async path uses `.then(_, rejected)`.
 +        const __twGpuBlockId = util && util.thread && util.thread.peekStack && util.thread.peekStack();
 +        if (typeof __twGpuBlockId === 'string') {
 +            const __twGpuHook = (typeof globalThis !== 'undefined' && globalThis.__turboWasmGpuKernelDispatch) || null;
@@ -145,11 +157,10 @@ index ebf1951..f61fa33 100644
 +                    if (typeof console !== 'undefined' && console.error) {
 +                        console.error('[gpu-kernel] dispatcher hook threw:', __twGpuErr);
 +                    }
-+                    __twGpuResult = false;
++                    __twGpuResult = { ok: false, demoted: true };
 +                }
 +                if (__twGpuResult && typeof __twGpuResult.then === 'function') {
-+                    if (util && typeof util.yield === 'function') util.yield();
-+                    Promise.resolve(__twGpuResult).then(function (handled) {
++                    return Promise.resolve(__twGpuResult).then(function (handled) {
 +                        if (!handled || !handled.ok || handled.demoted) {
 +                            if (condition) util.startBranch(1, true);
 +                        }
@@ -159,9 +170,15 @@ index ebf1951..f61fa33 100644
 +                        }
 +                        if (condition) util.startBranch(1, true);
 +                    });
++                }
++                if (
++                    __twGpuResult &&
++                    typeof __twGpuResult === 'object' &&
++                    __twGpuResult.ok === true &&
++                    __twGpuResult.demoted === false
++                ) {
 +                    return;
 +                }
-+                if (__twGpuResult === true) return;
 +            }
 +        }
          // If the condition is true (repeat WHILE), start the branch.

@@ -165,6 +165,19 @@ export class KernelRegistry {
     return kernel.jsOnly ? undefined : kernel;
   }
 
+  /**
+   * Look up a kernel *including* `jsOnly` entries. Used by the
+   * dispatcher (`apply-gpu-kernels.ts`) to surface a structured
+   * D4 DispatchResult when the kernel was previously demoted — the
+   * default {@link lookup} hides jsOnly kernels so the JS path can
+   * take over without the dispatcher re-running the GPU submit.
+   */
+  lookupJsOnly(blockId: string): Kernel | undefined {
+    const id = this.byBlockId.get(blockId);
+    if (id === undefined) return undefined;
+    return this.byCanonicalKey.get(canonicalKeyForId(this.byCanonicalKey, id));
+  }
+
   /** Look up a kernel by its region id (used by `__dispatch-kernel-sync`). */
   lookupById(kernelId: string): Kernel | undefined {
     for (const kernel of this.byCanonicalKey.values()) {
@@ -330,8 +343,12 @@ function stripDirectiveVolatile(
     case 'workgroup_size':
       return { kind: d.kind, x: d.x, y: d.y, z: d.z };
     case 'repeat':
-      // Note: `boundBlockId` (Phase 0) は意図的に含めない。scratch block
-      // の id が変わっても canonical key は不変。
+      // Note: `boundBlockId` (Phase 0 pattern metadata) is intentionally
+      // excluded so a scratch block id change does not shift the
+      // canonical key. `resolvedRepeatBlockId` (Phase 4) is the runtime
+      // mirror of `repeatPath`; we keep the user-authored path in the
+      // key (NOT the resolved id) so two structurally identical projects
+      // share a pipeline across save-as-new-project renumberings.
       //
       // §Phase 2 (15.3): the inline `, max=<uint>` field is removed
       // alongside the `@max` directive. No canonical-key change is
@@ -343,6 +360,7 @@ function stripDirectiveVolatile(
         name: d.name,
         axis: d.axis,
         formula: d.formula,
+        repeatPath: d.repeatPath,
       };
     case 'map':
       // Note: `boundBlockId` (Phase 0) は意図的に含めない。

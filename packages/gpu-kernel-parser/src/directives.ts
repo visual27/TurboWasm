@@ -60,6 +60,6 @@ export const DIRECTIVE_DESCRIPTIONS: Record<DirectiveName, string> = {
   workgroup_size:
     'Workgroup dimensions. Form: `@workgroup_size(x[,y[,z]])`. Each value must be ≥ 1. Defaults to (64,1,1).',
   repeat:
-    'Repeat loop declaration. Form: `@repeat R<i>[:<axis>] = <formula>[, blockId="<id>"]`. Requires a matching `@map`.',
-  map: 'WGSL `let` binding. Form: `@map <var> <- <formula>[, blockId="<id>"]`. The formula may be rewritten to avoid WGSL reserved words.',
+    'Repeat loop declaration. Form: `@repeat R<i>[:<axis>] = <formula>, repeatPath="<path>"`. `repeatPath` is required (`self` or a numeric path of sibling-repeat indices, e.g. `0`, `0.1`, `1.2.3`). Requires a matching `@map`.',
+  map: 'WGSL `let` binding. Form: `@map <var> <- <formula>`. The formula may be rewritten to avoid WGSL reserved words.',
 };

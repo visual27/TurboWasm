@@ -2,20 +2,25 @@
  * Regression tests for the vendored scratch-vm control hook return value
  * contract (gpu-kernel-spec §7.2).
  *
- * Background — §19.3 #22 (resolved in this commit):
+ * Background — §19.3 #22:
  *
- *   `dispatchKernel` returns `Promise<DispatchResult>` where a `D4 demote`
- *   resolves to the *truthy* object `{ ok: false, demoted: true }`. The
- *   vendored `scratch3_control.js` hook awaits the Promise via `.then()`
- *   and used to test the resolved value with `if (!handled)`. Because
- *   a plain object is truthy even when it represents failure, the JS
- *   path was **silently skipped** on D4 demote — leaving `control_repeat`
- *   loops un-executed for kernels the dispatcher rejected.
+ *   `dispatchKernel` returns `Promise<DispatchResult>` (Phase 4
+ *   unifies the contract; previously it returned `Promise<boolean>`
+ *   collapsed from the structured result). A `D4 demote` resolves to
+ *   the *truthy* object `{ ok: false, demoted: true }`. The vendored
+ *   `scratch3_control.js` hook awaits the Promise via `.then()` and
+ *   used to test the resolved value with `if (!handled)`. Because a
+ *   plain object is truthy even when it represents failure, the JS
+ *   path was **silently skipped** on D4 demote — leaving
+ *   `control_repeat` loops un-executed for kernels the dispatcher
+ *   rejected.
  *
  *   The fix replaces `if (!handled)` with
  *   `if (!handled || !handled.ok || handled.demoted)` so that only an
  *   explicit `{ ok: true, demoted: false }` skips the JS body; every
- *   other shape falls through.
+ *   other shape falls through. The sync path uses an explicit
+ *   `ok === true && demoted === false` shape check (no truthy
+ *   shortcut) for the same reason.
  *
  * This test pins the contract down from two angles:
  *
@@ -23,11 +28,9 @@
  *      `!handled || !handled.ok || handled.demoted` pattern in three
  *      places (`repeat`, `repeatUntil`, `repeatWhile`). A future refactor
  *      that regresses to a bare `!handled` should fail this test.
- *   2. **Behavioural**: the dispatcher returns a `Promise<DispatchResult>`
- *      and the contract holds across the failure shapes the kernel
- *      registry can produce. We confirm the dispatcher contract
- *      separately here so the source-inspection is not the only line
- *      of defence.
+ *   2. **Behavioural**: the dispatcher returns a
+ *      `DispatchResult | Promise<DispatchResult>` and the contract holds
+ *      across the failure shapes the kernel registry can produce.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -70,7 +73,7 @@ function makeVerdict(blockId: string, binds: BindDirective[]): RegionVerdict {
     diagnostics: [],
     parallelAxes: [],
     kernelContainerBlockId: blockId,
-    nestedRepeatContainerBlockIds: [],
+    
     firstSubstackBlockId: '',
   };
 }
@@ -78,7 +81,7 @@ function makeVerdict(blockId: string, binds: BindDirective[]): RegionVerdict {
 const REPO_ROOT = resolve(__dirname, '../../..');
 const VENDORED_CONTROL = resolve(
   REPO_ROOT,
-  'vendored/scratch-vm/src/blocks/scratch3_control.js',
+  'vendored/scaffolding/node_modules/scratch-vm/src/blocks/scratch3_control.js',
 );
 const PATCH_FILE = resolve(REPO_ROOT, 'patches/vendored/gpu-kernel-runtime+0.1.0.patch');
 
@@ -124,11 +127,17 @@ describe('vendored scratch3_control.js hook contract (source-inspection)', () =>
     expect(guardMatches?.length ?? 0).toBeGreaterThanOrEqual(3);
   });
 
-  it('sync path requires a literal `true` (not just truthy) to skip the body', () => {
+  it('sync path requires an explicit DispatchResult (not bare truthy) to skip the body', () => {
     const src = readRepoFile(VENDORED_CONTROL);
-    expect(src).toMatch(/if\s*\(\s*__twGpuResult\s*===\s*true\s*\)/);
-    // And must NOT regress to the bare truthy form.
-    expect(src).not.toMatch(/if\s*\(\s*__twGpuResult\s*\)\s*\{\s*\/\/\s*Sync truthy/);
+    // The sync path must check the structured DispatchResult shape,
+    // not the boolean truthiness. The Phase 4 contract is:
+    //   `__twGpuResult.ok === true && __twGpuResult.demoted === false`.
+    expect(src).toMatch(
+      /__twGpuResult\.ok\s*===\s*true\s*&&\s*__twGpuResult\.demoted\s*===\s*false/,
+    );
+    // Must NOT regress to a bare `__twGpuResult === true` form or any
+    // truthy shortcut.
+    expect(src).not.toMatch(/if\s*\(\s*__twGpuResult\s*===\s*true\s*\)/);
   });
 
   it('patch file carries the same contract (round-trip regeneration safety)', () => {
@@ -147,24 +156,22 @@ describe('applyGpuKernels dispatcher contract (§19.3 #22, behavioural)', () => 
    * The dispatcher contract from the patch's perspective:
    *
    *   - When the kernel is registered, the dispatcher returns
-   *     `Promise<boolean>` (resolved `true` = handled, `false` = fall-through).
-   *     The vendored sequencer awaits this via `.then()`.
+   *     `Promise<DispatchResult>`. The vendored sequencer awaits it via
+   *     `.then()`. Only `{ ok: true, demoted: false }` skips the JS body;
+   *     every other shape (including `{ ok: false, demoted: true }` for
+   *     a D4 demote and `{ ok: false, demoted: false }` for an
+   *     unregistered kernel) falls through.
    *   - When no kernel is registered for the block id, the dispatcher
-   *     returns a **synchronous** `false` — never `true` — so the patch's
-   *     sync path (`if (__twGpuResult === true)`) is the one and only
-   *     way for the dispatcher to "skip" the JS body without going
-   *     through the GPU path. The patch path was the only path that
-   *     was previously `truthy`-only (§19.3 #22), so this contract
-   *     pins it down.
-   *   - The async path never resolves to `true` directly — the
-   *     dispatcher does `r.ok && !r.demoted` so even `{ok:true,
-   *     demoted:false}` becomes a JS `true`. The Promise body is
-   *     `boolean`, NOT `DispatchResult`. The patch's
-   *     `if (!handled || !handled.ok || handled.demoted)` judgment
-   *     targets the *DispatchResult* shape; the dispatcher-installed
-   *     async path collapses it to `boolean` before the patch sees it.
+   *     returns a **synchronous** `DispatchResult` shape
+   *     (`{ ok: false, demoted: false }`) so the patch's sync path
+   *     (`__twGpuResult.ok === true && __twGpuResult.demoted === false`)
+   *     cleanly rejects it and falls through to the JS body.
+   *   - The previous contract returned `boolean | Promise<boolean>` so
+   *     `r.ok && !r.demoted` collapsed truthy D4 objects into
+   *     `Promise<true>`. Phase 4 removes the collapse so the structured
+   *     shape survives to the patch.
    */
-  it('returns a Promise<boolean> resolving to false on D4 demote (kernel registered)', async () => {
+  it('returns a Promise<DispatchResult> on D4 demote (kernel registered)', async () => {
     const registry = new KernelRegistry();
     const pool = new ListBufferPool({ device: null });
     applyGpuKernels({
@@ -179,15 +186,18 @@ describe('applyGpuKernels dispatcher contract (§19.3 #22, behavioural)', () => 
 
     const result = window.__turboWasmGpuKernelDispatch?.(verdict.blockId);
     expect(result).toBeInstanceOf(Promise);
-    // device=null → D4 demote → Promise resolves to false. The patch's
-    // `if (!handled || !handled.ok || handled.demoted)` judgement on
-    // the underlying DispatchResult is already collapsed to boolean
-    // false here; the patch sees the false and falls through.
-    const resolved = await (result as unknown as Promise<boolean>);
-    expect(resolved).toBe(false);
+    // device=null → D4 demote → Promise resolves to `{ ok: false,
+    // demoted: true }`. The patch's structured judgement sees this as
+    // a fall-through and the JS body runs exactly once.
+    const resolved = await (result as unknown as Promise<{
+      ok: boolean;
+      demoted: boolean;
+    }>);
+    expect(resolved.ok).toBe(false);
+    expect(resolved.demoted).toBe(true);
   });
 
-  it('returns synchronous false when the kernel id is unregistered', () => {
+  it('returns a synchronous DispatchResult when the kernel id is unregistered', () => {
     const registry = new KernelRegistry();
     const pool = new ListBufferPool({ device: null });
     applyGpuKernels({
@@ -198,14 +208,11 @@ describe('applyGpuKernels dispatcher contract (§19.3 #22, behavioural)', () => 
       device: null,
     });
     const result = window.__turboWasmGpuKernelDispatch?.('unregistered-block');
-    // Synchronous false — no Promise. The patch's
-    // `if (__twGpuResult === true)` literal comparison correctly
-    // rejects this and falls through to the JS body.
-    expect(result).toBe(false);
     expect(result).not.toBeInstanceOf(Promise);
+    expect(result).toMatchObject({ ok: false, demoted: false });
   });
 
-  it('returns synchronous false when the kernel is jsOnly (D4 demoted previously)', () => {
+  it('returns a synchronous D4 DispatchResult when the kernel is jsOnly', () => {
     const registry = new KernelRegistry();
     const pool = new ListBufferPool({ device: null });
     applyGpuKernels({
@@ -222,18 +229,15 @@ describe('applyGpuKernels dispatcher contract (§19.3 #22, behavioural)', () => 
     registry.markJsOnly(verdict.regionId, 'synthetic');
 
     const result = window.__turboWasmGpuKernelDispatch?.(verdict.blockId);
-    expect(result).toBe(false);
     expect(result).not.toBeInstanceOf(Promise);
+    expect(result).toMatchObject({ ok: false, demoted: true });
   });
 
-  it('never returns synchronous true from the dispatcher (sync path is reserved)', () => {
-    // The patch's `if (__twGpuResult === true)` is the only path that
-    // could skip the JS body synchronously. The dispatcher must NEVER
-    // return `true` synchronously — otherwise a D4 demote (truthy
-    // object) and a fake "always-handled" dispatcher become
-    // indistinguishable from a real success. We verify by exhaustively
-    // calling the dispatcher with several block ids and asserting none
-    // synchronously returns true.
+  it('never returns a truthy shortcut from the dispatcher (sync path is structured)', () => {
+    // Phase 4: the dispatcher never returns a bare `true` /
+    // truthy value — every sync result is a structured DispatchResult.
+    // A future regression that returns `Promise.resolve(true)` or a
+    // bare `true` would re-introduce §19.3 #22.
     const registry = new KernelRegistry();
     const pool = new ListBufferPool({ device: null });
     applyGpuKernels({
@@ -243,12 +247,12 @@ describe('applyGpuKernels dispatcher contract (§19.3 #22, behavioural)', () => 
       pool,
       device: null,
     });
-    expect(window.__turboWasmGpuKernelDispatch?.('none-1')).not.toBe(true);
-    expect(window.__turboWasmGpuKernelDispatch?.('none-2')).not.toBe(true);
+    expect(typeof window.__turboWasmGpuKernelDispatch?.('none-1')).toBe('object');
+    expect(typeof window.__turboWasmGpuKernelDispatch?.('none-2')).toBe('object');
     const verdict = makeVerdict('b1', [makeBind('a', 0, false)]);
     registry.register(verdict, 'wgsl');
     registry.markJsOnly(verdict.regionId, 'synthetic');
-    expect(window.__turboWasmGpuKernelDispatch?.(verdict.blockId)).not.toBe(true);
+    expect(typeof window.__turboWasmGpuKernelDispatch?.(verdict.blockId)).toBe('object');
   });
 });
 
@@ -345,6 +349,26 @@ describe('dispatch hook throw safety (§19.5 #33)', () => {
     // the rejection is caught and routed to the JS body.
     const wrapCount = countOccurrences(src, /Promise\.resolve\(__twGpuResult\)\.then/);
     expect(wrapCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('returns the Promise to the VM (no detached .then + util.yield race)', () => {
+    // Phase 4 unification: the async hook returns the Promise so the
+    // vendored sequencer awaits it on the same primitive frame. A
+    // future refactor that falls back to `util.yield() + detached
+    // .then()` would re-introduce the double-execute race on a fast
+    // green-flag press.
+    const src = readRepoFile(VENDORED_CONTROL);
+    // The new shape is `return Promise.resolve(...).then(...)` for
+    // each of the three hook sites. The detached `util.yield()` +
+    // bare `return;` combination must NOT appear.
+    const returnCount = countOccurrences(
+      src,
+      /return\s+Promise\.resolve\(__twGpuResult\)\.then/,
+    );
+    expect(returnCount).toBeGreaterThanOrEqual(3);
+    // No `util.yield()` followed by a `.then(...)` chain — that path
+    // is the legacy detached-callback design.
+    expect(src).not.toMatch(/util\.yield\(\);\s*Promise\.resolve/);
   });
 
   it('patch file carries the throw safety contract (round-trip regeneration safety)', () => {

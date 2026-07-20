@@ -129,8 +129,7 @@ async function killPreview(proc) {
   }
 }
 
-async function captureForMode(browser, mode, fixturePath, options = {}) {
-  const { nestedParallelizationEnabled = false } = options;
+async function captureForMode(browser, mode, fixturePath) {
   const context = await browser.newContext({
     viewport: { width: 800, height: 600 },
   });
@@ -148,27 +147,28 @@ async function captureForMode(browser, mode, fixturePath, options = {}) {
 
   // Pre-seed localStorage with the requested mode BEFORE first paint.
   // `mode` is parsed as a boolean: `'true'` → `true`, anything else →
-  // `false`. The persisted version is the current STORAGE_VERSION (9
-  // since Phase 4). When `nestedParallelizationEnabled` is set, the
-  // Phase 4 gate (player.ts:bootstrapGpuKernels) lets nested
-  // `@compute` regions through to the GPU pipeline.
+  // `false`. §Phase 4 (BREAKING): the v9 `nestedParallelizationEnabled`
+  // opt-in gate was retired. Every Form A region is now handled
+  // uniformly by the kernel pipeline; the legacy vs. nested
+  // distinction lives only in the fixture shape. We bump the persisted
+  // `version` to 10 (= current STORAGE_VERSION) so v9 → v10 migration
+  // drops the legacy field silently.
   const enableWasm = mode === 'true';
   await context.addInitScript(
-    ({ key, enableWasm, nestedParallelizationEnabled }) => {
+    ({ key, enableWasm }) => {
       const existingRaw = localStorage.getItem(key);
       let parsed;
       try {
-        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 9 };
+        parsed = existingRaw ? JSON.parse(existingRaw) : { state: {}, version: 10 };
       } catch {
-        parsed = { state: {}, version: 9 };
+        parsed = { state: {}, version: 10 };
       }
       parsed.state.enableWasm = enableWasm;
       parsed.state.advanced = parsed.state.advanced || {};
-      parsed.state.advanced.nestedParallelizationEnabled = nestedParallelizationEnabled;
-      parsed.version = 9;
+      parsed.version = 10;
       localStorage.setItem(key, JSON.stringify(parsed));
     },
-    { key: SETTINGS_KEY, enableWasm, nestedParallelizationEnabled },
+    { key: SETTINGS_KEY, enableWasm },
   );
 
   await page.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded' });
@@ -335,8 +335,14 @@ async function main() {
   // variant for CI subsetting.
   const variantArg = (process.env.TURBOWASM_VARIANT ?? 'both').toLowerCase();
   const requestedVariants = [
-    { name: 'legacy', generator: makeExpoFixture, nestedParallelizationEnabled: false },
-    { name: 'nested', generator: makeNestedExpoFixture, nestedParallelizationEnabled: true },
+    // §Phase 4 — the legacy / nested distinction now lives in the
+    // fixture shape, not in a runtime gate. Both variants use Form A
+    // (loose-position `@compute` on `control_repeat`); the `nested`
+    // variant nests an inner `control_repeat` inside the kernel
+    // container so the structural dispatch path is exercised
+    // independently of the single-axis `legacy` path.
+    { name: 'legacy', generator: makeExpoFixture },
+    { name: 'nested', generator: makeNestedExpoFixture },
   ].filter((v) => variantArg === 'both' || v.name === variantArg);
   if (requestedVariants.length === 0) {
     // eslint-disable-next-line no-console
@@ -367,18 +373,8 @@ async function main() {
       const variantResults = {};
       for (const variant of requestedVariants) {
         const fixturePath = await variant.generator();
-        const captureEnabled = await captureForMode(
-          browser,
-          'true',
-          fixturePath,
-          { nestedParallelizationEnabled: variant.nestedParallelizationEnabled },
-        );
-        const captureDisabled = await captureForMode(
-          browser,
-          'false',
-          fixturePath,
-          { nestedParallelizationEnabled: variant.nestedParallelizationEnabled },
-        );
+        const captureEnabled = await captureForMode(browser, 'true', fixturePath);
+        const captureDisabled = await captureForMode(browser, 'false', fixturePath);
 
         const webgpu = inferWebgpuAvailable(captureEnabled.gpuKernelLines);
         if (webgpuSeen === null && webgpu !== null) webgpuSeen = webgpu;

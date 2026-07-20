@@ -18,6 +18,7 @@ import {
 } from './region-extractor';
 import { buildBlockSubsetVerdict } from './block-subset';
 import { parseComputeComment } from './comment-parser';
+import { resolveRepeatPaths } from './repeat-path-resolver';
 import { analyzeAxes } from './axis-analysis';
 import { analyzeCascade } from './cascade-analysis';
 import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
@@ -104,7 +105,12 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
     // (Phase 2 §15.2) routes it through `PARSER_ERROR_CODES`.
     const slotCollisionDiagnostics = detectSlotCollision(region, parsed.directives);
     parsed.diagnostics.push(...slotCollisionDiagnostics);
-    // 2. D1 + Phase 1 pattern extraction: `buildBlockSubsetVerdict` is
+    // 2. §Phase 4 — resolve every `@repeat`'s `repeatPath` onto a
+    // concrete `control_repeat` block id. Resolution diagnostics
+    // share the parser-error demote path so missing / duplicate
+    // paths surface as D1 demotes.
+    const resolved = resolveRepeatPaths(region, parsed.directives);
+    // 3. D1 + Phase 1 pattern extraction: `buildBlockSubsetVerdict` is
     // the canonical entry that combines the D1 verdict with the
     // auto-detected `effectivePatterns` (= skip-set for the WGSL emitter
     // in Phase 2). §Phase 1 (nested-parallelization-02-phase1 §3.7).
@@ -116,11 +122,11 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
       region,
       project: input.parsedProject,
       comments: input.parsedProject.comments,
-      parsedDirectives: parsed.directives,
-      parsedDiagnostics: parsed.diagnostics,
+      parsedDirectives: resolved.directives,
+      parsedDiagnostics: [...parsed.diagnostics, ...resolved.diagnostics],
     });
     // 3. D2: per-axis verdict.
-    const axesResult = analyzeAxes(region, parsed.directives, input.parsedProject);
+    const axesResult = analyzeAxes(region, resolved.directives, input.parsedProject);
     // 4. D3: cascade verdict (uses survived-axes set).
     const survivedAxes = new Set<string>();
     for (const [name, verdict] of Object.entries(axesResult.axes)) {
@@ -156,18 +162,17 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
       regionId: region.regionId,
       blockId: region.blockId,
       spriteId: region.spriteId,
-      directives: parsed.directives,
+      directives: resolved.directives as RegionVerdict['directives'],
       blockSubset,
       axes: axesResult.axes,
       cascade,
       diagnostics,
       parallelAxes,
-      // Phase 2 (nested-parallelization-03-phase2): ExtractedRegion から
-      // kernel container / nested repeats / firstSubstackBlockId を
-      // RegionVerdict に伝搬。`implicitAxes` は emitRegion 入口で再計算
-      // されるため、ここでは省略 (= undefined)。
+      // §Phase 4: kernel container and `firstSubstackBlockId` are
+      // carried verbatim from the ExtractedRegion. `nestedRepeatContainerBlockIds`
+      // and `implicitAxes` were removed (repeats resolve via
+      // `ResolvedRepeatDirective.resolvedRepeatBlockId`).
       kernelContainerBlockId: region.kernelContainerBlockId,
-      nestedRepeatContainerBlockIds: region.nestedRepeatContainerBlockIds,
       firstSubstackBlockId: region.firstSubstackBlockId,
     });
   }

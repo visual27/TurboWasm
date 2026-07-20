@@ -279,7 +279,7 @@ async function buildExpoSb3(): Promise<ArrayBuffer> {
         blocks: allBlocks,
         comments: {
           cmt_compute: {
-            blockId: substackFirstId,
+            blockId: repeatId,
             x: 200,
             y: 300,
             width: 280,
@@ -389,21 +389,14 @@ describe('player.ts: bootstrapGpuKernels wiring (source-inspection)', () => {
     expect(src).toMatch(/enableWasm\s*=\s*false\s*;\s*skipping\s+@compute/);
   });
 
-  it('nestedParallelizationEnabled=false filters nested regions (Phase 4 gate)', () => {
-    // Phase 4 (nested-parallelization-05-phase4 §3.7): the gate must
-    //   1. read `currentAdvanced?.nestedParallelizationEnabled` from the
-    //      runtime advanced settings
-    //   2. drop every verdict whose `nestedRepeatContainerBlockIds`
-    //      array is non-empty (= kernel container promoted to an
-    //      ancestor control_repeat)
-    //   3. log a skip line carrying the dropped count when ALL regions
-    //      were filtered out
+  it('§Phase 4 — the nestedParallelizationEnabled gate is fully removed', () => {
+    // Phase 4 dropped the v9 nested-parallelization gate entirely.
+    // `bootstrapGpuKernels` no longer reads `nestedParallelizationEnabled`
+    // and no longer filters verdicts by `nestedRepeatContainerBlockIds`
+    // (the field itself is gone — see `ExtractedRegion` type).
     const src = readPlayerSource();
-    expect(src).toMatch(/currentAdvanced\?\.nestedParallelizationEnabled/);
-    expect(src).toMatch(/nestedRepeatContainerBlockIds\.length\s*===\s*0/);
-    // The skip log line is matched by the verify-gpu-kernel harness —
-    // it must mention the gate name and the dropped count.
-    expect(src).toMatch(/nestedParallelizationEnabled\s*=\s*false\s*;\s*skipping/);
+    expect(src).not.toMatch(/nestedParallelizationEnabled/);
+    expect(src).not.toMatch(/nestedRepeatContainerBlockIds/);
   });
 
   it("__exposeForBrowserVerify publishes `kernelRegistry` (size/jsOnly/canonicalKeys) under window.__turbowasm", () => {
@@ -565,7 +558,7 @@ describe('__exposeForBrowserVerify publishes the kernelRegistry snapshot', () =>
         diagnostics: [],
         parallelAxes: [],
         kernelContainerBlockId: 'b1',
-        nestedRepeatContainerBlockIds: [],
+        
         firstSubstackBlockId: '',
       },
       'wgsl-fake',

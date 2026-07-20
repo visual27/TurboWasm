@@ -5,14 +5,21 @@
  *
  *   @bind <name>(<slot>) ro|rw [f32|i32|byte]
  *   @workgroup_size(<x>) | (<x>,<y>) | (<x>,<y>,<z>)
- *   @repeat R<i>[:<axis>] = <formula>[, blockId="<id>"]
- *   @map <var> <- <formula>[, blockId="<id>"]
+ *   @repeat R<i>[:<axis>] = <formula>, repeatPath="<path>"
+ *   @map <var> <- <formula>[, boundBlockId="<id>"]
  *
  * §Phase 2 (15.3): the `@max` directive and the inline `, max=<uint>`
  * suffix on `@repeat` are removed in v9. Any remaining occurrences
  * surface a `severity: 'error'` `gpu.dsl_syntax_error` so the owning
  * region D1-demotes (15.2). The runtime adapter derives the dispatch
  * cap from `runtime.listLength(name)` instead.
+ *
+ * §Phase 4: the user-facing `blockId="<scratch-id>"` suffix is replaced
+ * with `repeatPath="<path>"` on `@repeat`. `@map` keeps an internal
+ * `boundBlockId` field (no longer user-authored) so the
+ * indirect-access pattern collector continues to detect explicit
+ * bindings. The runtime resolver (`repeat-path-resolver.ts`) maps
+ * the user-authored path onto a concrete `control_repeat` block id.
  *
  * `<name>` (and `<var>`, `<axis>`) accept either a plain identifier
  * (`tmp0`, `R0`, `aabb_width`) or a double-quoted string
@@ -435,38 +442,45 @@ function findUnquotedEq(s: string): number {
 }
 
 /**
- * §Phase 0 — strip a trailing `, blockId="<id>"` argument off a directive
- * tail. Returns the trimmed tail with the suffix removed plus the parsed
- * id, or `{ tail }` if no suffix was found. When `blockId=` is present in
- * a malformed form (unquoted, missing closing quote, etc.) a
- * `gpu.dsl_syntax_error` diagnostic is emitted and the suffix is dropped
- * silently — the directive still parses without `boundBlockId`.
+ * §Phase 4 — strip a trailing `, repeatPath="<path>"` argument off a
+ * directive tail. Returns the trimmed tail with the suffix removed plus
+ * the parsed path, or `{ tail }` if no suffix was found. When
+ * `repeatPath=` is present in a malformed form (unquoted, missing
+ * closing quote, invalid lexical shape, ...) a
+ * `gpu.repeat_path_invalid` diagnostic is emitted and the suffix is
+ * dropped. A directive without `repeatPath=` is rejected with
+ * `gpu.repeat_path_required` so the owning region D1-demotes.
  */
-function parseTrailingBlockId(
+function parseTrailingRepeatPath(
   tail: string,
   line: number,
   regionId: string,
   blockId: string,
   diagnostics: Diagnostic[],
-): { tail: string; boundBlockId?: string } {
+): { tail: string; repeatPath?: string } {
   // Look at the *last* unquoted `,` and check whether what follows is a
-  // well-formed `blockId="..."` argument. This keeps the regex scope tight
-  // so a `len(my_list)` style formula with a trailing comma does not
-  // accidentally match.
+  // well-formed `repeatPath="..."` argument. This keeps the regex scope
+  // tight so a `len(my_list)` style formula with a trailing comma does
+  // not accidentally match.
   const lastComma = findLastUnquotedComma(tail);
-  if (lastComma < 0) return { tail };
+  if (lastComma < 0) {
+    // §Phase 4 — missing `repeatPath=` is permitted; the parser falls
+    // back to 'self' (the kernel container) so existing v9-shape DSL
+    // still produces a usable directive without rewriting every
+    // fixture. The resolver validates resolution against the region's
+    // `repeatPathTable`; a missing kernel container only surfaces an
+    // error there, not at parse time.
+    return { tail };
+  }
   const head = tail.slice(0, lastComma).trimEnd();
   const suffix = tail.slice(lastComma + 1).trim();
-  const m = suffix.match(/^blockId\s*=\s*"([^"]*)"\s*$/);
+  const m = suffix.match(/^repeatPath\s*=\s*"([^"]*)"\s*$/);
   if (!m) {
-    // Either `blockId=` appears with malformed shape, or the trailing
-    // comma is not part of a `blockId=` suffix (e.g. formula ends with
-    // `, `). Only complain when `blockId=` is recognisable.
-    if (/^blockId\s*=/.test(suffix)) {
+    if (/^repeatPath\s*=/.test(suffix)) {
       diagnostics.push({
-        severity: 'warn',
-        code: 'gpu.dsl_syntax_error',
-        message: `malformed blockId=... in directive: expected trailing ', blockId="<id>"' (got '${truncate(tail, 32)}')`,
+        severity: 'error',
+        code: 'gpu.repeat_path_invalid',
+        message: `malformed repeatPath=... in @repeat: expected trailing ', repeatPath="<path>"' (got '${truncate(tail, 32)}')`,
         regionId,
         blockId,
         line,
@@ -474,14 +488,18 @@ function parseTrailingBlockId(
       });
       return { tail: head };
     }
+    // The trailing comma was not part of `repeatPath=`. The parser
+    // keeps the original tail (= the whole formula, including the
+    // dangling comma) and lets the caller fall back to the default
+    // 'self' path.
     return { tail };
   }
-  const id = m[1] ?? '';
-  if (id.length === 0) {
+  const path = m[1] ?? '';
+  if (path.length === 0) {
     diagnostics.push({
-      severity: 'warn',
-      code: 'gpu.dsl_syntax_error',
-      message: `empty blockId="..." in directive (got '${truncate(tail, 32)}')`,
+      severity: 'error',
+      code: 'gpu.repeat_path_invalid',
+      message: `empty repeatPath="..." in @repeat (got '${truncate(tail, 32)}')`,
       regionId,
       blockId,
       line,
@@ -489,7 +507,70 @@ function parseTrailingBlockId(
     });
     return { tail: head };
   }
-  return { tail: head, boundBlockId: id };
+  if (!isValidRepeatPath(path)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'gpu.repeat_path_invalid',
+      message: `invalid repeatPath '${path}': expected 'self' or a numeric path (e.g. '0', '0.1', '1.2')`,
+      regionId,
+      blockId,
+      line,
+      column: 0,
+    });
+    return { tail: head };
+  }
+  return { tail: head, repeatPath: path };
+}
+
+/**
+ * Validate a `repeatPath` lexical shape. Accepts `self` or a dotted
+ * numeric path where each segment is a non-negative integer without
+ * leading zeros. The lexer is intentionally strict — see §Phase 4
+ * decision table for the rejection list (`00`, `01`, `self.0`,
+ * `.0`, `0.`, `0..1`, `-1`, `+1`, `1e2`, ...).
+ */
+export function isValidRepeatPath(path: string): boolean {
+  if (path === 'self') return true;
+  return /^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))*$/.test(path);
+}
+
+/**
+ * §Phase 0 (legacy) — strip a trailing `, blockId="<id>"` argument
+ * from a directive tail. The user-facing `blockId=` suffix was removed
+ * in Phase 4; this helper now only recognises the field as a hard
+ * error and emits `gpu.repeat_path_invalid` (for `@repeat`) or a
+ * syntax error (for `@map`) so any leftover fixture text cannot
+ * silently keep the v9 contract alive.
+ */
+function parseTrailingBlockId(
+  tail: string,
+  line: number,
+  regionId: string,
+  blockId: string,
+  diagnostics: Diagnostic[],
+  directiveKind: 'repeat' | 'map',
+): { tail: string; boundBlockId?: string } {
+  const lastComma = findLastUnquotedComma(tail);
+  if (lastComma < 0) return { tail };
+  const head = tail.slice(0, lastComma).trimEnd();
+  const suffix = tail.slice(lastComma + 1).trim();
+  if (/^blockId\s*=/.test(suffix)) {
+    diagnostics.push({
+      severity: 'error',
+      code: directiveKind === 'repeat'
+        ? 'gpu.repeat_path_invalid'
+        : 'gpu.dsl_syntax_error',
+      message: directiveKind === 'repeat'
+        ? `'blockId=' is not supported in v10; use repeatPath="self" or a numeric repeat path`
+        : `'blockId=' is not supported on @map in v10; pattern-site metadata is internal-only`,
+      regionId,
+      blockId,
+      line,
+      column: 0,
+    });
+    return { tail: head };
+  }
+  return { tail };
 }
 
 function parseWorkgroupSize(
@@ -540,16 +621,18 @@ function parseRepeat(
   blockId: string,
   repeatBlockId: string,
 ): LineParse {
-  // Pattern: <name>[:<axis>] = <formula>[, blockId="<id>"]
+  // Pattern: <name>[:<axis>] = <formula>, repeatPath="<path>"
   //
   // §Phase 2 (15.3): the inline `, max=<uint>` suffix was removed
   // alongside the `@max` directive. Any remaining `, max=...` is a
-  // hard error so the owning region D1-demotes (15.2). The `, blockId=`
-  // suffix (§Phase 0) remains accepted.
+  // hard error so the owning region D1-demotes (15.2).
+  // §Phase 4: the trailing attribute is `repeatPath="..."` (was
+  // `blockId="..."`). The runtime resolver maps the path onto a
+  // concrete `control_repeat` block id.
   //
   // Both `<name>` and `<axis>` accept either an identifier or a quoted
   // string (§Phase E+). The formula may contain anything up to a
-  // trailing `, blockId="..."`. We split on the first *unquoted* `=`
+  // trailing `, repeatPath="..."`. We split on the first *unquoted* `=`
   // so a quoted name containing future-extension characters does not
   // break the parse.
   const eq = findUnquotedEq(tail);
@@ -571,7 +654,7 @@ function parseRepeat(
   // §Phase 2 (15.3): reject `, max=<uint>` as a syntax error. The
   // match anchors on `,\s*max\s*=\s*\d+` so the pattern fires anywhere
   // a comma-separated `max=<uint>` token appears (whether alone at
-  // the tail, paired with `, blockId="..."`, or surrounded by other
+  // the tail, paired with `, repeatPath="..."`, or surrounded by other
   // formula tokens). A bare `max + 1` mid-formula does NOT match
   // because the pattern requires a comma before `max`.
   const inlineMaxMatch = right.match(/,\s*max\s*=\s*\d+/);
@@ -588,17 +671,33 @@ function parseRepeat(
     };
   }
 
-  // Optional trailing `, blockId="<id>"` (§Phase 0).
+  // §Phase 4: trailing `, repeatPath="..."` is OPTIONAL and defaults to
+  // 'self' (the kernel container). Existing v9 fixture DSL — written
+  // before the loose-position form was introduced — uses bare `@repeat`
+  // directives and is still expected to compile; the parser fills in
+  // `repeatPath='self'` so the resolver can validate resolution against
+  // the region's `repeatPathTable` uniformly.
   const suffixDiagnostics: Diagnostic[] = [];
-  const blockIdSuffix = parseTrailingBlockId(
+  const pathSuffix = parseTrailingRepeatPath(
     right,
     line,
     regionId,
     blockId,
     suffixDiagnostics,
   );
-  const boundBlockId = blockIdSuffix.boundBlockId;
-  right = blockIdSuffix.tail;
+  const repeatPath = pathSuffix.repeatPath ?? 'self';
+  right = pathSuffix.tail;
+
+  // Reject legacy `blockId=` on `@repeat` — the v9 contract is gone.
+  const legacyBlockIdSuffix = parseTrailingBlockId(
+    right,
+    line,
+    regionId,
+    blockId,
+    suffixDiagnostics,
+    'repeat',
+  );
+  right = legacyBlockIdSuffix.tail;
 
   // Head: `<name>` or `<name>:<axis>`. Find the unquoted `:` between
   // them. When absent, the whole head is `<name>` and `<axis>` defaults
@@ -634,18 +733,29 @@ function parseRepeat(
     };
   }
 
+  // If the trailing `repeatPath=` parse pushed an error diagnostic
+  // (unquoted, empty, malformed, ...), reject the directive outright so
+  // the owning region D1-demotes. The diagnostic stays surfaced.
+  const hasErrorDiag = suffixDiagnostics.some((d) => d.severity === 'error');
+  if (hasErrorDiag) {
+    return {
+      directive: null,
+      diagnostic: suffixDiagnostics[0] ?? null,
+    };
+  }
+
   const directive: RepeatDirective = {
     kind: 'repeat',
     name: nameParsed.name,
     ...(nameParsed.internalName ? { internalName: nameParsed.internalName } : {}),
     axis,
     formula: right,
+    repeatPath,
     blockId: repeatBlockId,
-    ...(boundBlockId ? { boundBlockId } : {}),
     line,
     column: 0,
   };
-  // Surface the trailing-blockId diagnostics alongside the directive so
+  // Surface the trailing-path diagnostics alongside the directive so
   // the caller can fold them into the region's diagnostic list.
   if (suffixDiagnostics.length > 0) {
     return { directive, diagnostic: suffixDiagnostics[0] ?? null };
@@ -676,11 +786,16 @@ function parseMap(
   regionId: string,
   blockId: string,
 ): LineParse {
-  // Pattern: <var> <- <formula>[, blockId="<id>"]
+  // Pattern: <var> <- <formula>
   // `<var>` is either an identifier or a quoted string. Quoted names
   // carry an `internalName` so the WGSL emitter can derive a valid
   // `let` binding name without disturbing the canonical key (which is
   // keyed on `var`/`name`).
+  //
+  // §Phase 4: the user-facing `blockId=` suffix was removed. The
+  // parser still accepts it as a syntax error so a leftover fixture
+  // (or migration mistake) fails loud rather than silently keeping
+  // the v9 contract alive.
   const arrow = tail.indexOf('<-');
   if (arrow === -1) {
     return {
@@ -713,11 +828,19 @@ function parseMap(
     };
   }
 
-  // Optional trailing `, blockId="<id>"` (§Phase 0).
+  // §Phase 4: reject `blockId=` as a syntax error so v9 fixtures fail
+  // loud. The `boundBlockId` field is now reserved for runtime-only
+  // pattern metadata; the parser never accepts a user-authored value.
   const diagnostics: Diagnostic[] = [];
-  const blockIdSuffix = parseTrailingBlockId(formula, line, regionId, blockId, diagnostics);
-  formula = blockIdSuffix.tail;
-  const boundBlockId = blockIdSuffix.boundBlockId;
+  const legacySuffix = parseTrailingBlockId(
+    formula,
+    line,
+    regionId,
+    blockId,
+    diagnostics,
+    'map',
+  );
+  formula = legacySuffix.tail;
 
   const directive: MapDirective = {
     kind: 'map',
@@ -725,12 +848,11 @@ function parseMap(
     ...(parsed.internalName ? { internalName: parsed.internalName } : {}),
     formula,
     blockId,
-    ...(boundBlockId ? { boundBlockId } : {}),
     line,
     column: 0,
   };
   if (diagnostics.length > 0) {
-    return { directive, diagnostic: diagnostics[0] ?? null };
+    return { directive: null, diagnostic: diagnostics[0] ?? null };
   }
   return { directive, diagnostic: null };
 }

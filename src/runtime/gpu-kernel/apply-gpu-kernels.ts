@@ -48,12 +48,21 @@ declare global {
 }
 
 /**
- * Hook signature the vendored scratch-vm runtime expects. Returns a
- * boolean (synchronous) OR a Promise<boolean> (async); the vendored
- * patch is patched to await the Promise and translate truthy →
- * skip-body, falsy → fall through.
+ * Hook signature the vendored scratch-vm runtime expects.
+ *
+ * Phase 4 unifies the contract: the dispatcher returns a
+ * {@link DispatchResult} (synchronously when no GPU work is needed, or
+ * a `Promise<DispatchResult>` when the dispatch is async). The
+ * vendored patch awaits the Promise and skips the JS body only when
+ * the resolved shape is `{ ok: true, demoted: false }`; every other
+ * shape falls through. The previous `boolean | Promise<boolean>`
+ * contract is collapsed to the structured form so a truthy
+ * `{ok:false,demoted:true}` object cannot silently skip the JS body
+ * (see `scratch3-control-hook.test.ts`).
  */
-export type DispatchFn = (blockId: string) => boolean | Promise<boolean>;
+export type DispatchFn = (
+  blockId: string,
+) => DispatchResult | Promise<DispatchResult>;
 
 /**
  * Install / uninstall the GPU kernel dispatcher. Idempotent: calling
@@ -133,9 +142,27 @@ function installDispatcher(options: ApplyGpuKernelsOptions): void {
   const pipelines = options.pipelines ?? new Map();
   const runtime: RuntimeAdapter = options.runtime ?? makeNullRuntime();
   const fn: DispatchFn = (blockId) => {
+    // Phase 4 dispatcher contract: every path returns a structured
+    // `DispatchResult` (or its Promise). A kernel that was previously
+    // D4-demoted is registered but marked `jsOnly`, so we have to
+    // surface a `demoted: true` result here — `lookup()` hides
+    // jsOnly kernels from the JS-visible path on purpose.
     const kernel = options.registry.lookup(blockId);
-    if (!kernel) return false;
-    if (kernel.jsOnly) return false;
+    if (!kernel) {
+      const direct = options.registry.lookupJsOnly(blockId);
+      if (direct) {
+        return {
+          ok: false,
+          demoted: true,
+          message: direct.jsOnlyReason || 'kernel is js-only',
+        } satisfies DispatchResult;
+      }
+      return {
+        ok: false,
+        demoted: false,
+        message: `kernel '${blockId}' not registered`,
+      } satisfies DispatchResult;
+    }
     const ctx: DispatchContext = {
       device: options.device,
       registry: options.registry,
@@ -179,16 +206,21 @@ function installDispatcher(options: ApplyGpuKernelsOptions): void {
       ctx.listLengthBindings = listLengthBindings;
     }
     try {
-      return dispatchKernel(kernel.id, ctx).then(
-        (r: DispatchResult): boolean => r.ok && !r.demoted,
-        (): boolean => false,
-      );
+      // Phase 4 contract: return the DispatchResult (or its Promise)
+      // unchanged. The vendored hook awaits and inspects the
+      // structured shape so a D4 demote cannot silently skip the JS
+      // body via truthiness.
+      return dispatchKernel(kernel.id, ctx);
     } catch (err) {
       // Last-resort safety net: the dispatcher swallows throws, but
       // any synchronous failure here must not propagate to the VM.
       // eslint-disable-next-line no-console
       console.error('[gpu-kernel] dispatcher failed:', err);
-      return false;
+      return {
+        ok: false,
+        demoted: true,
+        message: err instanceof Error ? err.message : String(err),
+      } satisfies DispatchResult;
     }
   };
   window.__turboWasmGpuKernelDispatch = fn;

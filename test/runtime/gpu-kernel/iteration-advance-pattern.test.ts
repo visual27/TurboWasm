@@ -20,7 +20,16 @@ function bind(name: string): BindDirective {
 }
 
 function repeat(name: string, formula: string, blockId = 'r0'): RepeatDirective {
-  return { kind: 'repeat', name, axis: 'sequential', formula, blockId, line: 0, column: 0 };
+  return {
+    kind: 'repeat',
+    name,
+    axis: 'sequential',
+    formula,
+    blockId,
+    repeatPath: 'self',
+    line: 0,
+    column: 0,
+  };
 }
 
 function changeVarBy(id: string, varName: string, delta: number): RawBlock {
@@ -95,7 +104,7 @@ describe('collectIterationAdvancePatterns', () => {
     };
     const directives: ParsedDirective[] = [
       repeat('Rx', 'formula', 'r0'),
-      { kind: 'repeat', name: 'Rx', axis: 'global_x', formula: 'formula', blockId: 'r0', boundBlockId: 'b1', line: 0, column: 0 },
+      { kind: 'repeat', name: 'Rx', axis: 'global_x', formula: 'formula', blockId: 'r0', repeatPath: 'self', boundBlockId: 'b1', line: 0, column: 0 },
     ];
     const result = collectIterationAdvancePatterns(blocks, ['b1'], directives);
     expect(result.patterns).toHaveLength(1);

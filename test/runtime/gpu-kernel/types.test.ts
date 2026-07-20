@@ -13,9 +13,11 @@ import { GPU_DIAGNOSTIC_CODES } from '@/runtime/gpu-kernel/diagnostic-codes';
  * or extractor — they only pin the shape so a future refactor that
  * accidentally drops a field will surface here first.
  */
-describe('types (§Phase 0)', () => {
-  describe('RepeatDirective.boundBlockId', () => {
-    it('is optional — a directive without it is still well-typed', () => {
+describe('types (§Phase 4)', () => {
+  describe('RepeatDirective.repeatPath (§Phase 4)', () => {
+    it('is required — a directive without it is not well-typed', () => {
+      // @ts-expect-error — Phase 4 removed the optional repeatPath;
+      // the parser must always populate it.
       const d: RepeatDirective = {
         kind: 'repeat',
         name: 'R0',
@@ -25,26 +27,26 @@ describe('types (§Phase 0)', () => {
         line: 0,
         column: 0,
       };
-      expect(d.boundBlockId).toBeUndefined();
+      expect(d).toBeDefined();
     });
 
-    it('is accepted when set to a scratch block id', () => {
+    it('is required to be a non-empty string when set', () => {
       const d: RepeatDirective = {
         kind: 'repeat',
         name: 'R0',
         axis: 'global_x',
         formula: 'N',
         blockId: 'r0',
-        boundBlockId: 'abc',
+        repeatPath: 'self',
         line: 0,
         column: 0,
       };
-      expect(d.boundBlockId).toBe('abc');
+      expect(d.repeatPath).toBe('self');
     });
   });
 
-  describe('MapDirective.boundBlockId', () => {
-    it('is optional — a directive without it is still well-typed', () => {
+  describe('MapDirective (Phase 4 — no user-facing blockId)', () => {
+    it('compiles without boundBlockId (parser no longer accepts user value)', () => {
       const d: MapDirective = {
         kind: 'map',
         var: 'idx',
@@ -55,23 +57,10 @@ describe('types (§Phase 0)', () => {
       };
       expect(d.boundBlockId).toBeUndefined();
     });
-
-    it('is accepted when set to a scratch block id', () => {
-      const d: MapDirective = {
-        kind: 'map',
-        var: 'idx',
-        formula: 'R0',
-        blockId: 'm0',
-        boundBlockId: 'def',
-        line: 0,
-        column: 0,
-      };
-      expect(d.boundBlockId).toBe('def');
-    });
   });
 
-  describe('ExtractedRegion (§Phase 0 fields)', () => {
-    it('requires kernelContainerBlockId, nestedRepeatContainerBlockIds', () => {
+  describe('ExtractedRegion (§Phase 4 fields)', () => {
+    it('carries a repeatPathTable alongside the existing kernel-container metadata', () => {
       const region: ExtractedRegion = {
         regionId: 'region:sprite1:r0:0',
         blockId: 'r0',
@@ -80,38 +69,40 @@ describe('types (§Phase 0)', () => {
         firstSubstackBlockId: 'a',
         bodyBlockIds: ['a'],
         kernelContainerBlockId: 'r0',
-        nestedRepeatContainerBlockIds: [],
+        repeatPathTable: { self: 'r0', '0': 'a' },
         regionIndex: 0,
         inlinedPrototypeBlockIds: [],
-        commentAnchorBlockId: 'a',
+        commentAnchorBlockId: 'r0',
       };
-      expect(region.kernelContainerBlockId).toBe('r0');
-      expect(region.nestedRepeatContainerBlockIds).toEqual([]);
+      expect(region.repeatPathTable['self']).toBe('r0');
+      expect(region.repeatPathTable['0']).toBe('a');
+      expect(region.commentAnchorBlockId).toBe('r0');
     });
 
-    it('allows nestedRepeatContainerBlockIds to carry the @compute candidate id', () => {
+    it('§Phase 4 — commentAnchorBlockId === blockId (kernel container) for Form A', () => {
       const region: ExtractedRegion = {
-        regionId: 'region:sprite1:outer:0',
-        blockId: 'outer',
+        regionId: 'region:sprite1:r0:0',
+        blockId: 'r0',
         spriteId: 'sprite1',
         commentId: 'cmt1',
-        firstSubstackBlockId: 'inner_a',
-        bodyBlockIds: ['inner_a', 'inner_b'],
-        kernelContainerBlockId: 'outer',
-        nestedRepeatContainerBlockIds: ['inner'],
+        firstSubstackBlockId: 'a',
+        bodyBlockIds: ['a'],
+        kernelContainerBlockId: 'r0',
+        repeatPathTable: { self: 'r0' },
         regionIndex: 0,
         inlinedPrototypeBlockIds: [],
-        commentAnchorBlockId: 'inner_a',
+        commentAnchorBlockId: 'r0',
       };
-      expect(region.nestedRepeatContainerBlockIds).toEqual(['inner']);
+      expect(region.commentAnchorBlockId).toBe(region.blockId);
+      expect(region.commentAnchorBlockId).toBe(region.kernelContainerBlockId);
     });
 
-    it('§Phase 3 — duplicateComputeBlockIds field is removed from ExtractedRegion', () => {
-      // Type-level guarantee that the legacy field no longer exists.
-      // `ExtractedRegion extends { duplicateComputeBlockIds: unknown }`
+    it('§Phase 4 — nestedRepeatContainerBlockIds field is removed from ExtractedRegion', () => {
+      // Type-level guarantee that the v9 legacy field no longer exists.
+      // `ExtractedRegion extends { nestedRepeatContainerBlockIds: unknown }`
       // must evaluate to `false`. If a future refactor accidentally
       // re-introduces the field, this test fails to compile.
-      type _Assert = ExtractedRegion extends { duplicateComputeBlockIds: unknown }
+      type _Assert = ExtractedRegion extends { nestedRepeatContainerBlockIds: unknown }
         ? 'FORBIDDEN'
         : 'OK';
       const assert: _Assert = 'OK';
@@ -127,7 +118,7 @@ describe('types (§Phase 0)', () => {
         firstSubstackBlockId: 'a',
         bodyBlockIds: ['a'],
         kernelContainerBlockId: 'r0',
-        nestedRepeatContainerBlockIds: [],
+        repeatPathTable: { self: 'b1' },
         regionIndex: 0,
         inlinedPrototypeBlockIds: [],
         commentAnchorBlockId: 'a',

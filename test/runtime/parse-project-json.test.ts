@@ -88,7 +88,7 @@ describe('parseProjectJsonFromArrayBuffer + toParsedProject (§15.1 comments mer
           },
           comments: {
             cmt_compute: {
-              blockId: 'b_substk',
+              blockId: 'repeat0',
               x: 0,
               y: 0,
               width: 200,

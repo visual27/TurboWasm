@@ -53,7 +53,7 @@ function makeVerdict(blockId: string, binds: BindDirective[]): RegionVerdict {
     diagnostics: [],
     parallelAxes: [],
     kernelContainerBlockId: blockId,
-    nestedRepeatContainerBlockIds: [],
+    
     firstSubstackBlockId: '',
   };
 }

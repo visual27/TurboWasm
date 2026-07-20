@@ -1,7 +1,5 @@
 import { rewriteFormula } from './formula-rewrite';
 import { scratchCompatHeader } from './scratch-compat';
-import { buildScratchBlockExprContext } from './scratch-block-expr';
-import { axisToRepeatDirective, collectImplicitAxes } from './implicit-axis';
 import { shouldSkipBlock, type SkipBlockContext } from './skip-block-filter';
 import {
   createScalarUniformBindings,
@@ -18,6 +16,7 @@ import type {
   RawBlock,
   RegionVerdict,
   RepeatDirective,
+  ResolvedRepeatDirective,
   WorkgroupSizeDirective,
 } from './types';
 
@@ -31,7 +30,99 @@ import type {
  * name to alias through `internalName` for `@max`, and the dispatch
  * cap is now derived from the runtime list length at `emitRegion` time.
  */
-export type RepeatDirectiveLike = Pick<RepeatDirective, 'name' | 'internalName'>;
+export type RepeatDirectiveLike = Pick<ResolvedRepeatDirective, 'name' | 'internalName'>;
+
+/**
+ * §Phase 4: the emit helper that decides parallel / sequential / no-
+ * directive for a single `control_repeat` block.
+ */
+function targetFinalAxis(
+  _block: RawBlock,
+  directive: ResolvedRepeatDirective | undefined,
+  context: EmitterContext,
+): AxisFinal {
+  if (directive) {
+    return context.axisVerdicts[directive.name]?.finalAxis ?? directive.axis;
+  }
+  // No directive at all → sequential fallback driven by the scratch
+  // `inputs.TIMES` chain. We do not try to detect "the user forgot
+  // the @repeat" here; that is `repeat-path-resolver.ts`'s job
+  // (D1 demote via `repeat_path_required`). The emitter just makes
+  // the missing-directive case produce a runnable `for` so the
+  // fallback path can compile.
+  return 'sequential';
+}
+
+/**
+ * Emit the body of a `control_repeat` block.
+ *
+ * - parallel target: no `for` wrapper; emit the `SUBSTACK` body
+ *   directly (the dispatcher / dispatch dimensions carry the
+ *   iteration count).
+ * - sequential target: wrap the body in a WGSL `for` driven by the
+ *   directive's formula (or the scratch `inputs.TIMES` chain when
+ *   no directive exists).
+ */
+function emitResolvedRepeat(
+  block: RawBlock,
+  directive: ResolvedRepeatDirective | undefined,
+  context: EmitterContext,
+): string[] {
+  const substackId = extractBlockReference(block.inputs['SUBSTACK']);
+  const substackEntry = substackId ? context.blocks[substackId] : undefined;
+  const bodyLines = substackEntry ? emitStatementChain(substackEntry.id, context) : [];
+
+  const finalAxis = targetFinalAxis(block, directive, context);
+  if (finalAxis === 'sequential' || finalAxis.startsWith('local_')) {
+    return wrapInForLoop(block, directive, bodyLines, context);
+  }
+  return bodyLines;
+}
+
+/**
+ * Wrap `bodyLines` in a WGSL `for` driven by either the directive's
+ * formula or the scratch `inputs.TIMES` chain.
+ *
+ * The loop counter is renamed through the same `renameTable` as the
+ * directive name (so `R0` → `R0`, quoted `R0` → `__tw_<hash>`,
+ * etc.). When the directive axis is `sequential` and the directive is
+ * missing, we fall back to a stable `<block>_counter` local.
+ */
+function wrapInForLoop(
+  block: RawBlock,
+  directive: ResolvedRepeatDirective | undefined,
+  bodyLines: readonly string[],
+  context: EmitterContext,
+): string[] {
+  const counterName = directive
+    ? context.renameTable[directive.name] ?? directive.name
+    : `__tw_counter_${shortHash(block.id)}`;
+  const formula = directive
+    ? emitFormula(directive.formula, directive, context)
+    : emitTimesFromScratch(block, context);
+
+  return [
+    '{',
+    `  var ${counterName}: u32 = 0u;`,
+    `  loop {`,
+    `    if (${counterName} >= u32(${formula})) { break; }`,
+    ...bodyLines.map((line) => `    ${line}`),
+    `    ${counterName} = ${counterName} + 1u;`,
+    `  }`,
+    `}`,
+  ];
+}
+
+/**
+ * Render a Scratch `inputs.TIMES` reporter chain as a WGSL expression
+ * via `emitInput`. Used when a body-side `control_repeat` has no
+ * matching `@repeat` directive.
+ */
+function emitTimesFromScratch(block: RawBlock, context: EmitterContext): string {
+  const times = block.inputs['TIMES'];
+  if (times === undefined) return '1';
+  return emitInput(times, context);
+}
 
 export interface EmitInput {
   regionVerdict: RegionVerdict;
@@ -273,6 +364,21 @@ interface EmitterContext {
   expressionStack: Set<string>;
   /** Phase 2: skip-set (effectivePatterns) for body emission. */
   skipContext: SkipBlockContext;
+  /**
+   * §Phase 4: every `@repeat` directive keyed by its
+   * `resolvedRepeatBlockId`. The structured emit consults this map
+   * to decide whether a target `control_repeat` runs in parallel,
+   * in a structural `for`, or without a directive (= sequential
+   * fallback driven by the scratch TIMES input).
+   */
+  repeatByBlockId: ReadonlyMap<string, ResolvedRepeatDirective>;
+  /**
+   * §Phase 4: per-`@repeat` axis verdicts (`sequential` /
+   * parallel). Used by `emitStatement` / `emitResolvedRepeat` to
+   * decide whether to emit a `for` wrapper or to thread the body
+   * through as-is.
+   */
+  axisVerdicts: Readonly<Record<string, { finalAxis: AxisFinal }>>;
 }
 
 export function clampWorkgroupSize(
@@ -432,7 +538,7 @@ export function emitRegion(input: EmitInput): EmitResult {
   const diagnostics: Diagnostic[] = [];
   const maps = regionVerdict.directives.filter((item): item is MapDirective => item.kind === 'map');
   const repeats = regionVerdict.directives.filter(
-    (item): item is RepeatDirective => item.kind === 'repeat',
+    (item): item is ResolvedRepeatDirective => item.kind === 'repeat',
   );
   const bindings = regionVerdict.directives
     .filter((item): item is BindDirective => item.kind === 'bind')
@@ -484,61 +590,24 @@ export function emitRegion(input: EmitInput): EmitResult {
   // Phase 2: implicit axis 収集 (kernel container + nested repeats の
   // loop count formula → Ry/Rx<N> axis)。legacy レイアウト
   // (nestedRepeatContainerBlockIds が空) では生成しない。
-  const nestedRepeatIds =
-    regionVerdict.nestedRepeatContainerBlockIds ??
-    input.extractedRegion?.nestedRepeatContainerBlockIds ??
-    [];
-  const exprContext = buildScratchBlockExprContext(
-    regionVerdict.directives,
-    renamed.renameTable,
-    scalarBindings,
-  );
-  const implicitResult = collectImplicitAxes({
-    kernelContainerId: regionVerdict.blockId,
-    nestedRepeatIds,
-    blocks,
-    context: exprContext,
-    regionId: regionVerdict.regionId,
-    directives: regionVerdict.directives,
-  });
-  diagnostics.push(...implicitResult.diagnostics);
-
-  // Phase 2: implicit axes の verdict を RegionVerdict.axes に統合。
-  // D2 降格された axis は sequential として記録され、sequential body に
-  // 巻かれる。legacy レイアウト (implicitResult.axes が空) では既存挙動
-  // と同じ。
-  const implicitAxisNames = new Set(implicitResult.axes.map((axis) => axis.name));
-  const allAxisVerdicts: Record<string, { finalAxis: AxisFinal }> = { ...regionVerdict.axes };
-  for (const axis of implicitResult.axes) {
-    const demoted = axis.formula === '' || axis.formula === null;
-    allAxisVerdicts[axis.name] = {
-      finalAxis: demoted ? 'sequential' : axis.axis,
+  //
+  // §Phase 4 — implicit-axis emission was retired. Repeats now resolve
+  // structurally via `repeatPathTable`, so the only axes the
+  // emitter sees are the user-authored `@repeat` directives inside
+  // `regionVerdict.directives`. The `axisVerdicts` map below merges
+  // the resolved `finalAxis` per directive name.
+  const axisVerdicts: Record<string, { finalAxis: AxisFinal }> = {
+    ...regionVerdict.axes,
+  };
+  for (const repeat of repeats) {
+    axisVerdicts[repeat.name] = {
+      finalAxis: regionVerdict.axes[repeat.name]?.finalAxis ?? repeat.axis,
     };
   }
-  const combinedRepeats: RepeatDirective[] = [
-    ...repeats,
-    ...implicitResult.axes.map(axisToRepeatDirective),
-  ];
-
-  // Phase 2: implicit axis を parallelAxes に反映 (= mainSignature が
-  // global_x/global_y/workgroup_* を判定する材料)。
-  const combinedParallelAxes = [
-    ...regionVerdict.parallelAxes,
-    ...implicitResult.axes
-      .filter((axis) => {
-        const verdict = allAxisVerdicts[axis.name];
-        return verdict ? verdict.finalAxis !== 'sequential' : false;
-      })
-      .map((axis) => ({ repeatName: axis.name, axis: axis.axis })),
-  ];
-
-  const sequentialRepeats = combinedRepeats.filter((repeat) => {
-    if (implicitAxisNames.has(repeat.name)) {
-      const verdict = allAxisVerdicts[repeat.name];
-      return verdict ? verdict.finalAxis === 'sequential' : true;
-    }
-    return (regionVerdict.axes[repeat.name]?.finalAxis ?? repeat.axis) === 'sequential';
-  });
+  const repeatByBlockId = new Map<string, ResolvedRepeatDirective>();
+  for (const repeat of repeats) {
+    repeatByBlockId.set(repeat.resolvedRepeatBlockId, repeat);
+  }
   const skipContext: SkipBlockContext = {
     effectivePatterns: regionVerdict.blockSubset.effectivePatterns ?? [],
   };
@@ -552,11 +621,17 @@ export function emitRegion(input: EmitInput): EmitResult {
     bindingRenameTable: renamed.bindingRenames,
     mapNames: new Set(maps.map((map) => map.var)),
     bindNames: new Set(bindings.map((b) => b.name)),
-    sequentialNames: new Set(sequentialRepeats.map((repeat) => repeat.name)),
+    sequentialNames: new Set(
+      repeats
+        .filter((repeat) => axisVerdicts[repeat.name]?.finalAxis === 'sequential')
+        .map((repeat) => repeat.name),
+    ),
     diagnostics,
     diagnosedBlocks: new Set(),
     expressionStack: new Set(),
     skipContext,
+    repeatByBlockId,
+    axisVerdicts,
   };
 
   const lines: string[] = [
@@ -574,7 +649,7 @@ export function emitRegion(input: EmitInput): EmitResult {
   }
   if (bindings.length > 0) lines.push('');
 
-  const dispatchPlan = computeDispatchPlan(combinedRepeats, allAxisVerdicts, workgroupSize, {
+  const dispatchPlan = computeDispatchPlan(repeats, axisVerdicts, workgroupSize, {
     bindings,
     renameTable: renamed.renameTable,
     bindingRenameTable: renamed.bindingRenames,
@@ -584,7 +659,7 @@ export function emitRegion(input: EmitInput): EmitResult {
   lines.push(
     `@compute @workgroup_size(${workgroupSize.x},${workgroupSize.y},${workgroupSize.z})`,
   );
-  lines.push(`${mainSignature(combinedParallelAxes)} {`);
+  lines.push(`${mainSignature(regionVerdict.parallelAxes)} {`);
 
   const orderedMaps = orderMaps(maps, regionVerdict.cascade.topoOrder);
   for (const map of orderedMaps) {
@@ -598,23 +673,29 @@ export function emitRegion(input: EmitInput): EmitResult {
     lines.push(`  let ${emittedName}: f32 = ${formula};`);
   }
 
-  // Phase 2: candidate's substack head (= `@compute` ブロック) を body
-  // entry として使う。legacy (outer-only) では kernel container = candidate
-  // なので、`firstSubstackBlockId` は kernel container の substack head
-  // (= `@compute` ブロック) と同一。Falsy (= 空文字・undefined) のときは
-  // kernel container の SUBSTACK からフォールバック (= legacy 経路)。
-  const bodyStart =
-    regionVerdict.firstSubstackBlockId ||
-    findBodyStart(blocks[regionVerdict.blockId], blocks, regionVerdict.blockId);
-  const bodyLines = bodyStart ? emitStatementChain(bodyStart, context) : [];
-  appendSequentialBody(lines, bodyLines, sequentialRepeats, context);
+  // §Phase 4: the kernel container itself is the body entry point.
+  // `emitResolvedRepeat` walks the SUBSTACK `next` chain, threading
+  // through nested `control_repeat` blocks. Each repeat either
+  // (a) carries a parallel `@repeat` directive whose body is emitted
+  // directly, (b) carries a sequential `@repeat` directive whose
+  // body is wrapped in a `for`, or (c) has no directive at all — its
+  // body is also wrapped in a `for` driven by the scratch TIMES
+  // input.
+  const kernelContainer = blocks[regionVerdict.kernelContainerBlockId];
+  if (kernelContainer) {
+    const selfDirective = repeatByBlockId.get(kernelContainer.id);
+    const innerLines = emitResolvedRepeat(kernelContainer, selfDirective, context);
+    for (const line of innerLines) lines.push(`  ${line}`);
+  } else {
+    diagnostics.push({
+      severity: 'error',
+      code: 'gpu.emitter_unsupported_opcode',
+      regionId: regionVerdict.regionId,
+      blockId: regionVerdict.blockId,
+      message: `kernel container block '${regionVerdict.kernelContainerBlockId}' is missing from the parsed project; region demoted to JS`,
+    });
+  }
   lines.push('}');
-
-  // Phase 2: implicit axis 情報を RegionVerdict に書き戻す
-  // (= __exposeForBrowserVerify 経由で観測される)。
-  // ただし EmitInput は副作用を持たないので、caller 側で必要なら
-  // 別途 `regionVerdict.implicitAxes = ...` をセットする経路を採る。
-  // ここでは export しない (副作用分離)。
 
   return {
     wgsl: lines.join('\n'),
@@ -1131,51 +1212,12 @@ function formatDispatchPlan(plan: DispatchPlan): string {
   return `dispatchWorkgroups(${plan.x}, ${plan.y}, ${plan.z})`;
 }
 
-function findBodyStart(
-  regionBlock: RawBlock | undefined,
-  blocks: Readonly<Record<string, RawBlock>>,
-  regionBlockId: string,
-): string | null {
-  if (regionBlock) {
-    const substack = blockReference(regionBlock.inputs['SUBSTACK'], blocks);
-    if (substack) return substack;
-  }
-  for (const block of Object.values(blocks)) {
-    if (block?.parent === regionBlockId) return block.id;
-  }
-  return null;
+function appendSequentialBody(): void {
+  // §Phase 4: removed. Sequential axes are emitted as structural
+  // `for` loops at the target `control_repeat` position by
+  // `emitResolvedRepeat`.
 }
-
-function appendSequentialBody(
-  lines: string[],
-  bodyLines: readonly string[],
-  repeats: readonly RepeatDirective[],
-  context: EmitterContext,
-): void {
-  if (repeats.length === 0) {
-    for (const line of bodyLines) lines.push(`  ${line}`);
-    return;
-  }
-
-  let depth = 1;
-  for (const repeat of repeats) {
-    const name = context.renameTable[repeat.name] ?? repeat.name;
-    const formula = emitFormula(repeat.formula, repeat, context);
-    const indent = '  '.repeat(depth);
-    lines.push(
-      `${indent}// for (let ${name}: u32 = 0; ${name} < ${formula}; ${name} = ${name} + 1) {`,
-    );
-    lines.push(
-      `${indent}for (var ${name}: u32 = 0u; ${name} < u32(${formula}); ${name} = ${name} + 1u) {`,
-    );
-    depth += 1;
-  }
-  for (const line of bodyLines) lines.push(`${'  '.repeat(depth)}${line}`);
-  for (let index = repeats.length - 1; index >= 0; index -= 1) {
-    depth -= 1;
-    lines.push(`${'  '.repeat(depth)}}`);
-  }
-}
+void appendSequentialBody;
 
 function emitStatementChain(startId: string, context: EmitterContext): string[] {
   const lines: string[] = [];
@@ -1204,6 +1246,12 @@ function emitStatement(block: RawBlock, context: EmitterContext): string[] {
   if (block.opcode === 'data_replaceitemoflist') {
     const statement = emitListWrite(block, context);
     return statement ? [statement] : [];
+  }
+  if (block.opcode === 'control_repeat') {
+    // §Phase 4: thread the body of every nested control_repeat through
+    // the same `emitResolvedRepeat` helper. A parallel target drops the
+    // wrapper; a sequential target emits a structural `for`.
+    return emitResolvedRepeat(block, context.repeatByBlockId.get(block.id), context);
   }
   if (
     BINARY_INPUTS[block.opcode] ||

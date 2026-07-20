@@ -114,15 +114,12 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
         ? r.turboWasmAccelerationEnabled
         : base.turboWasmAccelerationEnabled,
     enableWebgpu: rawEnableWebgpu,
-    // v8 → v9 migration: seed `nestedParallelizationEnabled` with `false`
-    // (the safe default) for any payload that lacks the field. Existing
-    // users keep the legacy outer-only behaviour until they explicitly
-    // opt in via the Settings toggle — see
-    // nested-parallelization-05-phase4.md §3.5.
-    nestedParallelizationEnabled:
-      typeof r.nestedParallelizationEnabled === 'boolean'
-        ? r.nestedParallelizationEnabled
-        : base.nestedParallelizationEnabled,
+    // v8 → v9 → v10 migration: `nestedParallelizationEnabled` was
+    // retired in Phase 4 (BREAKING). The field is silently dropped on
+    // read — a saved `true` value from a v9 payload does not leak
+    // through into a fresh session. The resulting `AdvancedSettings`
+    // object no longer carries the key, so the surrounding spread
+    // stops here.
   };
 }
 
@@ -281,6 +278,14 @@ export function readSettings(): SettingsStoreShape {
         : migrateEnableWasm(
             (parsed.state as unknown as { performanceMode?: unknown })?.performanceMode,
           );
+    // v9 → v10 migration: `advanced.nestedParallelizationEnabled` was
+    // retired in Phase 4 (BREAKING). The field is gone from
+    // `AdvancedSettings`; the v9 read above already dropped it via
+    // `sanitizeAdvanced` (which no longer references the key). This
+    // block stays as the single point where a future bump can wire
+    // explicit v9 → v10 conversion if more than a silent field-drop
+    // is required.
+    void parsed.state;
     return {
       theme,
       volume,

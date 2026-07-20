@@ -18,7 +18,9 @@ import {
   type EmitInput,
 } from '@/runtime/gpu-kernel/wgsl-emitter';
 import { parseComputeComment } from '@/runtime/gpu-kernel/comment-parser';
+import { resolveRepeatPaths } from '@/runtime/gpu-kernel/repeat-path-resolver';
 import type {
+  ExtractedRegion,
   ParsedProject,
   RawBlock,
   RegionVerdict,
@@ -56,18 +58,31 @@ function makeVerdict(): {
     { blockId: 'body', text: '@compute\n@bind buff_r(1) rw f32' },
     'region',
   );
+  const region: ExtractedRegion = {
+    regionId: 'region',
+    blockId: 'repeat',
+    spriteId: 'sprite',
+    commentId: 'body',
+    firstSubstackBlockId: '',
+    bodyBlockIds: [],
+    kernelContainerBlockId: 'repeat',
+    repeatPathTable: { self: 'repeat' },
+    regionIndex: 0,
+    inlinedPrototypeBlockIds: [],
+    commentAnchorBlockId: 'repeat',
+  };
+  const resolved = resolveRepeatPaths(region, parsed.directives);
   const regionVerdict: RegionVerdict = {
     regionId: 'region',
     blockId: 'repeat',
     spriteId: 'sprite',
-    directives: parsed.directives,
+    directives: resolved.directives,
     blockSubset: { valid: true, diagnostics: [] },
     axes: {},
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
-    diagnostics: parsed.diagnostics,
+    diagnostics: [...parsed.diagnostics, ...resolved.diagnostics],
     parallelAxes: [],
     kernelContainerBlockId: 'repeat',
-    nestedRepeatContainerBlockIds: [],
     firstSubstackBlockId: '',
   };
   return {

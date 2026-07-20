@@ -9,7 +9,7 @@ import type {
   BindDirective,
   MapDirective,
   RegionVerdict,
-  RepeatDirective,
+  ResolvedRepeatDirective,
 } from '@/runtime/gpu-kernel/types';
 
 function makeVerdict(
@@ -28,7 +28,7 @@ function makeVerdict(
     diagnostics: [],
     parallelAxes: [],
     kernelContainerBlockId: blockId,
-    nestedRepeatContainerBlockIds: [],
+
     firstSubstackBlockId: '',
   };
 }
@@ -45,26 +45,30 @@ function bind(name: string, slot: number, readOnly: boolean): BindDirective {
   };
 }
 
-function repeatWithBound(name: string, boundBlockId: string): RepeatDirective {
+function repeatWithBound(name: string, boundBlockId: string): ResolvedRepeatDirective {
   return {
     kind: 'repeat',
     name,
     axis: 'global_x',
     formula: 'N',
     blockId: 'r0',
+    repeatPath: 'self',
     boundBlockId,
+    resolvedRepeatBlockId: boundBlockId,
     line: 0,
     column: 0,
   };
 }
 
-function repeatWithoutBound(name: string): RepeatDirective {
+function repeatWithoutBound(name: string): ResolvedRepeatDirective {
   return {
     kind: 'repeat',
     name,
     axis: 'global_x',
     formula: 'N',
     blockId: 'r0',
+    repeatPath: 'self',
+    resolvedRepeatBlockId: 'r0',
     line: 0,
     column: 0,
   };

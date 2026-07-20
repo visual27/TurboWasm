@@ -32,7 +32,7 @@ function verdict(): RegionVerdict {
     diagnostics: [],
     parallelAxes: [],
     kernelContainerBlockId: 'b1',
-    nestedRepeatContainerBlockIds: [],
+    
     firstSubstackBlockId: '',
   };
 }
@@ -95,12 +95,13 @@ describe('applyGpuKernels', () => {
     expect(found?.id).toBe('region:test:b1');
   });
 
-  it('dispatcher returns falsy when the kernel is not registered', async () => {
+  it('dispatcher returns a structured DispatchResult when the kernel is not registered', async () => {
     const registry = new KernelRegistry();
     const pool = new ListBufferPool({ device: null });
     applyGpuKernels({ enabled: true, enableWasm: true, registry, pool, device: null });
-    const result = await window.__turboWasmGpuKernelDispatch?.('unknown-block');
-    expect(result).toBe(false);
+    const result = window.__turboWasmGpuKernelDispatch?.('unknown-block');
+    expect(result).not.toBeInstanceOf(Promise);
+    expect(result).toMatchObject({ ok: false, demoted: false });
   });
 
   it('__installGpuKernelRegistryForTesting round-trips with __uninstall', () => {
