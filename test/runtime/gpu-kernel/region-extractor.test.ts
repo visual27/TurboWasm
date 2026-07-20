@@ -268,13 +268,55 @@ describe('region-extractor', () => {
       // The duplicate is recorded on the surviving region.
       expect(regions[0]?.duplicateComputeBlockIds).toEqual(['r2']);
       // An error-severity diagnostic was emitted.
-      expect(diagnostics.some(
+      const dupDiag = diagnostics.find(
         (d) =>
           d.severity === 'error' &&
           d.code === 'gpu.multiple_compute_regions' &&
           d.message.includes('r1') &&
           d.message.includes('r2'),
-      )).toBe(true);
+      );
+      expect(dupDiag).toBeDefined();
+      // §Phase 5 §15.9 — the diagnostic carries the adopted region's
+      // `regionId` and the kernel container's `blockId` so the
+      // region-verdict pipeline can fold it into
+      // `RegionVerdict.diagnostics` without an extra lookup pass.
+      expect(dupDiag?.regionId).toBe('region:sprite1:r1');
+      expect(dupDiag?.blockId).toBe('r1');
+    });
+
+    it("§Phase 5 §15.9 — duplicate diagnostic carries the adopted region's nested kernelContainer id", () => {
+      // Layout (nested):
+      //   kc  (control_repeat, no @compute) ← kernel container
+      //     → inner (control_repeat, @compute) ← candidate
+      //   dup (control_repeat, @compute) ← duplicate
+      //
+      // The first candidate lives inside `kc` so
+      // `findKernelContainer` promotes `kc` to the kernel container.
+      // The duplicate diagnostic's `regionId` / `blockId` must use
+      // that promoted id (NOT the candidate's id) so it folds into
+      // the surviving RegionVerdict.
+      const a = mkBlock('a', 'data_setvariableto');
+      const inner = mkBlock('inner', 'control_repeat', {
+        parent: 'kc',
+        inputs: { SUBSTACK: 'a' },
+      });
+      const kc = mkBlock('kc', 'control_repeat', { inputs: { SUBSTACK: 'inner' } });
+      const dupBody = mkBlock('dupBody', 'data_setvariableto');
+      const dup = mkBlock('dup', 'control_repeat', { inputs: { SUBSTACK: 'dupBody' } });
+      const project = mkProject([kc, inner, a, dup, dupBody], [
+        { id: 'cmt_inner', text: '@compute\n@bind tmp0(0) ro\n', blockId: 'a' },
+        { id: 'cmt_dup', text: '@compute\n@bind tmp1(1) ro\n', blockId: 'dupBody' },
+      ]);
+      const { regions, diagnostics } = extractRegions(project);
+      expect(regions).toHaveLength(1);
+      expect(regions[0]?.kernelContainerBlockId).toBe('kc');
+      const dupDiag = diagnostics.find(
+        (d) =>
+          d.severity === 'error' &&
+          d.code === 'gpu.multiple_compute_regions',
+      );
+      expect(dupDiag?.regionId).toBe('region:sprite1:kc');
+      expect(dupDiag?.blockId).toBe('kc');
     });
   });
 });

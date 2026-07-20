@@ -39,10 +39,10 @@ import { initializeGpuKernels } from '@/runtime/gpu-kernel/initialize-gpu-kernel
 import { KernelRegistry } from '@/runtime/gpu-kernel/kernel-registry';
 import { ListBufferPool } from '@/runtime/gpu-kernel/list-buffer-binding';
 import type { RuntimeAdapter } from '@/runtime/gpu-kernel/__dispatch-kernel-sync';
-import { useErrorLogStore } from '@/stores/useErrorLogStore';
 import {
   collectRegionVerdictsFromArrayBuffer,
 } from '@/runtime/gpu-kernel/region-verdict-pipeline';
+import { forwardGpuDiagnostics } from '@/runtime/gpu-kernel/diagnostic-forwarding';
 import type {
   ParsedProject,
   RawBlock,
@@ -1557,7 +1557,13 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   }
 
   const parsed = toParsedProject(parsedProject);
-  const { verdicts: allVerdicts } = collectRegionVerdictsFromArrayBuffer(parsed);
+  // §Phase 5 §15.9 — extraction-side diagnostics whose `regionId` did
+  // not match any surviving region. Forwarded to the ErrorLog via the
+  // shared helper; in the current extractor this is always empty
+  // (every diagnostic carries the adopted region's id) but the path
+  // is wired for future extractors.
+  const { verdicts: allVerdicts, extractionDiagnostics } =
+    collectRegionVerdictsFromArrayBuffer(parsed);
   // Phase 4 (nested-parallelization-05-phase4 §3.7): gate the nested
   // `@compute` path behind `advanced.nestedParallelizationEnabled`. When
   // `false` (the v8 → v9 default), drop every region whose kernel
@@ -1575,6 +1581,16 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   // `[gpu-kernel] bootstrapped ... directives` log line never mentions
   // directives from regions that were skipped.
   const allDirectives = verdicts.flatMap((v) => v.directives);
+
+  // §Phase 5 §15.9 / §15.14 — surface M3 diagnostics through the shared
+  // ErrorLog forwarder BEFORE the early-return so the user always sees
+  // the duplicate-`@compute` error regardless of whether the GPU path
+  // ultimately runs. The forwarder handles `severity === 'error'` (which
+  // the previous hand-rolled loop silently dropped), per-source warn
+  // caps, and `info` passthrough.
+  forwardGpuDiagnostics(extractionDiagnostics);
+  forwardGpuDiagnostics(verdicts.flatMap((v) => v.diagnostics));
+
   if (verdicts.length === 0) {
     if (allVerdicts.length > 0) {
       // eslint-disable-next-line no-console
@@ -1583,30 +1599,6 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
       );
     }
     return;
-  }
-
-  // Surface M3 diagnostics. Cap to avoid log spam on heavily demoted
-  // projects (defaultMaxLogs=5).
-  const warn = (msg: string): void => {
-    useErrorLogStore.getState().push('warn', msg);
-  };
-  const info = (msg: string): void => {
-    useErrorLogStore.getState().push('info', msg);
-  };
-  let regionDiagCount = 0;
-  const REGION_DIAG_CAP = 5;
-  for (const verdict of verdicts) {
-    for (const d of verdict.diagnostics) {
-      const msg = `[${d.code || 'gpu.diagnostic'}] ${d.message}`;
-      if (d.severity === 'warn' && regionDiagCount < REGION_DIAG_CAP) {
-        warn(msg);
-        regionDiagCount += 1;
-      } else if (d.severity === 'warn' && regionDiagCount >= REGION_DIAG_CAP) {
-        info(msg);
-      } else if (d.severity === 'info') {
-        info(msg);
-      }
-    }
   }
 
   // M5 boot — initialise the WebGPU device, build pipelines, install
@@ -1619,6 +1611,11 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
     enableWasm,
     enabled: true,
   });
+  // §Phase 5 §15.14 — surface emitter diagnostics (`gpu.workgroup_size_clamped`,
+  // `gpu.emitter_unsupported_opcode`, etc.) via the shared forwarder.
+  // Kept on its own call so the per-source warn cap is preserved
+  // (M3 + extraction cap is 5, M5 cap is also 5).
+  forwardGpuDiagnostics(result.emitDiagnostics ?? []);
   activeGpuRegistry = result.registry;
   activeGpuPool = result.pool;
   activeGpuPipelines = new Map();

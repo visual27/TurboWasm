@@ -80,6 +80,16 @@ export function extractRegions(project: ParsedProject): RegionExtractionResult {
     // certainly a mistake — surface it as an error-severity diagnostic
     // and record the surplus block ids on the surviving region so users
     // can find them in the editor.
+    //
+    // §Phase 5 §15.9 — attach the adopted region's `regionId` and the
+    // kernel container's `blockId` to the diagnostic so the
+    // region-verdict pipeline can fold it into the surviving region's
+    // `RegionVerdict.diagnostics` (and forward it to the ErrorLogPanel
+    // without needing a separate pass).
+    const candidate = candidates[0]!;
+    const kernelContainer = findKernelContainer(candidate, target.blocks);
+    const kernelContainerId = kernelContainer.id;
+    const adoptedRegionId = `region:${target.id}:${kernelContainerId}`;
     const duplicateIds = candidates.length > 1
       ? candidates.slice(1).map((c) => c.id)
       : [];
@@ -87,15 +97,13 @@ export function extractRegions(project: ParsedProject): RegionExtractionResult {
       diagnostics.push({
         severity: 'error',
         code: GPU_DIAGNOSTIC_CODES.MULTIPLE_COMPUTE_REGIONS,
+        regionId: adoptedRegionId,
+        blockId: kernelContainerId,
         message:
           `Multiple @compute markers found in sprite "${target.id}": ` +
           `[${candidates.map((c) => c.id).join(', ')}]. Pick one.`,
       });
     }
-
-    const candidate = candidates[0]!;
-    const kernelContainer = findKernelContainer(candidate, target.blocks);
-    const kernelContainerId = kernelContainer.id;
 
     // The body entry is the candidate's substack head when nested, or
     // the kernel container's substack head when the candidate is the
@@ -147,7 +155,7 @@ export function extractRegions(project: ParsedProject): RegionExtractionResult {
     }
 
     regions.push({
-      regionId: `region:${target.id}:${kernelContainerId}`,
+      regionId: adoptedRegionId,
       blockId: kernelContainerId,
       spriteId: target.id,
       commentId,

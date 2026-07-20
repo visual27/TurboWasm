@@ -29,7 +29,7 @@ import { useErrorLogStore } from '@/stores/useErrorLogStore';
 import { KernelRegistry } from './kernel-registry';
 import { ListBufferPool, type GpuLikeDevice } from './list-buffer-binding';
 import { emitRegion, type WorkgroupLimits } from './wgsl-emitter';
-import type { ParsedProject, RegionVerdict } from './types';
+import type { Diagnostic, ParsedProject, RegionVerdict } from './types';
 
 export interface InitializeInput {
   regions: RegionVerdict[];
@@ -50,6 +50,20 @@ export interface InitializeResult {
    * inspection.
    */
   workgroupLimits?: WorkgroupLimits;
+  /**
+   * §Phase 5 §15.14 — diagnostics emitted by `emitRegion` across
+   * every region processed in this bootstrap. The caller (player
+   * bootstrap) forwards them through the shared ErrorLog forwarder
+   * so `gpu.workgroup_size_clamped`,
+   * `gpu.emitter_integer_division_substituted`,
+   * `gpu.emitter_unsupported_opcode`, etc. surface in the panel.
+   *
+   * `undefined` when the bootstrap returned before `emitRegion`
+   * ran (early-return paths: `!enabled`, `!enableWasm`, adapter
+   * unavailable, no surviving region). The player checks for the
+   * field with `?? []` to stay safe.
+   */
+  emitDiagnostics?: readonly Diagnostic[];
 }
 
 /**
@@ -146,6 +160,13 @@ export async function initializeGpuKernels(
 
   const registry = new KernelRegistry();
   const pool = new ListBufferPool({ device });
+  // §Phase 5 §15.14 — collect every emit-time diagnostic so the
+  // caller can forward them to the ErrorLog store. The previous
+  // implementation only checked `severity === 'error'` to skip the
+  // region and threw the rest away, leaving warns like
+  // `gpu.workgroup_size_clamped` and
+  // `gpu.emitter_integer_division_substituted` invisible to the user.
+  const emitDiagnostics: Diagnostic[] = [];
   for (const region of input.regions) {
     if (!region.blockSubset.valid) continue;
     if (!region.cascade.valid) continue;
@@ -155,6 +176,9 @@ export async function initializeGpuKernels(
       runtimeState: input.runtimeState,
       ...(workgroupLimits ? { workgroupLimits } : {}),
     });
+    if (emitted.diagnostics.length > 0) {
+      emitDiagnostics.push(...emitted.diagnostics);
+    }
     const hasError = emitted.diagnostics.some((d) => d.severity === 'error');
     if (hasError) continue;
     const kernel = registry.register(region, emitted.wgsl);
@@ -173,6 +197,12 @@ export async function initializeGpuKernels(
     device,
     ...(workgroupLimits ? { workgroupLimits } : {}),
   };
+  // §Phase 5 §15.14 — surface the aggregated diagnostics on the
+  // result so `player.ts:bootstrapGpuKernels` can push them through
+  // the shared ErrorLog forwarder (kept separate from the verdict
+  // diagnostics so the per-source warn cap is preserved).
+  (result as InitializeResult & { emitDiagnostics?: Diagnostic[] }).emitDiagnostics =
+    emitDiagnostics;
   return result;
 }
 

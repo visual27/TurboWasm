@@ -22,6 +22,7 @@ import { analyzeAxes } from './axis-analysis';
 import { analyzeCascade } from './cascade-analysis';
 import type {
   AxisFinal,
+  Diagnostic,
   ExtractedRegion,
   ParsedComment,
   ParsedDirective,
@@ -33,6 +34,28 @@ export interface RegionVerdictInputs {
   parsedProject: ParsedProject;
   /** `@compute`-marked regions discovered in `parsedProject`. */
   regions: ExtractedRegion[];
+  /**
+   * §Phase 5 §15.9 — diagnostics from the extraction step
+   * (`extractRegions`) that did NOT match any region in `regions`.
+   * Diagnostics that DO match a region by `regionId` are folded into
+   * the corresponding `RegionVerdict.diagnostics` automatically.
+   *
+   * The orphan list is returned to the caller so
+   * `bootstrapGpuKernels` can forward them to the ErrorLog without
+   * losing the extraction-side diagnostics.
+   */
+  extractionDiagnostics?: readonly Diagnostic[];
+}
+
+export interface RegionVerdictOutputs {
+  verdicts: RegionVerdict[];
+  allDirectives: ParsedDirective[];
+  /**
+   * §Phase 5 §15.9 — extraction-side diagnostics whose `regionId`
+   * did not match any adopted region. Empty when every extraction
+   * diagnostic was attached to a surviving region.
+   */
+  extractionDiagnostics: Diagnostic[];
 }
 
 /**
@@ -46,12 +69,26 @@ export interface RegionVerdictInputs {
  * functions on the parsed project, and pre-compiling WGSL is itself
  * synchronous per spec §7 (Q14: `runtime dispatch はsync`).
  */
-export function buildRegionVerdicts(input: RegionVerdictInputs): {
-  verdicts: RegionVerdict[];
-  allDirectives: ParsedDirective[];
-} {
+export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOutputs {
   const verdicts: RegionVerdict[] = [];
   const allDirectives: ParsedDirective[] = [];
+  // §Phase 5 §15.9 — partition the extraction-side diagnostics by
+  // whether their `regionId` matches an adopted region. The matched
+  // ones fold into `RegionVerdict.diagnostics`; the unmatched ones
+  // are returned to the caller so the player can forward them
+  // through the ErrorLog path.
+  const matchedExtraction = new Map<string, Diagnostic[]>();
+  const unmatchedExtraction: Diagnostic[] = [];
+  const knownRegionIds = new Set(input.regions.map((r) => r.regionId));
+  for (const d of input.extractionDiagnostics ?? []) {
+    if (d.regionId && knownRegionIds.has(d.regionId)) {
+      const bucket = matchedExtraction.get(d.regionId) ?? [];
+      bucket.push(d);
+      matchedExtraction.set(d.regionId, bucket);
+    } else {
+      unmatchedExtraction.push(d);
+    }
+  }
   for (const region of input.regions) {
     const comment = input.parsedProject.comments[region.commentId];
     if (!comment) continue;
@@ -96,6 +133,11 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): {
       ...blockSubset.diagnostics,
       ...axesResult.diagnostics,
       ...cascade.diagnostics,
+      // §Phase 5 §15.9 — attach the extraction-side diagnostic (e.g.
+      // `gpu.multiple_compute_regions`) to the adopted region's
+      // diagnostic list. The player routes from `verdict.diagnostics`
+      // so this is the natural place for the fold.
+      ...(matchedExtraction.get(region.regionId) ?? []),
     ];
 
     for (const directive of parsed.directives) allDirectives.push(directive);
@@ -119,7 +161,7 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): {
       firstSubstackBlockId: region.firstSubstackBlockId,
     });
   }
-  return { verdicts, allDirectives };
+  return { verdicts, allDirectives, extractionDiagnostics: unmatchedExtraction };
 }
 
 /**
@@ -127,12 +169,18 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): {
  * `loadProjectFromArrayBuffer` so the M6 wiring in player.ts stays
  * declarative. The first stage is the only place that touches the
  * vendored scratch-vm fields directly.
+ *
+ * §Phase 5 §15.9 — the returned `extractionDiagnostics` is the slice
+ * of `extractRegions().diagnostics` that did not get folded into any
+ * surviving `RegionVerdict.diagnostics`. Empty in the common case;
+ * non-empty when a future extractor emits a sprite-wide diagnostic
+ * (currently unused).
  */
 export function collectRegionVerdictsFromArrayBuffer(
   parsedProject: ParsedProject,
-): { verdicts: RegionVerdict[]; allDirectives: ParsedDirective[] } {
-  const regions = extractRegions(parsedProject).regions;
-  return buildRegionVerdicts({ parsedProject, regions });
+): RegionVerdictOutputs {
+  const { regions, diagnostics } = extractRegions(parsedProject);
+  return buildRegionVerdicts({ parsedProject, regions, extractionDiagnostics: diagnostics });
 }
 
 function collectParallelAxes(

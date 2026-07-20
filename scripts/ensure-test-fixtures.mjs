@@ -69,6 +69,15 @@ export const FIXTURE_GENERATORS = {
   // `test/runtime/gpu-kernel/scalar-uniform-binding.test.ts`.
   'expo-fixture-byte-scalar.sb3': () =>
     import('./make-expo-fixture.mjs').then((m) => m.makeByteScalarExpoFixture()),
+  // §Phase 5 §15.9 / §15.14 — diagnostics fixture. Two `@compute`
+  // markers in the same sprite (`gpu.multiple_compute_regions`, error)
+  // plus a `@bind let(0) ...` that emits `gpu.identifier_collision`
+  // (warn). Used to pin the shared `forwardGpuDiagnostics` path from
+  // the extractor + emitter all the way to `ErrorLogPanel`.
+  'gpu-kernel-diagnostics-fixture.sb3': () =>
+    import('./make-gpu-kernel-diagnostics-fixture.mjs').then((m) =>
+      m.makeGpuKernelDiagnosticsFixture(),
+    ),
 };
 
 /**

@@ -668,3 +668,44 @@ function toParsedProjectFromJson(json: ProjectJson) {
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
+
+describe('player.ts: §Phase 5 §15.9 / §15.14 diagnostics forwarding (source-inspection)', () => {
+  function readPlayerSource(): string {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('node:path') as typeof import('node:path');
+    return fs.readFileSync(
+      path.resolve(__dirname, '../../src/runtime/player.ts'),
+      'utf8',
+    );
+  }
+
+  it('routes extraction diagnostics through forwardGpuDiagnostics before the early-return guard', () => {
+    const src = readPlayerSource();
+    // The shared forwarder must be called with `extractionDiagnostics`
+    // BEFORE the `if (verdicts.length === 0) return;` early return so
+    // duplicate-`@compute` errors always reach the panel even when the
+    // GPU pipeline drops every region.
+    const forwardIdx = src.indexOf('forwardGpuDiagnostics(extractionDiagnostics)');
+    const earlyReturnIdx = src.indexOf('if (verdicts.length === 0)');
+    expect(forwardIdx, 'extraction forwarder call not found').toBeGreaterThan(-1);
+    expect(earlyReturnIdx, 'verdicts.length guard not found').toBeGreaterThan(-1);
+    expect(forwardIdx, 'extraction forwarder must run before the early-return').toBeLessThan(
+      earlyReturnIdx,
+    );
+  });
+
+  it('forwards verdict diagnostics through forwardGpuDiagnostics too', () => {
+    const src = readPlayerSource();
+    expect(src).toMatch(/forwardGpuDiagnostics\(verdicts\.flatMap\(\(v\)\s*=>\s*v\.diagnostics\)\)/);
+  });
+
+  it('forwards emitter diagnostics through forwardGpuDiagnostics after initializeGpuKernels', () => {
+    const src = readPlayerSource();
+    // The emitter diagnostics must be pushed into the store AFTER the
+    // M5 boot so the warn cap is preserved per-source (M3 + extraction
+    // vs M5).
+    expect(src).toMatch(/forwardGpuDiagnostics\(result\.emitDiagnostics\s*\?\?\s*\[\]\)/);
+  });
+});
