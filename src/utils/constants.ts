@@ -78,9 +78,12 @@ export const STORAGE_KEYS = {
 // `gpu-kernel-dsl-phase4-spec.md`). The field is gone from the
 // `AdvancedSettings` type and is silently dropped on the v9 → v10 read
 // so a saved `true` value does not leak through into a fresh session.
-// Will be bumped to 11 by Phase 5 once `procedure-inliner.ts` is wired
-// in and `advanced.customBlockInliningEnabled` becomes the new opt-out
-// (see `gpu-kernel-dsl-phase5-spec.md` §5.5).
+// Bumped to 11 in Phase 5 (see `gpu-kernel-dsl-phase5-spec.md` §5.5).
+// The new `advanced.customBlockInliningEnabled: boolean` (default
+// `true`) is the opt-out for `procedure-inliner.ts`. The v10 → v11
+// migration seeds the field with `true` for older payloads so the
+// default-on behaviour carries forward unless the user explicitly
+// disabled inlining at write time.
 export const STORAGE_VERSION = 11;
 
 /**
