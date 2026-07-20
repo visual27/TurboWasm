@@ -397,6 +397,26 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
           ariaLabel="Enable WASM toggle"
         />
       </FieldRow>
+      {/* §Phase 5 — `Custom Block Inlining` opt-out for the procedure-inliner
+          (gpu-kernel-dsl-phase5-spec §5.5). Off re-treats `procedure_call`
+          and `argument_reporter_*` as D1-unsafe so any `@compute` region
+          that uses them demotes to the JS path. On (default) the
+          inliner pre-expands custom blocks so canonical keys collapse
+          across call sites. Unlike the WebGPU / WASM toggles this one
+          is a power-user escape hatch — `Set as default` preserves the
+          current value rather than forcing it on. */}
+      <FieldRow
+        id="custom-block-inlining"
+        label="Custom Block Inlining"
+        description="When enabled, GPU compute regions can call custom blocks (pre-parse inline expansion). Disable to treat procedure_call as D1-unsafe so regions that use custom blocks fall back to the JS path instead of the GPU pipeline. Power-user toggle: 'Set as default' preserves the current value rather than forcing it on."
+      >
+        <SwitchField
+          id="custom-block-inlining"
+          checked={advanced.customBlockInliningEnabled}
+          onChange={(v) => patch({ customBlockInliningEnabled: v })}
+          ariaLabel="Custom Block Inlining toggle"
+        />
+      </FieldRow>
       {/* §Phase 4 BREAKING — the `Nested @compute (Experimental)` toggle
           was retired alongside the v9 nested-parallelization feature.
           The new loose-position DSL (`@compute` on `control_repeat`

@@ -97,7 +97,7 @@ describe('SettingsDialog — layout', () => {
     expect(screen.queryByLabelText('Performance mode')).toBeNull();
   });
 
-  it('renders the TurboWasm section with TurboWasm Acceleration, Enable WebGPU, and Enable WASM', () => {
+  it('renders the TurboWasm section with TurboWasm Acceleration, Enable WebGPU, Enable WASM, and Custom Block Inlining', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const turboSection = screen
       .getByTestId('settings-section-turbowasm')
@@ -105,8 +105,12 @@ describe('SettingsDialog — layout', () => {
     expect(within(turboSection).getByText('TurboWasm Acceleration')).toBeInTheDocument();
     expect(within(turboSection).getByText('Enable WebGPU')).toBeInTheDocument();
     expect(within(turboSection).getByText('Enable WASM')).toBeInTheDocument();
+    // §Phase 5 — `Custom Block Inlining` opt-out for the new
+    // procedure-inliner (gpu-kernel-dsl-phase5-spec §5.5). It sits
+    // immediately below the Enable WASM row.
+    expect(within(turboSection).getByText('Custom Block Inlining')).toBeInTheDocument();
     // §Phase 4 — the `Nested @compute (Experimental)` toggle was
-    // retired. The TurboWasm section ends at `Enable WASM`.
+    // retired. It must NOT reappear alongside the Phase 5 toggle.
     expect(within(turboSection).queryByText('Nested @compute (Experimental)')).toBeNull();
   });
 
@@ -130,6 +134,20 @@ describe('SettingsDialog — layout', () => {
     const wasmIdx = labels.findIndex((l) => l === 'Enable WASM');
     expect(webgpuIdx).toBeGreaterThanOrEqual(0);
     expect(wasmIdx).toBeGreaterThan(webgpuIdx);
+  });
+
+  it('places Custom Block Inlining immediately below Enable WASM (§Phase 5)', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const turboSection = screen
+      .getByTestId('settings-section-turbowasm')
+      .closest('section') as HTMLElement;
+    const labels = Array.from(turboSection.querySelectorAll('label')).map(
+      (el) => el.textContent ?? '',
+    );
+    const wasmIdx = labels.findIndex((l) => l === 'Enable WASM');
+    const cbiIdx = labels.findIndex((l) => l === 'Custom Block Inlining');
+    expect(wasmIdx).toBeGreaterThanOrEqual(0);
+    expect(cbiIdx).toBeGreaterThan(wasmIdx);
   });
 
   it('does NOT render an Extensions tab', () => {
@@ -294,6 +312,51 @@ describe('SettingsDialog — Enable WebGPU toggle (renamed from GPU Kernels)', (
   });
 });
 
+describe('SettingsDialog — Custom Block Inlining toggle (§Phase 5)', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+      enableWasm: true,
+    });
+  });
+
+  it('defaults the toggle to ON', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText(
+      'Custom Block Inlining toggle',
+    ) as HTMLButtonElement;
+    expect(toggle.getAttribute('data-state')).toBe('checked');
+    expect(useSettingsStore.getState().advanced.customBlockInliningEnabled).toBe(true);
+  });
+
+  it('flips the toggle OFF and propagates to the store', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const toggle = screen.getByLabelText('Custom Block Inlining toggle');
+    await user.click(toggle);
+    expect(useSettingsStore.getState().advanced.customBlockInliningEnabled).toBe(false);
+  });
+
+  it('"Set as default" preserves the OFF value (power-user toggle, not auto-forced ON)', async () => {
+    // §Phase 5 — unlike `enableWebgpu` / `turboWasmAccelerationEnabled`,
+    // the custom-block-inlining toggle is not forced back to `true`
+    // by `saveAdvancedAsDefault`. A power user who disabled inlining
+    // keeps the OFF state across "Set as default" presses.
+    const user = userEvent.setup();
+    useSettingsStore.getState().patchAdvanced({ customBlockInliningEnabled: false });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-set-default'));
+    const s = useSettingsStore.getState();
+    expect(s.advanced.customBlockInliningEnabled).toBe(false);
+    expect(s.defaultAdvanced.customBlockInliningEnabled).toBe(false);
+  });
+});
+
 describe('SettingsDialog — Nested @compute toggle (§Phase 4 BREAKING: removed)', () => {
   beforeEach(() => {
     useSettingsStore.setState({
@@ -315,7 +378,9 @@ describe('SettingsDialog — Nested @compute toggle (§Phase 4 BREAKING: removed
     expect(screen.queryByLabelText('Nested @compute toggle')).toBeNull();
   });
 
-  it('the TurboWasm section ends with the Enable WASM row', () => {
+  it('the TurboWasm section ends with the Custom Block Inlining row', () => {
+    // §Phase 5 — the TurboWasm section now ends with the new
+    // `Custom Block Inlining` opt-out (below Enable WASM).
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const turboSection = screen
       .getByTestId('settings-section-turbowasm')
@@ -323,8 +388,10 @@ describe('SettingsDialog — Nested @compute toggle (§Phase 4 BREAKING: removed
     const labels = Array.from(turboSection.querySelectorAll('label')).map(
       (el) => el.textContent ?? '',
     );
-    const wasmIdx = labels.findIndex((l) => l === 'Enable WASM');
-    expect(wasmIdx).toBeGreaterThanOrEqual(0);
+    const cbiIdx = labels.findIndex((l) => l === 'Custom Block Inlining');
+    expect(cbiIdx).toBeGreaterThanOrEqual(0);
+    // Last label in the section must be Custom Block Inlining.
+    expect(labels.at(-1)).toBe('Custom Block Inlining');
     // No "Nested @compute" row anywhere.
     const nestedIdx = labels.findIndex((l) => l?.startsWith('Nested @compute'));
     expect(nestedIdx).toBe(-1);
