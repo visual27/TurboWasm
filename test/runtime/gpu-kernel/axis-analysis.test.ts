@@ -25,6 +25,9 @@ function region(bodyIds: string[]): ExtractedRegion {
     kernelContainerBlockId: 'r0',
     nestedRepeatContainerBlockIds: [],
     duplicateComputeBlockIds: [],
+    regionIndex: 0,
+    inlinedPrototypeBlockIds: [],
+    commentAnchorBlockId: bodyIds[0] ?? 'a',
   };
 }
 
@@ -299,6 +302,9 @@ describe('axis-analysis (D2)', () => {
       kernelContainerBlockId: 'if',
       nestedRepeatContainerBlockIds: [],
       duplicateComputeBlockIds: [],
+      regionIndex: 0,
+      inlinedPrototypeBlockIds: [],
+      commentAnchorBlockId: 'if',
     };
     const result = analyzeAxes(regionWithCondition, directives, proj);
     expect(result.axes['R0']?.finalAxis).toBe('sequential');

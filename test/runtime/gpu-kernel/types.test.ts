@@ -82,6 +82,9 @@ describe('types (§Phase 0)', () => {
         kernelContainerBlockId: 'r0',
         nestedRepeatContainerBlockIds: [],
         duplicateComputeBlockIds: [],
+        regionIndex: 0,
+        inlinedPrototypeBlockIds: [],
+        commentAnchorBlockId: 'a',
       };
       expect(region.kernelContainerBlockId).toBe('r0');
       expect(region.nestedRepeatContainerBlockIds).toEqual([]);
@@ -99,6 +102,9 @@ describe('types (§Phase 0)', () => {
         kernelContainerBlockId: 'outer',
         nestedRepeatContainerBlockIds: ['inner'],
         duplicateComputeBlockIds: [],
+        regionIndex: 0,
+        inlinedPrototypeBlockIds: [],
+        commentAnchorBlockId: 'inner_a',
       };
       expect(region.nestedRepeatContainerBlockIds).toEqual(['inner']);
     });
@@ -114,12 +120,35 @@ describe('types (§Phase 0)', () => {
         kernelContainerBlockId: 'r1',
         nestedRepeatContainerBlockIds: [],
         duplicateComputeBlockIds: ['r2', 'r3'],
+        regionIndex: 0,
+        inlinedPrototypeBlockIds: [],
+        commentAnchorBlockId: 'a',
       };
       expect(region.duplicateComputeBlockIds).toEqual(['r2', 'r3']);
     });
+
+    it('requires Phase 1 fields: regionIndex, inlinedPrototypeBlockIds, commentAnchorBlockId', () => {
+      const region: ExtractedRegion = {
+        regionId: 'region:sprite1:r0',
+        blockId: 'r0',
+        spriteId: 'sprite1',
+        commentId: 'cmt1',
+        firstSubstackBlockId: 'a',
+        bodyBlockIds: ['a'],
+        kernelContainerBlockId: 'r0',
+        nestedRepeatContainerBlockIds: [],
+        duplicateComputeBlockIds: [],
+        regionIndex: 0,
+        inlinedPrototypeBlockIds: [],
+        commentAnchorBlockId: 'a',
+      };
+      expect(region.regionIndex).toBe(0);
+      expect(region.inlinedPrototypeBlockIds).toEqual([]);
+      expect(region.commentAnchorBlockId).toBe('a');
+    });
   });
 
-  describe('diagnostic codes (§Phase 0 catalogue)', () => {
+  describe('diagnostic codes (§Phase 0 + §Phase 1 catalogue)', () => {
     it('exposes the canonical code strings', () => {
       expect(GPU_DIAGNOSTIC_CODES.DSL_SYNTAX_ERROR).toBe('gpu.dsl_syntax_error');
       expect(GPU_DIAGNOSTIC_CODES.BOUND_BLOCK_NOT_FOUND).toBe('gpu.bound_block_not_found');
@@ -127,6 +156,23 @@ describe('types (§Phase 0)', () => {
         'gpu.multiple_compute_regions',
       );
       expect(GPU_DIAGNOSTIC_CODES.AXIS_AUTO_DETECTED).toBe('gpu.axis_auto_detected');
+      expect(GPU_DIAGNOSTIC_CODES.KERNEL_CONTAINER_COLLISION).toBe(
+        'gpu.kernel_container_collision',
+      );
+      expect(GPU_DIAGNOSTIC_CODES.BIND_SLOT_COLLISION).toBe('gpu.bind_slot_collision');
+      expect(GPU_DIAGNOSTIC_CODES.REGIONAL_BUFFER_MEMORY_PRESSURE).toBe(
+        'gpu.regional_buffer_memory_pressure',
+      );
+      expect(GPU_DIAGNOSTIC_CODES.LEGACY_COMPUTE_COMMENT_POSITION).toBe(
+        'gpu.legacy_compute_comment_position',
+      );
+      expect(GPU_DIAGNOSTIC_CODES.BOUND_BLOCK_REQUIRED).toBe('gpu.bound_block_required');
+      expect(GPU_DIAGNOSTIC_CODES.PROCEDURE_RECURSION_UNSUPPORTED).toBe(
+        'gpu.procedure_recursion_unsupported',
+      );
+      expect(GPU_DIAGNOSTIC_CODES.PROCEDURE_PROTOTYPE_NOT_FOUND).toBe(
+        'gpu.procedure_prototype_not_found',
+      );
     });
   });
 

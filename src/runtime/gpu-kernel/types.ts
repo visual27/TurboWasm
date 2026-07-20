@@ -319,6 +319,28 @@ export interface ExtractedRegion {
    * `regions[]`.
    */
   duplicateComputeBlockIds: string[];
+  /**
+   * Phase 1 (gpu-kernel-dsl-phase1-spec §1.2): per-sprite region index
+   * (0-based). Disambiguates region ids when a sprite carries multiple
+   * `@compute` regions (Phase 3). In Phase 1-2 the extractor emits at
+   * most one region per sprite so this is always `0`.
+   */
+  regionIndex: number;
+  /**
+   * Phase 1 (gpu-kernel-dsl-phase1-spec §1.2): populated by
+   * `procedure-inliner` (Phase 5). Empty array in Phase 1-4 (no
+   * inlining implemented yet).
+   */
+  inlinedPrototypeBlockIds: readonly string[];
+  /**
+   * Phase 1 (gpu-kernel-dsl-phase1-spec §1.2): scratch block id that
+   * directly carries the `@compute` comment marker. In Phase 1-3 this
+   * carries the same value as `firstSubstackBlockId` (= first substack
+   * entry block) because the legacy layout puts the marker there;
+   * Phase 4 switches to `control_repeat`-level loose position and
+   * `commentAnchorBlockId` diverges from `firstSubstackBlockId`.
+   */
+  commentAnchorBlockId: string;
 }
 
 /**

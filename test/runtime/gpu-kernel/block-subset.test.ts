@@ -29,6 +29,9 @@ function region(body: RawBlock[]): ExtractedRegion {
     kernelContainerBlockId: 'r0',
     nestedRepeatContainerBlockIds: [],
     duplicateComputeBlockIds: [],
+    regionIndex: 0,
+    inlinedPrototypeBlockIds: [],
+    commentAnchorBlockId: body[0]?.id ?? '',
   };
 }
 

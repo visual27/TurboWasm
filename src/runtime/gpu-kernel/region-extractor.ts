@@ -164,6 +164,9 @@ export function extractRegions(project: ParsedProject): RegionExtractionResult {
       kernelContainerBlockId: kernelContainerId,
       nestedRepeatContainerBlockIds,
       duplicateComputeBlockIds: duplicateIds,
+      regionIndex: 0,
+      inlinedPrototypeBlockIds: [],
+      commentAnchorBlockId: commentBlockId,
     });
   }
 
