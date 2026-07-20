@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Generate `expo-fixture.sb3` — the canonical demo project for the GPU
  * compute kernel pipeline (spec §13 / `fn expo`).

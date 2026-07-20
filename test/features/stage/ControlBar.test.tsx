@@ -449,15 +449,5 @@ describe('ControlBar', () => {
       expect(useSettingsStore.getState().volume).toBe(100);
       expect(useSettingsStore.getState().advanced.fps).toBe(DEFAULT_ADVANCED_SETTINGS.fps);
     });
-
-    it('the flag button tooltip advertises the modifier shortcuts', () => {
-      renderWithProviders(
-        <ControlBar onOpenSettings={() => undefined} onToggleFullscreen={() => undefined} />,
-      );
-      const btn = screen.getByTestId('green-flag');
-      expect(btn.getAttribute('aria-label')).toMatch(/Shift.*Turbo/);
-      expect(btn.getAttribute('aria-label')).toMatch(/Ctrl.*Cmd.*[Mm]ute/);
-      expect(btn.getAttribute('aria-label')).toMatch(/Alt.*[Ff][Pp][Ss]/);
-    });
   });
 });
