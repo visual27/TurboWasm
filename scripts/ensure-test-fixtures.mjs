@@ -86,6 +86,13 @@ export const FIXTURE_GENERATORS = {
   // `test/runtime/gpu-kernel/multi-region-fixture.test.ts`.
   'multi-region-fixture.sb3': () =>
     import('./make-multi-region-fixture.mjs').then((m) => m.makeMultiRegionFixture()),
+  // §Phase 5 (gpu-kernel-dsl-phase5-spec §5.6) — custom-block fixture.
+  // A `procedures_prototype` (`fn_apply_expo %s`) with an `@compute`
+  // region inside its body, invoked 3 times via `procedure_call`. After
+  // inlining we expect 3 regions sharing 1 canonical key. Loaded by
+  // `test/runtime/gpu-kernel/custom-block-fixture.test.ts`.
+  'custom-block-fixture.sb3': () =>
+    import('./make-custom-block-fixture.mjs').then((m) => m.makeCustomBlockFixture()),
 };
 
 /**
