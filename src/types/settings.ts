@@ -75,8 +75,8 @@ export interface AdvancedSettings {
    *
    * `false`: the pre-parse pipeline still runs (so D1 demoted regions
    * surface in the ErrorLogPanel as informational entries), but no
-   * pipelines are created and the VM hook short-circuits straight to the
-   * JS path.
+   * pipelines are created and the VM hook short-circuits straight to
+   * the JS path.
    *
    * `saveAdvancedAsDefault()` forces this back to `true` for the same
    * reason as `turboWasmAccelerationEnabled`: the user cannot lock
@@ -87,6 +87,28 @@ export interface AdvancedSettings {
    * toggle, leaving the WebGPU path as a separate, independent switch).
    */
   enableWebgpu: boolean;
+  /**
+   * §Phase 5 (gpu-kernel-dsl-phase5-spec §5.5) — whether the
+   * `procedure-inliner.ts` is allowed to expand `procedure_call` blocks
+   * inside `@compute` region bodies at pre-parse time.
+   *
+   * `true` (default): the inliner expands every `procedure_call` /
+   * `argument_reporter_*` so the post-inlined body contains only
+   * D1-safe opcodes; canonical keys collapse across call sites.
+   *
+   * `false`: the inliner is skipped, `procedure_call` and the argument
+   * reporter opcodes are treated as D1-unsafe for that bootstrap pass,
+   * and any region that contains them demotes to the JS path. This is
+   * a power-user toggle — unlike `enableWebgpu` /
+   * `turboWasmAccelerationEnabled`, `saveAdvancedAsDefault()` does NOT
+   * force it back to `true`, so a user who explicitly disables
+   * inlining keeps that setting across "Set as default" presses.
+   *
+   * Schema versioning: v10 → v11 migration seeds the field with `true`
+   * so existing payloads keep the default-on behaviour unless they
+   * explicitly opt out.
+   */
+  customBlockInliningEnabled: boolean;
 }
 
 /**

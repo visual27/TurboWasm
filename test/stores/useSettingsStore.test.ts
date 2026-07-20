@@ -44,7 +44,7 @@ describe('useSettingsStore — basic', () => {
     expect(JSON.parse(raw as string).state.theme).toBe('dark');
     // The persisted payload is tagged with the v10 schema so future
     // schema bumps can read it back correctly.
-    expect(JSON.parse(raw as string).version).toBe(10);
+    expect(JSON.parse(raw as string).version).toBe(11);
   });
 
   it('clamps volume on setVolume', () => {
@@ -202,9 +202,9 @@ describe('useSettingsStore — enableWasm', () => {
       version: number;
     };
     expect(parsed.state.enableWasm).toBe(false);
-    // The persisted payload is tagged with the v10 schema so future
+    // The persisted payload is tagged with the v11 schema so future
     // schema bumps can read it back correctly.
-    expect(parsed.version).toBe(10);
+    expect(parsed.version).toBe(11);
   });
 
   it('setEnableWasm toggles both directions', () => {
@@ -564,7 +564,7 @@ describe('useSettingsStore.cycleFpsShortcut', () => {
       version: number;
     };
     expect(parsed.state.userExplicitFps).toBe(60);
-    expect(parsed.version).toBe(10);
+    expect(parsed.version).toBe(11);
   });
 
 it('patchAdvanced with a non-30 fps updates the latch even when advanced.fps matches defaultAdvanced.fps', () => {

@@ -93,7 +93,8 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
     interpolation: typeof r.interpolation === 'boolean' ? r.interpolation : base.interpolation,
     highQualityPen: typeof r.highQualityPen === 'boolean' ? r.highQualityPen : base.highQualityPen,
     warpTimer: typeof r.warpTimer === 'boolean' ? r.warpTimer : base.warpTimer,
-    infiniteClones: typeof r.infiniteClones === 'boolean' ? r.infiniteClones : base.infiniteClones,
+    infiniteClones:
+      typeof r.infiniteClones === 'boolean' ? r.infiniteClones : base.infiniteClones,
     removeFencing: typeof r.removeFencing === 'boolean' ? r.removeFencing : base.removeFencing,
     removeMiscLimits:
       typeof r.removeMiscLimits === 'boolean' ? r.removeMiscLimits : base.removeMiscLimits,
@@ -114,6 +115,14 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
         ? r.turboWasmAccelerationEnabled
         : base.turboWasmAccelerationEnabled,
     enableWebgpu: rawEnableWebgpu,
+    // §Phase 5 — `customBlockInliningEnabled` was added in v11 with
+    // `true` as the default. v10 payloads (and anything older that
+    // runs through `sanitizeAdvanced`) get the default-on value
+    // unless they explicitly carried the field at write time.
+    customBlockInliningEnabled:
+      typeof r.customBlockInliningEnabled === 'boolean'
+        ? r.customBlockInliningEnabled
+        : base.customBlockInliningEnabled,
     // v8 → v9 → v10 migration: `nestedParallelizationEnabled` was
     // retired in Phase 4 (BREAKING). The field is silently dropped on
     // read — a saved `true` value from a v9 payload does not leak
@@ -122,7 +131,6 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
     // stops here.
   };
 }
-
 function sanitizeAllowedExtensionUrls(input: unknown): string[] {
   if (!Array.isArray(input)) return [...DEFAULT_ALLOWED_EXTENSION_URLS];
   const seen = new Set<string>();

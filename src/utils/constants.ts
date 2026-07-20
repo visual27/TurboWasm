@@ -17,6 +17,7 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   extensionSandboxMode: 'worker',
   turboWasmAccelerationEnabled: true,
   enableWebgpu: true,
+  customBlockInliningEnabled: true,
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
@@ -80,7 +81,7 @@ export const STORAGE_KEYS = {
 // Will be bumped to 11 by Phase 5 once `procedure-inliner.ts` is wired
 // in and `advanced.customBlockInliningEnabled` becomes the new opt-out
 // (see `gpu-kernel-dsl-phase5-spec.md` §5.5).
-export const STORAGE_VERSION = 10;
+export const STORAGE_VERSION = 11;
 
 /**
  * §Phase 5 (gpu-kernel-dsl-phase5-spec §5.1) — maximum recursion depth

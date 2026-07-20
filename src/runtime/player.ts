@@ -667,6 +667,7 @@ function getCurrentAdvanced(): AdvancedSettings {
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
     enableWebgpu: true,
+    customBlockInliningEnabled: true,
   };
 }
 
@@ -686,6 +687,7 @@ function defaultAdvanced(): AdvancedSettings {
     extensionSandboxMode: 'worker',
     turboWasmAccelerationEnabled: true,
     enableWebgpu: true,
+    customBlockInliningEnabled: true,
   };
 }
 

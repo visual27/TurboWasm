@@ -164,6 +164,7 @@ describe('persistence', () => {
     // `nestedParallelizationEnabled` are no longer present).
     expect(Object.keys(settings.advanced).sort()).toEqual(
       [
+        'customBlockInliningEnabled',
         'disableCompiler',
         'enableWebgpu',
         'extensionSandboxMode',
