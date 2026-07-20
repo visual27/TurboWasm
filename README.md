@@ -43,6 +43,17 @@ local fork patches under `patches/vendored/`, installs its dependencies, and
 runs its build. It is a no-op once `vendored/scaffolding/dist/scaffolding-min.js`
 exists. To re-bootstrap from scratch, run `npm run setup -- --force`.
 
+> **Note:** `scripts/setup-vendored.mjs` pins `SCRATCH_VM_REF` to a specific
+> commit (not `origin/develop`) because the GPU kernel patches under
+> `patches/vendored/` (`gpu-kernel-list-binding+0.1.0.patch` and
+> `gpu-kernel-runtime+0.1.0.patch`) are regenerated against that exact SHA via
+> `scripts/regen-gpu-kernel-patches.mjs`. A fresh clone (e.g. Cloudflare Pages)
+> therefore bootstraps against a known-compatible scratch-vm snapshot. If the
+> pinned SHA drifts past the patch baseline, the script logs a `WARNING` and
+> continues with the GPU kernel pipeline disabled (runtime falls back to the JS
+> path); regenerate the GPU kernel patches against the current `develop` HEAD
+> and update the pin atomically.
+
 ### Vendored scaffolding, scratch-vm & scratch-render patches
 
 `vendored/` contains local forks of `TurboWarp/scaffolding` and

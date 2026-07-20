@@ -16,7 +16,10 @@
  *     re-applied (idempotent) so a freshly built UMD carries the
  *     `// TurboWasm:` guards, and `node_modules/.vite/deps` is invalidated
  *     so a future `npm run dev` does not load a stale esbuild pre-bundle.
- *   - Shallow-clones vendored/scratch-vm from TurboWarp/scratch-vm (develop).
+ *   - Shallow-clones vendored/scratch-vm from TurboWarp/scratch-vm at the
+ *     SHA pinned in SCRATCH_VM_REF (not `origin/develop` — see comment near
+ *     the constant). The pin exists because the GPU kernel patches under
+ *     patches/vendored/ are regenerated against that exact SHA.
  *   - Shallow-clones vendored/scaffolding from TurboWarp/scaffolding (v0.4.0).
  *   - Installs vendored/scaffolding's deps while the scratch-vm dep is still
  *     the upstream `github:` reference, so npm hoists scratch-vm's transitive
@@ -31,6 +34,10 @@
  *   - Re-imports `applyPatches` from apply-vendored-patches.mjs so the
  *     scratch-render `// TurboWasm:` guards are in node_modules before the
  *     UMD is built (otherwise the UMD ships without them).
+ *   - The two GPU kernel patches (gpu-kernel-list-binding, gpu-kernel-runtime)
+ *     are applied with a soft-fail policy: if either fails to apply, log a
+ *     WARNING and continue. The runtime will fall back to the JS path for
+ *     `@compute` regions via bootstrapGpuKernels' early-return.
  *   - Runs `npm run build` inside vendored/scaffolding.
  *   - Invalidates Vite's optimizeDeps cache so the next `npm run dev` does
  *     not load a pre-bundle built against a stale UMD.
@@ -43,7 +50,7 @@
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, basename, resolve } from 'node:path';
 
 import { applyPatches } from './apply-vendored-patches.mjs';
 
@@ -59,7 +66,17 @@ const viteDepsDir = resolve(root, 'node_modules', '.vite', 'deps');
 const SCAFFOLDING_REPO = 'https://github.com/TurboWarp/scaffolding.git';
 const SCRATCH_VM_REPO = 'https://github.com/TurboWarp/scratch-vm.git';
 const SCAFFOLDING_REF = 'v0.4.0';
-const SCRATCH_VM_REF = 'develop';
+// Pinned to a specific commit (not `origin/develop`). The two GPU kernel
+// patches under patches/vendored/ are regenerated against this exact SHA
+// (see scripts/regen-gpu-kernel-patches.mjs); using `develop` here would let
+// upstream scratch-vm drift past the patch baseline and silently break a
+// fresh clone (e.g. Cloudflare Pages builds, where vendored/ is gitignored
+// and the bootstrap happens from scratch each run).
+//
+// To bump: update this SHA, run `node scripts/regen-gpu-kernel-patches.mjs`
+// to regenerate the two GPU kernel patches, and commit all three changes
+// atomically. Verify with `npm run build` from a clean working tree.
+const SCRATCH_VM_REF = '925f1134001ada36572eeb35f9d83ba01c98081a';
 
 // Representative subset of scratch-vm's transitive deps. Used as a spot
 // check for "the vendored setup has been completely bootstrapped". We do not
@@ -287,15 +304,36 @@ if (!existsSync(scratchVmSentinel)) {
     rmSync(scratchVmDir, { recursive: true, force: true });
   }
   log(`Cloning ${SCRATCH_VM_REPO} (${SCRATCH_VM_REF}) into vendored/scratch-vm`);
-  run('git', [
-    'clone',
-    '--depth',
-    '1',
-    '--branch',
-    SCRATCH_VM_REF,
-    SCRATCH_VM_REPO,
-    scratchVmDir,
-  ]);
+  // SCRATCH_VM_REF is a commit SHA (40 hex chars), not a branch. We cannot
+  // pass `--branch <SHA>` to `git clone` because `--branch` expects a ref.
+  // Instead, clone with `--branch develop` (default scratch-vm branch) and
+  // then `git fetch` + `git reset --hard` to land on the pinned SHA. This
+  // gives us a shallow clone at exactly the pinned commit, regardless of
+  // whether the SHA is reachable from a known branch tip.
+  const isSha = /^[0-9a-f]{7,40}$/i.test(SCRATCH_VM_REF);
+  if (isSha) {
+    run('git', [
+      'clone',
+      '--depth',
+      '1',
+      SCRATCH_VM_REPO,
+      scratchVmDir,
+    ]);
+    run('git', ['fetch', '--depth', '1', 'origin', SCRATCH_VM_REF], {
+      cwd: scratchVmDir,
+    });
+    run('git', ['reset', '--hard', SCRATCH_VM_REF], { cwd: scratchVmDir });
+  } else {
+    run('git', [
+      'clone',
+      '--depth',
+      '1',
+      '--branch',
+      SCRATCH_VM_REF,
+      SCRATCH_VM_REPO,
+      scratchVmDir,
+    ]);
+  }
 } else {
   log('vendored/scratch-vm already cloned; skipping clone.');
 }
@@ -313,34 +351,44 @@ log(`Applying ${scratchVmPatch} to vendored/scratch-vm`);
 run('git', ['apply', '--3way', '--ignore-whitespace', scratchVmPatch], { cwd: scratchVmDir });
 
 // GPU compute kernel pipeline (M2): the two extra patches below are
-// optional. When missing the script proceeds without them so a developer
-// who hasn't migrated yet can still bootstrap. The runtime side of
-// `__turboWasmGpuKernelDispatch` (window global) is only installed when
-// the TS pipeline registers kernels, so the absence of these patches is
-// a graceful no-op at runtime.
-if (existsSync(gpuKernelListBindingPatch)) {
-  log(`Applying ${gpuKernelListBindingPatch} (GPU list binding APIs)`);
-  run(
+// optional. When missing OR failing to apply, the script proceeds with a
+// `WARNING` and the vendored scratch-vm will run without the GPU kernel
+// hooks (the runtime falls back to the JS path via bootstrapGpuKernels'
+// early-return). This keeps `npm run build` succeeding on fresh clones
+// even if upstream scratch-vm moves past the pinned SHA before the pin is
+// updated — the cost is a silent degradation that surfaces via ErrorLogPanel
+// at runtime, not a hard build failure.
+//
+// We use `spawnSync` directly (rather than the `run()` helper above) so
+// the stderr is captured and surfaced with the warning. `run()` throws on
+// non-zero status, which is the wrong behavior here.
+for (const { file, label } of [
+  { file: gpuKernelListBindingPatch, label: 'GPU list binding APIs' },
+  { file: gpuKernelRuntimePatch, label: 'GPU kernel runtime hooks' },
+]) {
+  if (!existsSync(file)) {
+    log(`GPU kernel patch not present at ${file}; skipping (${label}).`);
+    continue;
+  }
+  log(`Applying ${file} (${label})`);
+  const result = spawnSync(
     'git',
-    ['apply', '--3way', '--ignore-whitespace', gpuKernelListBindingPatch],
-    { cwd: scratchVmDir },
+    ['apply', '--3way', '--ignore-whitespace', file],
+    { cwd: scratchVmDir, stdio: 'pipe', encoding: 'utf8', shell: false },
   );
-} else {
-  log(
-    `GPU list-binding patch not present at ${gpuKernelListBindingPatch}; skipping.`,
+  if (result.status === 0) {
+    log(`  ✓ ${basename(file)} applied`);
+    continue;
+  }
+  console.warn(
+    `[setup-vendored] WARNING: ${basename(file)} did not apply cleanly. ` +
+      'The vendored scratch-vm will run without the GPU kernel hooks; ' +
+      'the runtime falls back to the JS path. To restore the GPU kernel pipeline, ' +
+      `regenerate the patch against the current ${SCRATCH_VM_REF} SHA and update the pin.`,
   );
-}
-if (existsSync(gpuKernelRuntimePatch)) {
-  log(`Applying ${gpuKernelRuntimePatch} (GPU kernel runtime hooks)`);
-  run(
-    'git',
-    ['apply', '--3way', '--ignore-whitespace', gpuKernelRuntimePatch],
-    { cwd: scratchVmDir },
-  );
-} else {
-  log(
-    `GPU kernel-runtime patch not present at ${gpuKernelRuntimePatch}; skipping.`,
-  );
+  if (result.stderr) {
+    console.warn(`[setup-vendored] git apply stderr:\n${result.stderr}`);
+  }
 }
 
 // 2. Clone vendored/scaffolding (unpatched; the dep still points at the
