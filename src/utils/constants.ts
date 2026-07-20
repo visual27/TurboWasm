@@ -77,7 +77,24 @@ export const STORAGE_KEYS = {
 // `gpu-kernel-dsl-phase4-spec.md`). The field is gone from the
 // `AdvancedSettings` type and is silently dropped on the v9 → v10 read
 // so a saved `true` value does not leak through into a fresh session.
+// Will be bumped to 11 by Phase 5 once `procedure-inliner.ts` is wired
+// in and `advanced.customBlockInliningEnabled` becomes the new opt-out
+// (see `gpu-kernel-dsl-phase5-spec.md` §5.5).
 export const STORAGE_VERSION = 10;
+
+/**
+ * §Phase 5 (gpu-kernel-dsl-phase5-spec §5.1) — maximum recursion depth
+ * allowed for `procedure-inliner.ts`. Includes the original region's
+ * own body, so the deepest possible call chain is
+ * `MAX_INLINING_DEPTH` calls of `inlineProcedures` deep. Independent of
+ * the `visitedPrototypeIds` cycle detection: depth catches straight
+ * chains, the visited-set catches mutual recursion that doesn't blow
+ * the depth limit.
+ *
+ * Bound chosen so a chain of length 16 can still be hand-rolled in a
+ * test fixture, and the depth-17 / cycle boundary tests stay readable.
+ */
+export const MAX_INLINING_DEPTH = 16;
 
 /**
  * Default value for `enableWasm` when no user preference has been
