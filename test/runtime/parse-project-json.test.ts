@@ -141,6 +141,40 @@ describe('parseProjectJsonFromArrayBuffer + toParsedProject (§15.1 comments mer
     expect(regions.some((r) => r.commentId === 'cmt_compute')).toBe(true);
   });
 
+  it('keeps global_x axis for legacy expo-fixture.sb3 via bound list reference (§15.4)', async () => {
+    // §Phase 3 §15.4 — the legacy fixture uses `len(aabb_w)` so D2's
+    // formula-reference check (axis-analysis.ts) sees the bound list
+    // name and keeps the axis parallel. Previously the formula was
+    // `@repeat R0:global_x = aabb_w` which D2 demoted; the fixture
+    // has since been updated to use the explicit `len()` sugar form.
+    const fixturePath = resolve(
+      process.cwd(),
+      'test/.test-fixtures/expo-fixture.sb3',
+    );
+    const buf = readFileSync(fixturePath);
+
+    const shape = await parseProjectJsonFromArrayBuffer(buf);
+    expect(shape).not.toBeNull();
+    const parsed = toParsedProject(shape!);
+    const { regions } = extractRegions(parsed);
+    expect(regions.length).toBeGreaterThanOrEqual(1);
+
+    const { buildRegionVerdicts } = await import(
+      '@/runtime/gpu-kernel/region-verdict-pipeline'
+    );
+    const { verdicts } = buildRegionVerdicts({ parsedProject: parsed, regions });
+    const computeVerdict = verdicts.find((v) =>
+      Object.values(v.axes).some((a) => a.requestedAxis === 'global_x'),
+    );
+    expect(computeVerdict, 'expected a region with global_x axis').toBeDefined();
+    const r0 = computeVerdict!.axes['R0'];
+    expect(r0?.finalAxis).toBe('global_x');
+    expect(r0?.demoteReason).toBeUndefined();
+    // No D2 demote warning emitted for the legacy fixture.
+    const d2Diags = computeVerdict!.diagnostics.filter((d) => d.code === 'd2.axis_demoted');
+    expect(d2Diags).toEqual([]);
+  });
+
   it('falls back to root json.comments when per-target carries nothing', async () => {
     const buf = await buildSb3({
       targets: [

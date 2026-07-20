@@ -84,4 +84,50 @@ describe('cascade-analysis (D3)', () => {
     expect(out.valid).toBe(true);
     expect(out.diagnostics.some((d) => d.code === 'gpu.identifier_collision')).toBe(true);
   });
+
+  describe('quoted names (§Phase 3 §15.11)', () => {
+    it('treats a quoted reference as a single surface-name token in DAG', () => {
+      // `@map "my axis" <- 0` references the quoted axis name; the DAG
+      // should see `my axis` as a token (after escape stripping), not
+      // `my` and `axis` separately.
+      const directives = parse(
+        '@repeat "my axis":global_x = N\n@map "my axis" <- 0\n',
+      ).directives;
+      const out = analyzeCascade({
+        region: skeletonRegion(),
+        directives,
+        project: project(),
+        survivedAxes: new Set(['my axis']),
+      });
+      expect(out.valid).toBe(true);
+      expect(out.topoOrder).toContain('my axis');
+    });
+
+    it('detects a @map cycle through a quoted dependency', () => {
+      const directives = parse(
+        '@map "a" <- "b" + 1\n@map "b" <- "a" + 1\n',
+      ).directives;
+      const out = analyzeCascade({
+        region: skeletonRegion(),
+        directives,
+        project: project(),
+        survivedAxes: new Set(),
+      });
+      expect(out.valid).toBe(false);
+      expect(out.demoteReason).toBe('d3');
+    });
+
+    it('unescapes \\" and \\\\ inside quoted references', () => {
+      const directives = parse('@map "weird \\"name\\\\" <- 0\n').directives;
+      const out = analyzeCascade({
+        region: skeletonRegion(),
+        directives,
+        project: project(),
+        survivedAxes: new Set(),
+      });
+      // No demote (no survived axis → no D3 missing-map check), just
+      // ensure no syntax error popped up in tokenisation.
+      expect(out.valid).toBe(true);
+    });
+  });
 });

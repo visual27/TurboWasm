@@ -115,7 +115,15 @@ const COMPUTE_COMMENT_TEXT = [
   // §Phase 2 (15.3): the inline `, max=<uint>` suffix was removed in v9
   // alongside the `@max` directive. The dispatch cap is now derived
   // from the runtime list length read at dispatch time.
-  '@repeat R0:global_x = aabb_w',
+  //
+  // §Phase 3 §15.4: the formula now reads `len(aabb_w)` so D2's
+  // formula-reference check (axis-analysis.ts:131) sees the bound
+  // list name and keeps `global_x` parallel. Previously `R0` had to
+  // appear in the formula to satisfy condition (b), which broke
+  // dispatch-count semantics — R0 is the iteration counter, not the
+  // bound. The legacy block tree (`repeat(aabb_w length)` with body
+  // reading `buff_r[R0]`) is unchanged.
+  '@repeat R0:global_x = len(aabb_w)',
   '@map R0 <- 0',
 ].join('\n');
 

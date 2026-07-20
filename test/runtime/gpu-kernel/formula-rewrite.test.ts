@@ -73,19 +73,43 @@ describe('formula-rewrite (§Phase E+)', () => {
     });
 
     it('uses internalName for quoted bindings via binding name lookup', () => {
-      // §Phase E+: a quoted @bind's `name` field is the surface name;
-      // the formula lexer matches identifiers, so the user references
-      // the binding by its surface name (without surrounding quotes) in
-      // formulas. This test confirms the rewrite still routes to
-      // `internalName` when the binding was declared with one.
+      // §Phase 3 §15.11 — quoted binding surfaces now resolve through
+      // `bindingBySurface` even when the user keeps the surface name
+      // on the formula without quotes (because `preprocessQuotedReferences`
+      // walks every quoted segment first and renames matching
+      // references to the `internalName` form before lexing).
       const result = rewriteFormula('my_list[R0]', {
         bindings: [makeBinding('my list', { internalName: '__tw_aaaa1111' })],
       });
-      // Surface name "my list" doesn't match the literal identifier
-      // "my_list" — the binding lookup is by surface name. The
-      // formula is left as-is and a diagnostic is surfaced.
+      // The unquoted `my_list` identifier does not match the binding
+      // surface `my list`; no sugar rewrite applies and a diagnostic
+      // is surfaced. The user must use `"my list"[R0]` for the
+      // quoted form to resolve.
       expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
       expect(result.formula).toBe('my_list[R0]');
+    });
+
+    it('rewrites "quoted list"[idx] to scratch_list_read via internalName (§15.11)', () => {
+      const result = rewriteFormula('"my list"[R0]', {
+        bindings: [makeBinding('my list', { internalName: '__tw_aaaa1111', dtype: 'f32' })],
+      });
+      expect(result.diagnostics).toEqual([]);
+      expect(result.formula).toBe(
+        'scratch_list_read_f32(&__tw_aaaa1111, scratch_index_clamp(R0, u_scratch.__tw_aaaa1111_length), u_scratch.__tw_aaaa1111_length)',
+      );
+    });
+
+    it('recursively rewrites nested quoted subscript targets (§15.11)', () => {
+      // §Phase 3 §15.11 — `bool("my list"[R0])` should expand the
+      // inner quoted target to its scratch_list_read_f32 form before
+      // being wrapped in `select(...)`.
+      const result = rewriteFormula('bool("my list"[R0])', {
+        bindings: [makeBinding('my list', { internalName: '__tw_bbbb2222' })],
+      });
+      expect(result.diagnostics).toEqual([]);
+      expect(result.formula).toBe(
+        'select(0.0, 1.0, scratch_list_read_f32(&__tw_bbbb2222, scratch_index_clamp(R0, u_scratch.__tw_bbbb2222_length), u_scratch.__tw_bbbb2222_length) != 0.0)',
+      );
     });
   });
 
@@ -98,16 +122,19 @@ describe('formula-rewrite (§Phase E+)', () => {
       expect(result.formula).toBe('u_scratch.my_list_length');
     });
 
-    it('does not match quoted surface names inside len() — leaves len() alone', () => {
-      // The lexer treats `"my list"` as a string literal; the `name`
-      // inside `len("my list")` is not an identifier we recognise.
-      // The user references the binding via its surface name without
-      // quotes; quoted references are out of scope for §Phase E+ — see
-      // AGENTS.md §Phase E for the rationale.
+    it('rewrites len("my list") to u_scratch.<hashed>_length (§15.11)', () => {
       const result = rewriteFormula('len("my list")', {
         bindings: [makeBinding('my list', { internalName: '__tw_bbbb2222' })],
       });
-      expect(result.formula).toBe('len("my list")');
+      expect(result.diagnostics).toEqual([]);
+      expect(result.formula).toBe('u_scratch.__tw_bbbb2222_length');
+    });
+
+    it('surfaces a diagnostic when a quoted len() target is undeclared (§15.11)', () => {
+      const result = rewriteFormula('len("missing")', {
+        bindings: [makeBinding('my_list')],
+      });
+      expect(result.formula).toBe('len("missing")');
       expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
     });
 

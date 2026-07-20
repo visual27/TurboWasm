@@ -4,10 +4,17 @@
  *
  * Per spec §5.4, two regions with semantically equivalent `@compute`
  * directives can share the same compiled WGSL pipeline. The canonical
- * key is a SHA-256 of the canonicalised AST (RegionVerdict). We do not
+ * key is a hash of the canonicalised AST (RegionVerdict). We do not
  * hash WGSL itself because the WGSL output may differ between two
  * equivalent ASTs across runs (e.g. when a `data_variable` field is
  * re-ordered by the loader), and we want cache hits across those runs.
+ *
+ * §Phase 3 §15.10 — the canonical key deliberately omits
+ * `regionId` / `blockId` / `kernelContainerBlockId` so two regions
+ * with identical directives but renumbered scratch block ids share
+ * one compiled pipeline. Runtime identity (`Kernel.id`) and
+ * block-id lookup (`byBlockId`) still use the un-stripped regionId /
+ * blockId.
  *
  * The registry also provides:
  *
@@ -90,6 +97,14 @@ export class KernelRegistry {
     const canonicalKey = canonicalKeyOf(regionVerdict);
     const existing = this.byCanonicalKey.get(canonicalKey);
     if (existing) {
+      // §Phase 3 §15.10 — two RegionVerdicts with semantically
+      // equivalent directives but different `control_repeat` block
+      // ids (e.g. a save-as-new-project renumbering) share one
+      // canonical key. Update the block-id index so `lookup(<new
+      // blockId>)` resolves to the same cached kernel; without this
+      // the vendored scratch-vm hook would fall through to the JS
+      // path because the new blockId is missing from the index.
+      this.byBlockId.set(regionVerdict.blockId, existing.id);
       return existing;
     }
     const kernel: Kernel = {
@@ -206,8 +221,6 @@ export function canonicalKeyOf(verdict: RegionVerdict): string {
 }
 
 interface VolatileStrippedVerdict {
-  regionId: string;
-  blockId: string;
   spriteId: string;
   directives: RegionVerdict['directives'];
   parallelAxes: RegionVerdict['parallelAxes'];
@@ -217,12 +230,26 @@ interface VolatileStrippedVerdict {
  * Drop fields that may legitimately differ between two equivalent
  * RegionVerdicts across runs: diagnostics (free-form text), the cascade
  * topoOrder (only the cycle-detection matters, not the exact order of
- * independent nodes).
+ * independent nodes), and the volatile scratch-block-id fields
+ * (`regionId` / `blockId` / `kernelContainerBlockId`).
+ *
+ * §Phase 3 §15.10 — the kernel-container `control_repeat` scratch
+ * block id is a **volatile** identifier: scratch-vm renumbers it on
+ * save-as-new-project / fixture regeneration, and the canonical key
+ * must remain stable across those renumberings so equivalent regions
+ * share one compiled pipeline. We keep:
+ *   - `spriteId` (sprite is a logical entity, not a scratch block id);
+ *   - `directives` (already stripped of `boundBlockId` / `blockId` /
+ *     `internalName` / `line` / `column` via `stripDirectiveVolatile`);
+ *   - `parallelAxes` (already keyed by DSL axis names, not scratch
+ *     block ids).
+ *
+ * Runtime identity (`Kernel.id`, dispatch lookup, D4 demote keys)
+ * still uses the un-stripped `regionVerdict.regionId` /
+ * `regionVerdict.blockId` — only the cache key changes.
  */
 function stripVolatile(verdict: RegionVerdict): VolatileStrippedVerdict {
   return {
-    regionId: verdict.regionId,
-    blockId: verdict.blockId,
     spriteId: verdict.spriteId,
     directives: verdict.directives.map(
       (d) => stripDirectiveVolatile(d) as unknown as RegionVerdict['directives'][number],

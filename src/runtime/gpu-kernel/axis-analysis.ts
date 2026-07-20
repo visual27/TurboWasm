@@ -66,7 +66,7 @@ export function analyzeAxes(
 
   const out: Record<string, AxisVerdict> = {};
   for (const r of repeats) {
-    const verdict = computeAxisVerdict(r, maps, bodyBlocks, region);
+    const verdict = computeAxisVerdict(r, maps, bodyBlocks, region, directives);
     out[r.name] = verdict;
     diagnostics.push(...verdict.diagnostics);
   }
@@ -107,6 +107,7 @@ function computeAxisVerdict(
   maps: Set<string>,
   bodyBlocks: RawBlock[],
   region: ExtractedRegion,
+  directives: readonly ParsedDirective[],
 ): AxisVerdict {
   if (r.axis === 'sequential') {
     return {
@@ -128,8 +129,20 @@ function computeAxisVerdict(
     };
   }
 
-  // (b) formula references Ri.
-  if (!formulaMentions(r.formula, r.name)) {
+  // (b) formula references Ri OR a @bind list declared in the same
+  // region. §Phase 3 §15.4: legacy fixtures dispatch by `len(aabb_w)`
+  // (= bound list length) where `R0` does not appear in the formula
+  // text — the loop bound is implicit in the list length. We accept
+  // such references here so the GPU path is preserved for the bit-
+  // identical regression baseline.
+  //
+  // §Phase 3 §15.11: quoted names and `internalName` (hashed) are
+  // matched in `formulaMentions` so `@repeat "R0":global_x = "aabb_w"`
+  // also keeps the axis parallel.
+  if (
+    !formulaMentions(r.formula, r.name, r.internalName) &&
+    !formulaReferencesBindList(r.formula, directives)
+  ) {
     return {
       requestedAxis: r.axis,
       finalAxis: 'sequential',
@@ -138,7 +151,7 @@ function computeAxisVerdict(
         axisDiag(
           region,
           r,
-          `axis '${r.axis}' demoted: formula does not reference '${r.name}' (D2)`,
+          `axis '${r.axis}' demoted: formula does not reference '${r.name}' or any @bind list (D2)`,
         ),
       ],
     };
@@ -201,11 +214,47 @@ function axisDiag(
  * use whole-word matching), and a false negative only causes D2 to demote
  * when in reality the formula did reference the variable — never the
  * other way round. The WGSL emitter does the actual reference scan in M4.
+ *
+ * §Phase 3 §15.11 — `internalName` (the FNV-1a hashed form of a quoted
+ * name) is also accepted so `@repeat "R0":global_x = __tw_<hash>`
+ * survives D2 even when the user keeps the surface name off the
+ * formula. Quoted surface references (`"my axis"`) inside the formula
+ * are also accepted for the same reason.
  */
-function formulaMentions(formula: string, name: string): boolean {
-  if (!INDEX_VAR_PATTERN.test(name)) return false;
-  const m = formula.match(new RegExp(`\\b${escapeRegExp(name)}\\b`));
-  return m !== null;
+function formulaMentions(formula: string, name: string, internalName?: string): boolean {
+  if (INDEX_VAR_PATTERN.test(name)) {
+    if (new RegExp(`\\b${escapeRegExp(name)}\\b`).test(formula)) return true;
+  }
+  if (internalName && formula.includes(internalName)) return true;
+  if (formula.includes(`"${name}"`)) return true;
+  return false;
+}
+
+/**
+ * §Phase 3 §15.4 — detect whether the formula references any `@bind`
+ * list declared in the same region. Used by D2 condition (b) to keep
+ * the legacy fixture's `@repeat R0:global_x = aabb_w` axis parallel:
+ * the loop bound is the list length, not the index variable itself.
+ *
+ * Only list bindings (`storageKind !== 'scalar'`) qualify — scalar
+ * bindings feed `data_variableof` resolution in M5 and don't act as
+ * loop bounds. Quoted names are matched by surface (`"aabb_w"`),
+ * `internalName` (hashed form), and plain identifier regex.
+ */
+function formulaReferencesBindList(
+  formula: string,
+  directives: readonly ParsedDirective[],
+): boolean {
+  for (const d of directives) {
+    if (d.kind !== 'bind') continue;
+    if (d.storageKind === 'scalar') continue;
+    if (INDEX_VAR_PATTERN.test(d.name)) {
+      if (new RegExp(`\\b${escapeRegExp(d.name)}\\b`).test(formula)) return true;
+    }
+    if (d.internalName && formula.includes(d.internalName)) return true;
+    if (formula.includes(`"${d.name}"`)) return true;
+  }
+  return false;
 }
 
 function escapeRegExp(s: string): string {

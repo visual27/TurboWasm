@@ -611,6 +611,60 @@ describe('wgsl-emitter: u_scratch slot allocation (D-3, §19.2 #9)', () => {
       // of error markers and the presence of let-binding for `idx`.)
       expect(result.wgsl).toMatch(/let idx: f32/);
     });
+
+    it('rewrites "quoted list"[idx] in @repeat body via internalName (§15.11)', () => {
+      // §Phase 3 §15.11 — the quoted-reference rename pass runs
+      // BEFORE the scratch-compat sugar pass so the lexer's
+      // bindingByEmit lookup resolves the hashed identifier. Without
+      // this ordering, the body would emit `__tw_<hash>[R0]` (broken
+      // WGSL) while the dispatch plan correctly used
+      // `scratch_list_read_f32(...)`.
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind "my list"(0) ro f32',
+          '@repeat R0:global_x = 32',
+          '@map idx <- "my list"[R0]',
+        ].join('\n'),
+        ['idx'],
+        { R0: 'global_x' },
+      );
+      const result = emitRegion(input);
+      // The quoted reference resolves to the binding's internalName
+      // and then through `scratch_list_read_f32`.
+      expect(result.wgsl).toMatch(
+        /scratch_list_read_f32\(&__tw_[0-9a-f]{8}, scratch_index_clamp\(R0, u_scratch\.__tw_[0-9a-f]{8}_length\), u_scratch\.__tw_[0-9a-f]{8}_length\)/,
+      );
+      // No "my list" surface name leaks into the WGSL output.
+      expect(result.wgsl).not.toMatch(/"my list"/);
+      // No `gpu.emitter_invalid_formula_token` warning from the `"` characters.
+      expect(result.diagnostics.some((d) => d.code === 'gpu.emitter_invalid_formula_token')).toBe(
+        false,
+      );
+    });
+
+    it('rewrites len("quoted list") in @repeat formula and dispatch plan (§15.11)', () => {
+      const { input } = makeVerdict(
+        [
+          '@compute',
+          '@bind "my list"(0) ro f32',
+          '@repeat R0:global_x = len("my list")',
+          '@map idx <- R0',
+        ].join('\n'),
+        ['idx'],
+        { R0: 'global_x' },
+      );
+      const result = emitRegion(input);
+      // The @repeat formula (dispatch plan and `for` bound) carries
+      // the hashed identifier as the `_length` field.
+      expect(result.wgsl).toMatch(/u_scratch\.__tw_[0-9a-f]{8}_length/);
+      // The dispatch plan (`// dispatchWorkgroups(ceil(... / 64), 1, 1)`)
+      // matches the body — both routes use the same hashed identifier.
+      expect(result.dispatchPlan.x).toMatch(/ceil\(u_scratch\.__tw_[0-9a-f]{8}_length \/ 64\)/);
+      expect(result.diagnostics.some((d) => d.code === 'gpu.emitter_invalid_formula_token')).toBe(
+        false,
+      );
+    });
   });
 });
 

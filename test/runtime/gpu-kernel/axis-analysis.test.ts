@@ -63,6 +63,41 @@ describe('axis-analysis (D2)', () => {
     expect(result.axes['R0']?.diagnostics.some((d) => d.code === 'd2.axis_demoted')).toBe(true);
   });
 
+  it('keeps the axis when the formula references a @bind list (§15.4 legacy fixture)', () => {
+    // §Phase 3 §15.4 — `@repeat R0:global_x = len(aabb_w)` (or bare
+    // `aabb_w`) keeps `global_x` because the bound list name appears
+    // in the formula. The dispatch count is the list length, not
+    // anything that references `R0` textually.
+    const directives = parse(
+      '@bind aabb_w(2) ro f32\n@repeat R0:global_x = len(aabb_w)\n@map R0 <- 0\n',
+    ).directives;
+    const result = analyzeAxes(region(['a']), directives, project([block('a', 'data_itemoflist')]));
+    expect(result.axes['R0']?.finalAxis).toBe('global_x');
+    expect(result.axes['R0']?.diagnostics).toEqual([]);
+  });
+
+  it('keeps the axis when the formula references a quoted @bind list (§15.4 + §15.11)', () => {
+    // §Phase 3 §15.4 + §15.11 — quoted `@bind` name resolved through
+    // the surface string in the formula text.
+    const directives = parse(
+      '@bind "my list"(2) ro f32\n@repeat R0:global_x = len("my list")\n@map R0 <- 0\n',
+    ).directives;
+    const result = analyzeAxes(region(['a']), directives, project([block('a', 'data_itemoflist')]));
+    expect(result.axes['R0']?.finalAxis).toBe('global_x');
+    expect(result.axes['R0']?.diagnostics).toEqual([]);
+  });
+
+  it('still demotes when only a scalar @bind appears in the formula (§15.4 list-only filter)', () => {
+    // §Phase 3 §15.4 — scalar bindings don't act as loop bounds, so
+    // referencing them in the formula does NOT keep the axis parallel.
+    const directives = parse(
+      '@bind tmp_scalar(2) ro f32, scalar\n@repeat R0:global_x = tmp_scalar\n@map R0 <- 0\n',
+    ).directives;
+    const result = analyzeAxes(region(['a']), directives, project([block('a', 'data_itemoflist')]));
+    expect(result.axes['R0']?.finalAxis).toBe('sequential');
+    expect(result.axes['R0']?.demoteReason).toBe('d2');
+  });
+
   it('demotes (D2) when the body writes to the index var', () => {
     const directives = parse('@repeat R0:global_x = N\n@map R0 <- 0\n').directives;
     const write = block('a', 'data_setvariableto', {

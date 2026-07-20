@@ -88,7 +88,12 @@ describe('make-expo-fixture.mjs: legacy COMPUTE_COMMENT_TEXT shape', () => {
     // §Phase 2 (15.3): the inline `, max=<uint>` suffix is removed
     // alongside the @max directive. The dispatch cap is now derived
     // from the runtime list length.
-    expect(computeComment!.text).toContain('@repeat R0:global_x = aabb_w');
+    //
+    // §Phase 3 §15.4: the formula uses `len(aabb_w)` so D2's
+    // formula-reference check (axis-analysis.ts:131) recognises the
+    // bound list and keeps `global_x` parallel without `R0` appearing
+    // in the formula. See scripts/make-expo-fixture.mjs:COMPUTE_COMMENT_TEXT.
+    expect(computeComment!.text).toContain('@repeat R0:global_x = len(aabb_w)');
     expect(computeComment!.text).not.toContain(', max=');
     expect(computeComment!.text).toContain('@map R0 <- 0');
     // Phase 3 Tier 2 additions must NOT be in the legacy comment

@@ -790,9 +790,20 @@ function emitFormula(
   context: EmitterContext,
 ): string {
   validateFormula(rawFormula, directive, context);
-  // §Phase E+ — apply general-notation sugar before identifier rewrite
-  // so the rewrite pass sees only scratch-compat primitives.
-  const rewrite = rewriteFormula(rawFormula, {
+  // §Phase 3 §15.11 — quoted-reference rename runs BEFORE the
+  // scratch-compat sugar pass so the lexer inside `rewriteFormula`
+  // sees `"my list"` as the hashed identifier and the
+  // `bindingByEmit` lookup resolves it without relying on a
+  // defensive preprocess step.
+  const renamedRaw = renameFormulaIdentifiers(
+    rawFormula,
+    context.renameTable,
+    context.bindingRenameTable,
+  );
+  // §Phase E+ — apply general-notation sugar after identifier rewrite
+  // so the rewrite pass sees only scratch-compat primitives and the
+  // hashed `internalName` from quoted references.
+  const rewrite = rewriteFormula(renamedRaw, {
     bindings: context.bindings,
     renameTable: context.renameTable,
     regionId: context.regionId,
@@ -800,11 +811,7 @@ function emitFormula(
     line: directive.line,
   });
   if (rewrite.diagnostics.length > 0) context.diagnostics.push(...rewrite.diagnostics);
-  let formula = renameFormulaIdentifiers(
-    rewrite.formula,
-    context.renameTable,
-    context.bindingRenameTable,
-  );
+  let formula = rewrite.formula;
   if (formula.includes('//')) {
     formula = substituteBinaryOperator(formula, '//', (left, right) => `floor(${left} / ${right})`);
     context.diagnostics.push({
@@ -846,6 +853,11 @@ function directiveFormulaName(directive: MapDirective | RepeatDirective): string
  * keywords (e.g. `@map let <- 0`) are caught upstream by the rename
  * pass; this validator catches function-call syntax of unknown names
  * (e.g. `@map x <- undeclared_fn(y)`).
+ *
+ * §Phase 3 §15.11 — quoted-string segments (`"my axis"`) are
+ * skipped wholesale so their contents don't trigger
+ * `gpu.emitter_invalid_formula_token`. Escape handling mirrors
+ * `comment-parser.ts:parseNameToken`.
  */
 function validateFormula(
   formula: string,
@@ -859,6 +871,15 @@ function validateFormula(
     const whitespace = remaining.match(/^\s+/);
     if (whitespace) {
       offset += whitespace[0].length;
+      continue;
+    }
+    // Skip quoted segments verbatim so the `"` characters and any
+    // punctuation inside the quoted name don't trigger the invalid-
+    // token diagnostic. The escape rules match
+    // `comment-parser.ts:parseNameToken` (`\"` and `\\`).
+    const quoted = remaining.match(/^"(?:[^"\\]|\\.)*"/);
+    if (quoted) {
+      offset += quoted[0].length;
       continue;
     }
     const number = remaining.match(/^(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/);
@@ -883,7 +904,7 @@ function validateFormula(
       offset += token.length;
       continue;
     }
-    const operator = remaining.match(/^(?:\/\/|<=|>=|==|!=|&&|\|\||[+\-*/%^<>=!(),.])/);
+    const operator = remaining.match(/^(?:\/\/|<=|>=|==|!=|&&|\|\||[+\-*/%^<>=!(),.[\]])/);
     if (operator) {
       offset += operator[0].length;
       continue;
@@ -925,16 +946,24 @@ function renameFormulaIdentifiers(
   // formulas. Quoted references resolve to the same `internalName` /
   // hashed emit name as the unquoted form. (§Phase 2 15.3 — `@max`
   // removed; no longer in the rename table.)
+  //
+  // §Phase 3 §15.11 — escape sequences inside quoted references are
+  // stripped using the same `\<char>` rules as
+  // `comment-parser.ts:parseNameToken` (`\"` → `"`, `\\` → `\`, any
+  // other `\X` drops the backslash and keeps `X`). The renamed
+  // identifier is emitted WITHOUT quotes so the lexer's
+  // `bindingByEmit` lookup inside `rewriteFormula` succeeds.
   const lookup = (key: string): string | undefined => {
     if (bindingRenames && bindingRenames[key] !== undefined) return bindingRenames[key];
     return renameTable[key];
   };
-  let out = formula.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (identifier) => lookup(identifier) ?? identifier);
-  out = out.replace(/"((?:[^"\\]|\\.)*)"/g, (match, body: string) => {
-    const renamed = lookup(body);
+  let out = formula.replace(/"((?:[^"\\]|\\.)*)"/g, (match, body: string) => {
+    const unescaped = body.replace(/\\(.)/g, '$1');
+    const renamed = lookup(unescaped);
     if (!renamed) return match;
     return renamed;
   });
+  out = out.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (identifier) => lookup(identifier) ?? identifier);
   return out;
 }
 
@@ -1023,26 +1052,28 @@ function computeDispatchPlan(
     if (axis === 'sequential' || axis.startsWith('local_')) continue;
     const dimension = axis.endsWith('_y') ? 1 : axis.endsWith('_z') ? 2 : 0;
     const denominator = dimension === 0 ? workgroupSize.x : dimension === 1 ? workgroupSize.y : workgroupSize.z;
-    // §Phase E+ — apply the same formula-rewrite and rename pass that
-    // `emitFormula` applies so the dispatch comment reflects the
-    // scratch-compat expansion of `len(name)`, `bool(x)`, and quoted
-    // group names. Without this, `len(my_list)` in a `@repeat` formula
-    // would survive in the dispatch plan but the WGSL body would
-    // already use `u_scratch.my_list_length`, causing a textual drift.
+    // §Phase 3 §15.11 — quoted-reference rename runs BEFORE the
+    // scratch-compat sugar pass so the lexer inside `rewriteFormula`
+    // sees hashed identifiers and the `bindingByEmit` lookup
+    // resolves them. The previous order (sugar → rename) left
+    // `__tw_<hash>[idx]` in the dispatch plan while the WGSL body
+    // correctly used `scratch_list_read_f32(...)`, causing textual
+    // drift between body and dispatch plan.
     let expanded = repeat.formula;
     if (context) {
-      const rewrite = rewriteFormula(repeat.formula, {
+      const renamed = renameFormulaIdentifiers(
+        repeat.formula,
+        context.renameTable,
+        context.bindingRenameTable,
+      );
+      const rewrite = rewriteFormula(renamed, {
         bindings: context.bindings,
         renameTable: context.renameTable,
         regionId: context.regionId,
         blockId: repeat.blockId,
         line: repeat.line,
       });
-      expanded = renameFormulaIdentifiers(
-        rewrite.formula,
-        context.renameTable,
-        context.bindingRenameTable,
-      );
+      expanded = rewrite.formula;
     }
     const formula = axis.startsWith('workgroup_')
       ? expanded

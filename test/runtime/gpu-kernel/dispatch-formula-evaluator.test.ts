@@ -95,6 +95,22 @@ describe('reduceScalarNames', () => {
     expect(evaluateDispatchFormula('a + b', ctx)).toBe(10);
     expect(evaluateDispatchFormula('a * b', ctx)).toBe(21);
   });
+
+  it('matches the binding wgslName for quoted scalar bindings (§15.11)', () => {
+    // §Phase 3 §15.11 — quoted @bind ... scalar binding has a hashed
+    // `wgslName`. The dispatch formula is rewritten to that hashed
+    // name by the emitter, so the evaluator must match the formula
+    // against `wgslName` while still looking up the runtime value via
+    // `name` (= surface name, the runtime adapter key).
+    const ctx = makeContext({
+      scalars: [{ name: 'my idx', dtype: 'f32' }],
+      scalarValues: new Map([['my idx', 7]]),
+    });
+    // Manually override the binding's wgslName to simulate the rename
+    // pass that the WGSL emitter applies before dispatch.
+    ctx.scalarBindings = [{ name: 'my idx', wgslName: '__tw_deadbeef', dtype: 'f32' }];
+    expect(evaluateDispatchFormula('__tw_deadbeef', ctx)).toBe(7);
+  });
 });
 
 describe('reduceLenSugar', () => {

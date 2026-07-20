@@ -226,6 +226,61 @@ describe('KernelRegistry', () => {
     expect(canonicalKeyOf(vWith)).toBe(canonicalKeyOf(vDifferentId));
   });
 
+  describe('canonical key independence from kernel container block IDs (§Phase 3 §15.10)', () => {
+    it('canonical key ignores RegionVerdict.blockId', () => {
+      const v1 = makeVerdict('region:r1:b1', 'b1', [bind('list_a', 0, false)]);
+      const v2 = makeVerdict('region:r1:b2', 'b2', [bind('list_a', 0, false)]);
+      expect(canonicalKeyOf(v1)).toBe(canonicalKeyOf(v2));
+    });
+
+    it('canonical key ignores RegionVerdict.regionId', () => {
+      const v1 = makeVerdict('region:r1:b1', 'b1', [bind('list_a', 0, false)]);
+      const v2 = makeVerdict('region:r1:b1-renumbered', 'b1-renumbered', [
+        bind('list_a', 0, false),
+      ]);
+      expect(canonicalKeyOf(v1)).toBe(canonicalKeyOf(v2));
+    });
+
+    it('canonical key keeps spriteId distinct for cross-sprite regions', () => {
+      const v1 = makeVerdict('region:r1:b1', 'b1', [bind('list_a', 0, false)]);
+      v1.spriteId = 'spriteA';
+      const v2 = makeVerdict('region:r1:b1', 'b1', [bind('list_a', 0, false)]);
+      v2.spriteId = 'spriteB';
+      expect(canonicalKeyOf(v1)).not.toBe(canonicalKeyOf(v2));
+    });
+
+    it('register reuses cached kernel for equivalent RegionVerdicts with different block ids', () => {
+      const v1 = makeVerdict('region:r1:b1', 'b1', [bind('list_a', 0, false)]);
+      const k1 = registry.register(v1, 'wgsl-v1');
+      const v2 = makeVerdict('region:r1:b2', 'b2', [bind('list_a', 0, false)]);
+      const k2 = registry.register(v2, 'wgsl-v2');
+      // Same canonical key → same kernel instance returned.
+      expect(k2).toBe(k1);
+      expect(k1.canonicalKey).toBe(canonicalKeyOf(v2));
+      // The first WGSL wins (cache hit ignores the new source).
+      expect(k1.wgsl).toBe('wgsl-v1');
+      // §Phase 3 §15.10 — the new blockId must resolve via lookup
+      // too, otherwise the vendored scratch-vm hook falls through to
+      // the JS path on the renumbered project.
+      expect(registry.lookup('b2')).toBe(k1);
+      expect(registry.lookup('b1')).toBe(k1);
+      // Single canonical-key entry despite two registrations.
+      expect(registry.size()).toBe(1);
+    });
+
+    it('markJsOnly on a merged kernel demotes every blockId alias', () => {
+      const v1 = makeVerdict('region:r1:b1', 'b1', [bind('list_a', 0, false)]);
+      const k1 = registry.register(v1, 'wgsl');
+      const v2 = makeVerdict('region:r1:b2', 'b2', [bind('list_a', 0, false)]);
+      registry.register(v2, 'wgsl');
+      expect(registry.lookup('b1')).toBe(k1);
+      expect(registry.lookup('b2')).toBe(k1);
+      registry.markJsOnly(k1.id, 'adapter_unavailable');
+      expect(registry.lookup('b1')).toBeUndefined();
+      expect(registry.lookup('b2')).toBeUndefined();
+    });
+  });
+
   describe('canonical key storageKind (§Phase 3, scalar uniform binding)', () => {
     function bindList(name: string, slot: number): BindDirective {
       return { kind: 'bind', name, slot, readOnly: true, dtype: 'f32', storageKind: 'list', line: 0, column: 0 };

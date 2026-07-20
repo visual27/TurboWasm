@@ -93,7 +93,17 @@ export function rewriteFormula(formula: string, ctx: RewriteContext): RewriteRes
     bindingBySurface.set(binding.name, binding);
   }
 
-  const tokens = tokenise(formula);
+  // §Phase 3 §15.11 — the caller (`wgsl-emitter.ts:emitFormula`)
+  // applies the quoted-reference rename pass BEFORE the sugar pass so
+  // the lexer sees `"my list"` as the hashed identifier and the
+  // binding lookup resolves it via `bindingByEmit`. This preprocess
+  // step is a defensive fallback: if the caller has not yet run
+  // `renameFormulaIdentifiers`, we still try to resolve quoted
+  // targets through `bindingBySurface` by walking the formula's
+  // quoted segments once.
+  const preprocessed = preprocessQuotedReferences(formula, bindingBySurface);
+  const tokens = tokenise(preprocessed);
+
   const out: string[] = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const tok = tokens[i];
@@ -188,6 +198,32 @@ export function rewriteFormula(formula: string, ctx: RewriteContext): RewriteRes
   }
 
   return { formula: out.join(''), diagnostics };
+}
+
+/**
+ * §Phase 3 §15.11 — defensive quoted-reference rename. Walks every
+ * `"..."` segment in the formula; if its unescaped content matches a
+ * binding surface name, replace the quoted segment with the WGSL
+ * emit identifier so the lexer's `bindingByEmit` lookup succeeds.
+ *
+ * Returns the original formula when no quoted segment matches, so
+ * this helper is a no-op for formulas that don't carry quoted
+ * references.
+ */
+function preprocessQuotedReferences(
+  formula: string,
+  bindingBySurface: ReadonlyMap<string, BindDirective>,
+): string {
+  let out = formula;
+  let changed = false;
+  out = out.replace(/"((?:[^"\\]|\\.)*)"/g, (match, body: string) => {
+    const surface = body.replace(/\\(.)/g, '$1');
+    const binding = bindingBySurface.get(surface);
+    if (!binding) return match;
+    changed = true;
+    return binding.internalName ?? binding.name;
+  });
+  return changed ? out : formula;
 }
 
 function resolveEmitName(

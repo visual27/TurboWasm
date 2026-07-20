@@ -179,12 +179,24 @@ export function analyzeCascade(input: CascadeAnalysisInput): CascadeVerdict {
  * Numeric and keyword tokens never participate in the `@map` DAG, so
  * including them produced false references (e.g. `@map a <- b + 1`
  * used to treat `1` as a candidate dependency).
+ *
+ * §Phase 3 §15.11 — quoted-string segments (`"my axis"`) are
+ * extracted first and pushed as a single surface-name token so the
+ * DAG sees `"my axis"` as one identifier reference. Escape handling
+ * mirrors `comment-parser.ts:parseNameToken` (`\"` → `"`, `\\` → `\`).
  */
 function tokeniseFormula(formula: string): string[] {
   const tokens: string[] = [];
+  // 1. Strip quoted segments; record their unescaped content as a
+  // single surface-name token before identifier regex runs.
+  const stripped = formula.replace(/"((?:[^"\\]|\\.)*)"/g, (_match, body: string) => {
+    const unescaped = body.replace(/\\(.)/g, '$1');
+    tokens.push(unescaped);
+    return ' ';
+  });
   const re = /[A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/g;
   let match: RegExpExecArray | null;
-  while ((match = re.exec(formula)) !== null) {
+  while ((match = re.exec(stripped)) !== null) {
     const tok = match[0];
     // Drop numeric literals: leading digit → skip.
     if (/^[0-9]/.test(tok)) continue;

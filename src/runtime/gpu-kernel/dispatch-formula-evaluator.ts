@@ -195,15 +195,27 @@ function reduceLenSugar(expr: string, context: DispatchFormulaContext): string {
  *
  * Scalar bindings come from `@bind ..., scalar` directives; the
  * dispatcher caches values per dispatch in `context.scalarValues`.
+ *
+ * §Phase 3 §15.11 — formula text after WGSL emitter rename carries
+ * the binding's hashed `wgslName` (FNV-1a form for quoted
+ * `@bind "x"(0) ..., scalar`). The reducer now matches against
+ * `binding.wgslName` first, then falls back to `binding.name` for
+ * unquoted bindings, and looks up the runtime value via `name`
+ * (the surface name is the runtime adapter key — see
+ * `scalar-uniform-binding.ts:ScalarUniformBinding.name`).
  */
 function reduceScalarNames(expr: string, context: DispatchFormulaContext): string {
   if (context.scalarBindings.length === 0) return expr;
   let out = expr;
   for (const binding of context.scalarBindings) {
-    const name = escapeRegExp(binding.name);
-    const re = new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g');
+    const candidates = Array.from(
+      new Set([binding.wgslName, binding.name].filter((n): n is string => Boolean(n))),
+    );
     const value = context.scalarValues.get(binding.name) ?? 0;
-    out = out.replace(re, String(value));
+    for (const candidate of candidates) {
+      const re = new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(candidate)}(?![A-Za-z0-9_])`, 'g');
+      out = out.replace(re, String(value));
+    }
   }
   return out;
 }

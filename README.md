@@ -304,7 +304,11 @@ other `\<char>` drops the backslash and keeps the literal character
 
 Canonical keys (cache hits) are based on `name`, so two regions that
 bind the same Scratch list — quoted or not — share the same compiled
-pipeline.
+pipeline. §Phase 3 §15.10: the canonical key deliberately omits
+`regionId` / `blockId` / `kernelContainerBlockId` so a save-as-new-
+project renumbering the scratch block ids still hits the cached
+pipeline. The runtime identity (`Kernel.id`) and block-id lookup
+(`byBlockId`) still use the un-stripped regionId / blockId.
 
 ##### Formula syntax sugar
 
@@ -456,8 +460,14 @@ any one collapses the axis to `sequential`:
 
 1. **`@map` declares `Ri`.** A bare `@repeat R0:global_x = aabb_width`
    without a matching `@map R0 <- …` D2-demotes the axis.
-2. **Formula references `Ri`.** The formula text contains `Ri` as a
-   whole-word identifier.
+2. **Formula references `Ri` or a `@bind` list.** The formula text
+   contains `Ri` as a whole-word identifier, a quoted surface name
+   (`"R0"` / `"my axis"`), a hashed `internalName` (`__tw_<hex>`),
+   or the name of any list `@bind` declared in the same region
+   (e.g. `aabb_w`, `len(aabb_w)`). Scalar bindings do not qualify as
+   loop bounds — they feed `data_variableof` resolution instead. This
+   keeps the legacy `expo-fixture.sb3` (`@repeat R0:global_x = len(aabb_w)`)
+   parallel.
 3. **Body does not write to `Ri`.** No `data_setvariableto` or
    `data_changevariableby` whose target variable name is `Ri`.
 4. **No cross-iteration access.** No list index of the form `Ri + k`
