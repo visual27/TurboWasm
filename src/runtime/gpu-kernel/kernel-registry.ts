@@ -101,6 +101,37 @@ export interface DispatchOutcome {
 }
 
 /**
+ * §Phase 5 (gpu-kernel-dsl-phase5-spec §5.4) — per-call-site runtime
+ * state attached to a `procedure_call` block id.
+ *
+ * Multiple regions that share the same canonical key (= same compiled
+ * WGSL pipeline) get separate `DispatchSiteContext`s so the dispatcher
+ * can update each block's scalar bindings independently per call. The
+ * `kernelRef` points at the canonical key (or the kernel id — both
+ * work) and the runtime reads `scalarBindings` to populate the
+ * `@group(1) @binding(0)` uniform buffer for that dispatch.
+ *
+ * `spriteContextRef` is a stable identifier for the sprite state
+ * captured at registration time (e.g. `sprite:<id>`) — the dispatcher
+ * uses it to decide whether scalar values must be re-read from the
+ * runtime adapter before re-binding.
+ *
+ * Not to be confused with `__dispatch-kernel-sync.ts:DispatchContext`
+ * which is the per-dispatch runtime context (device / pool / dims)
+ * passed to `dispatchKernelSync`. The two coexist: this struct lives on
+ * the `KernelRegistry` and indexes by procedure_call block id; the
+ * other flows through the dispatch pipeline call graph.
+ */
+export interface DispatchSiteContext {
+  /** Canonical key (`Kernel.canonicalKey`) the dispatch targets. */
+  kernelRef: string;
+  /** Per-dispatch scalar bindings read from the runtime adapter. */
+  scalarBindings: ReadonlyMap<string, number>;
+  /** Sprite context (current scratch state) the dispatch was registered against. */
+  spriteContextRef: string;
+}
+
+/**
  * In-process registry of compiled GPU kernels. One instance per project
  * load; `clearForProjectReload` resets it for the next load.
  */
@@ -108,6 +139,15 @@ export class KernelRegistry {
   private readonly byCanonicalKey = new Map<string, Kernel>();
   /** Block-id index: each `control_repeat` blockId → kernel id. */
   private readonly byBlockId = new Map<string, string>();
+  /**
+   * §Phase 5 — per-blockId dispatch site context. Populated by
+   * `registerDispatchSite` (one entry per `procedure_call` site that
+   * shares a canonical key). The dispatcher reads
+   * `lookupDispatchSite(blockId)` to update scalar bindings per call.
+   * Independent of `byBlockId`: both maps are keyed by the same
+   * procedure_call blockId but serve different consumers.
+   */
+  private readonly dispatchSites = new Map<string, DispatchSiteContext>();
 
   /**
    * Register (or reuse) a kernel. The canonical key is computed from the
@@ -166,6 +206,31 @@ export class KernelRegistry {
   }
 
   /**
+   * §Phase 5 — record a per-blockId `DispatchSiteContext` for the
+   * 1-entry-×-N-dispatch-context structure. Multiple call sites
+   * sharing a canonical key each get their own context (independent
+   * `scalarBindings`, shared `kernelRef`).
+   *
+   * Calling with the same `blockId` overwrites the previous context.
+   * The caller is responsible for guaranteeing the context's
+   * `kernelRef` matches a kernel that was already `register()`ed —
+   * otherwise the dispatcher will surface a runtime miss.
+   */
+  registerDispatchSite(blockId: string, context: DispatchSiteContext): void {
+    this.dispatchSites.set(blockId, context);
+  }
+
+  /**
+   * §Phase 5 — read a previously-registered dispatch site context for
+   * the given blockId. Returns `undefined` when no context is
+   * registered (e.g. legacy block ids that pre-date this commit, or a
+   * hook that fires on an unregistered call site).
+   */
+  lookupDispatchSite(blockId: string): DispatchSiteContext | undefined {
+    return this.dispatchSites.get(blockId);
+  }
+
+  /**
    * Look up a kernel *including* `jsOnly` entries. Used by the
    * dispatcher (`apply-gpu-kernels.ts`) to surface a structured
    * D4 DispatchResult when the kernel was previously demoted — the
@@ -208,6 +273,7 @@ export class KernelRegistry {
   clearForProjectReload(): void {
     this.byCanonicalKey.clear();
     this.byBlockId.clear();
+    this.dispatchSites.clear();
   }
 
   /**

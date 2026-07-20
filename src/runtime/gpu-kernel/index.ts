@@ -61,7 +61,12 @@ export {
   canonicalKeyOf,
   KernelRegistry,
 } from './kernel-registry';
-export type { BufferAccessEntry, DispatchOutcome, Kernel } from './kernel-registry';
+export type {
+  BufferAccessEntry,
+  DispatchOutcome,
+  DispatchSiteContext,
+  Kernel,
+} from './kernel-registry';
 export {
   BYTES_PER_ELEMENT,
   DEFAULT_MAX_BUFFER_ELEMENTS,
