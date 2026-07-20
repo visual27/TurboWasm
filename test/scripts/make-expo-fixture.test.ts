@@ -43,6 +43,7 @@ interface ParsedBlock {
   parent: string | null;
   next: string | null;
   inputs?: Record<string, unknown>;
+  fields?: Record<string, unknown>;
 }
 
 interface ParsedComment {
@@ -100,6 +101,85 @@ describe('make-expo-fixture.mjs: legacy COMPUTE_COMMENT_TEXT shape', () => {
     // (legacy fixture must remain bit-identical with the pre-Phase-4
     // regression baseline).
     expect(computeComment!.text).not.toContain(', scalar');
+  });
+
+  it('legacy fixture body uses operator_mathop chain (pow2 inlined as e^(ln(2)*v))', async () => {
+    // §Phase 2 — the legacy fixture's @compute body now carries the
+    // operator_mathop chain instead of the decorative pow2 prototype.
+    // Walk the block tree from the @compute comment and assert the
+    // expected reporters (ln, e ^, math_number(2), data_replaceitemoflist).
+    const out = await makeExpoFixture();
+    const project = await readProjectJson(out);
+    const sprite = project.targets.find((t) => !t.isStage);
+    expect(sprite).toBeDefined();
+    const computeComment = Object.values(sprite!.comments).find((c) =>
+      c.text.trim().startsWith('@compute'),
+    );
+    expect(computeComment).toBeDefined();
+    const bodyEntry = sprite!.blocks[computeComment!.blockId];
+    expect(bodyEntry, '@compute body entry must be a block').toBeDefined();
+    expect(bodyEntry!.opcode).toBe('data_replaceitemoflist');
+
+    // No decorative `procedures_prototype` for pow2 any more — the
+    // pow2 computation is inline.
+    const protos = Object.values(sprite!.blocks).filter(
+      (b) => b.opcode === 'procedures_prototype',
+    );
+    expect(protos).toEqual([]);
+
+    // Walk the ITEM chain and confirm operator_mathop "ln" / "e ^" appear.
+    const itemRef = (bodyEntry!.inputs as Record<string, unknown>)['ITEM'];
+    expect(Array.isArray(itemRef)).toBe(true);
+    const itemId = (itemRef as unknown[])[1] as string;
+    const itemBlock = sprite!.blocks[itemId];
+    expect(itemBlock).toBeDefined();
+    expect(itemBlock!.opcode).toBe('operator_mathop');
+    expect((itemBlock!.fields as Record<string, unknown>)['OPERATOR']).toEqual([
+      'e ^',
+      null,
+    ]);
+
+    // The nested "ln" mathop is reachable from the multiplication
+    // inside the "e ^" operand. Walk inputs until we find it.
+    const operators = new Set<string>();
+    const seen = new Set<string>();
+    const queue: string[] = [itemId];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const block = sprite!.blocks[id];
+      if (!block) continue;
+      if (block.opcode === 'operator_mathop') {
+        const op = (block.fields as Record<string, unknown>)['OPERATOR'];
+        if (Array.isArray(op) && typeof op[0] === 'string') operators.add(op[0]);
+      }
+      const inputs = (block.inputs ?? {}) as Record<string, unknown>;
+      for (const value of Object.values(inputs)) {
+        if (Array.isArray(value) && typeof value[1] === 'string') {
+          queue.push(value[1] as string);
+        }
+      }
+    }
+    expect(operators.has('ln')).toBe(true);
+    expect(operators.has('e ^')).toBe(true);
+  });
+
+  it('legacy fixture tmp0 is a 1-element list (matches @bind tmp0(0) ro f32)', async () => {
+    const out = await makeExpoFixture();
+    const project = await readProjectJson(out);
+    const stage = project.targets.find((t) => t.isStage);
+    expect(stage).toBeDefined();
+    const variables = (stage as unknown as { variables: Record<string, unknown> }).variables;
+    const tmp0 = variables['list_tmp0'] as
+      | { name: string; type: string; value: unknown[] }
+      | undefined;
+    expect(tmp0, 'list_tmp0 must be declared on the stage').toBeDefined();
+    expect(tmp0!.name).toBe('tmp0');
+    expect(tmp0!.type).toBe('list');
+    expect(Array.isArray(tmp0!.value)).toBe(true);
+    // The pow2 chain reads tmp0[1]; the list must contain at least one element.
+    expect(tmp0!.value.length).toBeGreaterThanOrEqual(1);
   });
 });
 

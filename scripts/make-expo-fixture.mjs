@@ -291,6 +291,23 @@ function mathNumber(value, parent = null) {
   return { id, block };
 }
 
+/**
+ * §Phase 2 — scratch `operator_mathop` reporter. Single `NUM` input;
+ * menu string lives in `fields.OPERATOR`. Matches scratch-vm's
+ * `Scratch3OperatorsBlocks.mathop` opcode shape.
+ */
+function mathopBlock(operator, numBlockId, parent = null) {
+  const { id, block } = makeBlock({
+    opcode: 'operator_mathop',
+    inputs: {
+      NUM: [INPUT_BLOCK_NO_SHADOW, numBlockId],
+    },
+    fields: { OPERATOR: [operator, null] },
+    parent,
+  });
+  return { id, block };
+}
+
 function dataReadVar(varName, parent = null) {
   const { id, block } = makeBlock({
     opcode: 'data_variable',
@@ -316,6 +333,11 @@ function dataItemOfList(listName, indexBlockId, parent = null) {
       LIST: listShadow(listName),
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
     },
+    // The WGSL emitter's `bindingForList` keys on the first element of
+    // `fields.LIST` (the surface name) to look up the matching
+    // `BindDirective`. Slot 0 must therefore hold the human-readable
+    // list name, not the scratch-vm internal `list_<name>` id.
+    fields: { LIST: [listName, null] },
     parent,
   });
   return { id, block };
@@ -406,6 +428,9 @@ function dataReplaceItemOfList(listName, indexBlockId, valueBlockId, parent = nu
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
       ITEM: [INPUT_BLOCK_NO_SHADOW, valueBlockId],
     },
+    // `emitListWrite` resolves the binding through `fields.LIST[0]`
+    // (the surface name). Keep slot 0 in sync with the binding name.
+    fields: { LIST: [listName, null] },
     parent,
   });
   return { id, block };
@@ -452,6 +477,14 @@ function buildByteScalarProject() {
  * `@compute` comment text. The block tree is identical between the two
  * fixtures; only the @compute directive text differs (so the byte-scalar
  * variant picks up `@bind byte_state(3) ro byte, scalar`).
+ *
+ * §Phase 2 — the body now exercises the inlined `operator_mathop`
+ * chain. `buff_r[R0] = e ^ (ln(2) * tmp0[R0])` writes the per-pixel
+ * `2^v` value computed by `operator_mathop "ln"` and `"e ^"` directly
+ * into the `@compute` region body (replacing the previous decorative
+ * `pow2` custom block + comment placeholder). The `@compute` comment is
+ * attached to the list-write block (= first substack block of the
+ * repeat) so the pre-parse pipeline picks the new body up.
  */
 function buildLegacyProject({ computeCommentText, byteScalar = false }) {
   resetCounter();
@@ -463,17 +496,6 @@ function buildLegacyProject({ computeCommentText, byteScalar = false }) {
 
   const allBlocks = {};
 
-  // ===== Custom-block prototypes (decorative; not wired into a body) =====
-  const pow2Proto = proceduresPrototype('pow2 %s', ['v']);
-  pow2Proto.block.x = 100;
-  pow2Proto.block.y = 200;
-  allBlocks[pow2Proto.id] = pow2Proto.block;
-
-  const expoProto = proceduresPrototype('expo', []);
-  expoProto.block.x = 300;
-  expoProto.block.y = 200;
-  allBlocks[expoProto.id] = expoProto.block;
-
   // ===== when flag clicked → @compute region =====
   const hat = whenFlagClicked();
   allBlocks[hat.id] = hat.block;
@@ -483,75 +505,47 @@ function buildLegacyProject({ computeCommentText, byteScalar = false }) {
   const aabb_wLength = dataLengthOfList('aabb_w', hat.id);
   allBlocks[aabb_wLength.id] = aabb_wLength.block;
 
-  // First substack block of the repeat — carries the @compute comment.
-  const substackFirst = dataSetVarTo('result', '__placeholder__');
-  // The placeholder VALUE will be overwritten below; we point it at the
-  // first real expression block (the buff_r read).
-  allBlocks[substackFirst.id] = substackFirst.block;
-
-  // Body chain (all set-statement blocks, GPU-safe opcodes only):
-  //   result = buff_r[R0] * tmp0
-  //   result = min(255, max(0, result))
-  const r0Var = dataReadVar('R0', substackFirst.id);
+  // === pow2 chain: tmp0[R0] * ln(2) → exp(.) ===
+  // Reading R0 once and reusing it across both data_itemoflist calls
+  // mirrors the scratch idiom (R0 drives the parallel index).
+  const r0Var = dataReadVar('R0', null);
   allBlocks[r0Var.id] = r0Var.block;
-  const buffRead = dataItemOfList('buff_r', r0Var.id, substackFirst.id);
-  allBlocks[buffRead.id] = buffRead.block;
-  const tmp0Var = dataReadVar('tmp0', substackFirst.id);
-  allBlocks[tmp0Var.id] = tmp0Var.block;
-  const product = operatorMultiply(buffRead.id, tmp0Var.id, substackFirst.id);
+  const tmp0Read = dataItemOfList('tmp0', r0Var.id, null);
+  allBlocks[tmp0Read.id] = tmp0Read.block;
+  const lnOf2 = mathopBlock('ln', mathNumber(2).id, null);
+  allBlocks[lnOf2.id] = lnOf2.block;
+  const two = mathNumber(2);
+  allBlocks[two.id] = two.block;
+  // `operator_mathop "ln"` takes `NUM` as its input; re-link the
+  // block's NUM input to the literal `2` we just created.
+  lnOf2.block.inputs.NUM = [INPUT_BLOCK_NO_SHADOW, two.id];
+  // product = tmp0[R0] * ln(2)
+  const product = operatorMultiply(tmp0Read.id, lnOf2.id, null);
   allBlocks[product.id] = product.block;
+  // exponent = e ^ product
+  const exponent = mathopBlock('e ^', product.id, null);
+  allBlocks[exponent.id] = exponent.block;
 
-  // Re-wire resultSet1.VALUE to the product.
-  substackFirst.block.inputs.VALUE = [INPUT_BLOCK_NO_SHADOW, product.id];
-
-  // Clamp result via min(255, max(0, result)).
-  const resultVar1 = dataReadVar('result', substackFirst.id);
-  allBlocks[resultVar1.id] = resultVar1.block;
-  const zeroLit = mathNumber(0, substackFirst.id);
-  allBlocks[zeroLit.id] = zeroLit.block;
-  const twofiftyLit = mathNumber(255, substackFirst.id);
-  allBlocks[twofiftyLit.id] = twofiftyLit.block;
-  const maxOp = operatorMax(zeroLit.id, resultVar1.id, substackFirst.id);
-  allBlocks[maxOp.id] = maxOp.block;
-  const minOp = operatorMin(twofiftyLit.id, maxOp.id, substackFirst.id);
-  allBlocks[minOp.id] = minOp.block;
-
-  // Second set statement (chained after substackFirst): result = minOp.
-  const substackSecond = dataSetVarTo('result', minOp.id);
-  substackSecond.block.parent = hat.id;
-  allBlocks[substackSecond.id] = substackSecond.block;
-  substackFirst.block.next = substackSecond.id;
+  // === @compute body: buff_r[R0] = exponent ===
+  // `data_replaceitemoflist` is the only statement the WGSL emitter
+  // currently lowers into the body; attaching the @compute comment to
+  // it makes the new pow2 chain the actual GPU-side work.
+  const writeBlock = dataReplaceItemOfList('buff_r', r0Var.id, exponent.id, null);
+  allBlocks[writeBlock.id] = writeBlock.block;
 
   // Wrap in the control_repeat. The TIMES input reads the aabb_w length.
-  const repeat = repeatBlock(aabb_wLength.id, substackFirst.id, hat.id);
-  // control_repeat sits as a child of the hat; the chain is hat → repeat.
+  const repeat = repeatBlock(aabb_wLength.id, writeBlock.id, hat.id);
   hat.block.next = repeat.id;
   allBlocks[repeat.id] = repeat.block;
 
   // ===== Comments =====
   // The @compute comment must be attached to the first substack block
-  // (spec §3.1). Other comments are decorative.
+  // (= the list-write in this layout). Decorating the legacy
+  // `procedures_prototype` placeholder is no longer needed — the pow2
+  // computation is now inline.
   const comments = {
-    cmt_pow2: {
-      blockId: pow2Proto.id,
-      x: 50,
-      y: 250,
-      width: 200,
-      height: 60,
-      minimized: false,
-      text: '// helper: sets tmp0 = 2^v (uses operator_mathop "e ^")',
-    },
-    cmt_expo: {
-      blockId: expoProto.id,
-      x: 250,
-      y: 250,
-      width: 200,
-      height: 60,
-      minimized: false,
-      text: '// main: runs the GPU @compute demo',
-    },
     cmt_compute: {
-      blockId: substackFirst.id,
+      blockId: writeBlock.id,
       x: 200,
       y: 300,
       width: 280,
@@ -587,9 +581,18 @@ function buildLegacyProject({ computeCommentText, byteScalar = false }) {
       x: 0,
       y: 0,
     },
+    // §Phase 2 — `tmp0` becomes a 1-element list so `@bind tmp0(0) ro f32`
+    // remains a list binding (the GPU body now reads `tmp0[R0]`).
+    list_tmp0: {
+      name: 'tmp0',
+      isPersistent: true,
+      type: 'list',
+      value: [1],
+      x: 0,
+      y: 0,
+    },
   };
   const stageVars = {
-    tmp0: ['tmp0', 0, 0, 0],
     result: ['result', 0, 0, 0],
     // §Phase 4 (15.7) — `byte_state` is the scalar uniform referenced
     // by the byte-scalar variant. Mirrors `tmp0` (initial value 0)

@@ -591,9 +591,11 @@ contains:
 @map idx1 <- f32(R1) * aabb_width + idx0
 ```
 
-(`pow2` and the AABB setup live outside the `@compute` region — they
-seed `tmp0 = 2^v` via `operator_mathop e^`, since scratch-vm has no
-general exponent `^`.)
+(`pow2` is now inlined inside the `@compute` body as an
+`operator_mathop` chain: `tmp0 = e ^ (ln(2) * v)`. No custom block
+required. Scratch has no general `^` exponent operator; the chain
+combines `ln` and `e ^` from `operator_mathop`. See
+`wgsl-emitter.ts:emitMathop` and `test/runtime/gpu-kernel/operator-mathop.test.ts`.)
 
 With `aabb_w = 100`, `aabb_height = 64`, and a default 64-thread
 workgroup, the dispatched size is `ceil(100/64) × 64 × 1 = 2 × 64 × 1`

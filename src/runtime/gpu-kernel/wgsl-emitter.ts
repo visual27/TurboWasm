@@ -204,6 +204,10 @@ const KNOWN_FORMULA_FUNCTIONS: ReadonlySet<string> = new Set([
   'clamp',
   'sin',
   'cos',
+  'tan',
+  'asin',
+  'acos',
+  'atan',
   'pow',
   'exp',
   'log',
@@ -212,6 +216,8 @@ const KNOWN_FORMULA_FUNCTIONS: ReadonlySet<string> = new Set([
   'fract',
   'abs',
   'sqrt',
+  'radians',
+  'degrees',
   'mix',
   'step',
   'f32',
@@ -227,6 +233,14 @@ const KNOWN_FORMULA_FUNCTIONS: ReadonlySet<string> = new Set([
   'scratch_list_write_u32',
   'scratch_bool',
 ]);
+
+/**
+ * Reciprocal of the natural logarithm of 10. Used by the scratch
+ * `operator_mathop "log"` (base-10) lowering to keep `log(10.0)` from
+ * being recomputed on every invocation. Defined here so it is part of
+ * the WGSL compat header and survives WGSL's `const` evaluation.
+ */
+const LOG10_RECIPROCAL_EXPR = '(1.0 / log(10.0))';
 
 const BINARY_INPUTS: Readonly<Record<string, readonly [string, string]>> = {
   operator_add: ['NUM1', 'NUM2'],
@@ -1191,7 +1205,12 @@ function emitStatement(block: RawBlock, context: EmitterContext): string[] {
     const statement = emitListWrite(block, context);
     return statement ? [statement] : [];
   }
-  if (BINARY_INPUTS[block.opcode] || block.opcode === 'operator_not' || block.opcode === 'data_itemoflist') {
+  if (
+    BINARY_INPUTS[block.opcode] ||
+    block.opcode === 'operator_not' ||
+    block.opcode === 'operator_mathop' ||
+    block.opcode === 'data_itemoflist'
+  ) {
     return [`let __tw_expr_${shortHash(block.id)}: f32 = ${emitBlockExpression(block, context)};`];
   }
   diagnoseUnsupported(block, context);
@@ -1242,6 +1261,9 @@ function emitBlockExpressionInner(block: RawBlock, context: EmitterContext): str
   if (block.opcode === 'operator_not') {
     const operand = emitInput(block.inputs['OPERAND'], context);
     return `select(1.0, 0.0, scratch_bool(${operand}) != 0.0)`;
+  }
+  if (block.opcode === 'operator_mathop') {
+    return emitMathop(block, context);
   }
   if (block.opcode === 'data_itemoflist') return emitListRead(block, context);
   if (isNumberReporter(block.opcode)) return emitNumberField(block);
@@ -1312,6 +1334,76 @@ function inputLiteral(
     if (literal !== null) return literal;
   }
   return null;
+}
+
+/**
+ * Phase 2: Lower a scratch `operator_mathop` reporter to a WGSL builtin
+ * expression. The scratch input shape is `inputs.NUM` (single unary
+ * input); the operator menu string lives in `fields.OPERATOR`.
+ *
+ * Mappings follow scratch-vm's `Scratch3OperatorsBlocks.mathop`
+ * (`vendored/scaffolding/node_modules/scratch-vm/src/blocks/scratch3_operators.js`):
+ *
+ *   | scratch menu   | WGSL                                          |
+ *   | -------------- | --------------------------------------------- |
+ *   | abs            | `abs(x)`                                      |
+ *   | floor          | `floor(x)`                                    |
+ *   | ceiling        | `ceil(x)`                                     |
+ *   | sqrt           | `sqrt(x)`                                     |
+ *   | sin / cos / tan| `sin/cos/tan(radians(x))` (degrees → radians) |
+ *   | asin/acos/atan | `degrees(asin/acos/atan(x))` (radians → deg) |
+ *   | ln             | `log(x)` (natural logarithm)                 |
+ *   | log            | `log(x) * (1.0 / log(10.0))` (base-10)        |
+ *   | e ^            | `exp(x)`                                      |
+ *   | 10 ^           | `pow(10.0, x)`                                |
+ *
+ * `atan2`, `mod`, `round` are separate scratch opcodes (not part of
+ * `operator_mathop`) and intentionally remain out of scope here.
+ *
+ * Unrecognised operators fall back to `0.0` and emit
+ * `gpu.emitter_unsupported_opcode` so the user can see what the parser
+ * missed.
+ */
+function emitMathop(block: RawBlock, context: EmitterContext): string {
+  const operator = fieldName(block.fields['OPERATOR'])?.toLowerCase() ?? '';
+  const input = emitInput(block.inputs['NUM'], context);
+  switch (operator) {
+    case 'abs':
+      return `abs(${input})`;
+    case 'floor':
+      return `floor(${input})`;
+    case 'ceiling':
+      return `ceil(${input})`;
+    case 'sqrt':
+      return `sqrt(${input})`;
+    case 'sin':
+      return `sin(radians(${input}))`;
+    case 'cos':
+      return `cos(radians(${input}))`;
+    case 'tan':
+      return `tan(radians(${input}))`;
+    case 'asin':
+      return `degrees(asin(${input}))`;
+    case 'acos':
+      return `degrees(acos(${input}))`;
+    case 'atan':
+      return `degrees(atan(${input}))`;
+    case 'ln':
+      return `log(${input})`;
+    case 'log':
+      // WGSL has no `log10` builtin; use `log(x) / log(10)` with the
+      // divisor precomputed as `1 / log(10)` so it folds in the
+      // shader-constant phase. Identical observable behaviour to
+      // `Math.log10(x)` within f32 precision.
+      return `(log(${input}) * ${LOG10_RECIPROCAL_EXPR})`;
+    case 'e ^':
+      return `exp(${input})`;
+    case '10 ^':
+      return `pow(10.0, ${input})`;
+    default:
+      diagnoseUnsupported(block, context);
+      return '0.0';
+  }
 }
 
 function emitListRead(block: RawBlock, context: EmitterContext): string {
@@ -1406,10 +1498,20 @@ function isNumberReporter(opcode: string): boolean {
 }
 
 function emitNumberField(block: RawBlock): string {
-  const raw = fieldName(block.fields['NUM']);
-  if (raw === null) return '0.0';
-  const number = Number(raw);
-  return Number.isNaN(number) ? '0.0' : formatF32(number);
+  // `math_number` and friends store the literal as either `[number, null]`
+  // (the shape scratch-vm writes) or `[string, null]` (hand-built test
+  // blocks). Accept both so a freshly-generated SB3 fixture parses to the
+  // right value without an intermediate string round-trip.
+  const field = block.fields['NUM'];
+  const value = Array.isArray(field) ? field[0] : field;
+  if (typeof value === 'number') {
+    return Number.isNaN(value) ? '0.0' : formatF32(value);
+  }
+  if (typeof value === 'string') {
+    const number = Number(value);
+    return Number.isNaN(number) ? '0.0' : formatF32(number);
+  }
+  return '0.0';
 }
 
 function formatF32(value: number): string {

@@ -17,6 +17,7 @@ module.exports = {
     'dist',
     'node_modules',
     'vendored',
+    'vendored bak',
     'wasm-collision/target',
     'wasm-collision/pkg',
     '.eslintrc.cjs',
