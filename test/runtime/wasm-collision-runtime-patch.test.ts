@@ -67,6 +67,58 @@ describe('wasm-collision-runtime patch', () => {
     expect(src).toMatch(/_twWasmIsTouchingDrawables/);
   });
 
+  it('vendored UMD carries the WASM SIMD hook for isTouchingColor', () => {
+    if (!existsSync(VENDORED_SCAFFOLDING_UMD)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[wasm-collision-runtime] UMD missing; isTouchingColor UMD check skipped. ' +
+          'Run `npm run setup` to regenerate the UMD with the patched hook.',
+      );
+      return;
+    }
+    if (isUmdStale()) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[wasm-collision-runtime] UMD is older than patches/wasm-collision-runtime+0.1.0.patch; ' +
+          'skipping isTouchingColor UMD assertion. Re-run `npm run setup` to rebuild.',
+      );
+      return;
+    }
+    const umd = readFileSync(VENDORED_SCAFFOLDING_UMD, 'utf8');
+    expect(
+      umd,
+      'UMD is missing the _twWasmIsTouchingColor hook. The UMD was rebuilt without ' +
+        're-applying patches/wasm-collision-runtime+0.1.0.patch. Re-run `npm run setup` ' +
+        '(or `npm run setup -- --force`) so the UMD carries the hook.',
+    ).toMatch(/_twWasmIsTouchingColor/);
+  });
+
+  it('vendored UMD carries the WASM SIMD hook for isTouchingDrawables', () => {
+    if (!existsSync(VENDORED_SCAFFOLDING_UMD)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[wasm-collision-runtime] UMD missing; isTouchingDrawables UMD check skipped. ' +
+          'Run `npm run setup` to regenerate the UMD with the patched hook.',
+      );
+      return;
+    }
+    if (isUmdStale()) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[wasm-collision-runtime] UMD is older than patches/wasm-collision-runtime+0.1.0.patch; ' +
+          'skipping isTouchingDrawables UMD assertion. Re-run `npm run setup` to rebuild.',
+      );
+      return;
+    }
+    const umd = readFileSync(VENDORED_SCAFFOLDING_UMD, 'utf8');
+    expect(
+      umd,
+      'UMD is missing the _twWasmIsTouchingDrawables hook. The UMD was rebuilt without ' +
+        're-applying patches/wasm-collision-runtime+0.1.0.patch. Re-run `npm run setup` ' +
+        '(or `npm run setup -- --force`) so the UMD carries the hook.',
+    ).toMatch(/_twWasmIsTouchingDrawables/);
+  });
+
   it('does NOT install the retired WebGPU compute hooks (Phase 2)', () => {
     if (!existsSync(RENDER_WEB_GL)) return;
     const src = readFileSync(RENDER_WEB_GL, 'utf8');

@@ -177,10 +177,28 @@ function reinstallScratchVmTransitiveDeps() {
  * Idempotent post-setup tail: ensure patches are applied, and invalidate Vite's
  * optimizeDeps cache so the next `npm run dev` does not serve a pre-bundle
  * built against a stale UMD.
+ *
+ * Surfacing patch failures matters here: a `setup` run that silently leaves
+ * an unpatched vendored tree intact will keep the existing UMD on disk,
+ * which Vite will load through `vite.config.ts` resolve.alias on the next
+ * `npm run dev`. The original report ("postinstall exit 1") was caused by
+ * exactly this kind of silent failure — `applyPatches` returned
+ * `{ status: 'failed' }`, the result was discarded, and `npm install`
+ * proceeded with a UMD that lacked the WASM-SIMD hook. The thrown error
+ * from `applyPatches` (the default in
+ * `scripts/apply-vendored-patches.mjs`) makes the script exit non-zero,
+ * which matches what users expect from a hard-fail bootstrap.
  */
 function finalizeAfterUmDBuild() {
   log('Re-applying scratch-render patches (idempotent) so UMD stays in sync');
-  applyPatches({ exitOnComplete: false });
+  const patchResult = applyPatches({ exitOnComplete: false });
+  if (patchResult.status === 'failed') {
+    throw new Error(
+      `[setup-vendored] failed to apply scratch-render patches: ${patchResult.failures
+        .map((f) => f.patch)
+        .join(', ')}`,
+    );
+  }
   log('Invalidating Vite optimizeDeps cache so the rebuilt UMD is picked up');
   if (existsSync(viteDepsDir)) {
     rmSync(viteDepsDir, { recursive: true, force: true });
@@ -235,7 +253,15 @@ if (!force && existsSync(scaffoldingBuiltMarker)) {
   // now-correct scratch-vm resolution graph. Without this step, the next
   // `npm run build` would still see the same stubs.
   log('Rebuilding vendored/scaffolding UMD after dep recovery');
-  applyPatches({ exitOnComplete: false });
+  const recoveryPatchResult = applyPatches({ exitOnComplete: false });
+  if (recoveryPatchResult.status === 'failed') {
+    throw new Error(
+      `[setup-vendored] failed to re-apply scratch-render patches after dep recovery: ${recoveryPatchResult.failures
+        .map((f) => f.patch)
+        .join(', ')}. The UMD on disk would be stale; aborting before rebuild so the user ` +
+        `can investigate the patch application failure rather than bake a known-bad UMD.`,
+    );
+  }
   run('npm', ['run', 'build'], { cwd: scaffoldingDir });
   log('Invalidating Vite optimizeDeps cache so the rebuilt UMD is picked up');
   if (existsSync(viteDepsDir)) {
@@ -487,7 +513,14 @@ if (missingAfterBootstrap.length > 0) {
 //    RenderWebGL.extractDrawableScreenSpace. The marker-based already-
 //    applied detection makes this safe to run more than once.
 log('Applying scratch-render patches before UMD build');
-applyPatches({ exitOnComplete: false });
+const bootstrapPatchResult = applyPatches({ exitOnComplete: false });
+if (bootstrapPatchResult.status === 'failed') {
+  throw new Error(
+    `[setup-vendored] failed to apply scratch-render patches before UMD build: ${bootstrapPatchResult.failures
+      .map((f) => f.patch)
+      .join(', ')}. Refusing to build a UMD that is known to be missing the patches.`,
+  );
+}
 
 // 8. Build vendored/scaffolding so vendored/scaffolding/dist/scaffolding-min.js
 //    exists for vite's pre-bundling step.

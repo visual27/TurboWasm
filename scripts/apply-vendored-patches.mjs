@@ -1,60 +1,3 @@
-#!/usr/bin/env node
-/**
- * Reapply the vendored scratch-render patches after `npm install`.
- *
- * The vendored scratch-vm and scratch-render are tracked outside the main
- * dependency tree (see vendored/ in .gitignore). We carry two patch sets:
- *
- *   1. `patches/scratch-render+0.1.0.patch` and
- *      `patches/wasm-collision-runtime+0.1.0.patch` target
- *      `vendored/scaffolding/node_modules/scratch-render`. The
- *      scratch-render patch adds two guards against a
- *      `Failed to construct 'ImageData': The source height is zero or not a
- *      number` DOMException that aborts loadProject() when a custom extension
- *      drives the stage size to 0 during load. The wasm-collision patch
- *      installs optional TurboWasm SIMD hooks in `isTouchingColor` and
- *      `isTouchingDrawables` (the WebGPU compute + instanced renderer + SVG
- *      acceleration hooks were retired when the corresponding UI selectors
- *      were removed — see `STORAGE_VERSION` bump to 6 in
- *      `src/utils/constants.ts`).
- *
- *   2. The `patches/vendored/*` patches are applied to the vendored
- *      scaffolding / scratch-vm sources via `git apply` inside
- *      `npm run setup`, not here.
- *
- * Patch application policy:
- *   - The patches are applied via `git apply --check` first; if the source
- *     already has the patch (as is the case after `npm run setup` has
- *     pre-patched the vendored tree), `git apply --check` fails and we
- *     consider the patch already applied.
- *   - The vendored scratch-render patch in `patches/scratch-render+0.1.0.patch`
- *     predates patch-package's stricter `verifyHunkIntegrity` parser and
- *     fails to parse under patch-package 8.x. We work around this by
- *     applying patches with `git apply --recount` instead of patch-package,
- *     which tolerates already-applied context.
- *
- * Behavior:
- *   - If vendored/scaffolding/node_modules/scratch-render is not installed
- *     yet (e.g. the user has not run `cd vendored/scaffolding && npm install`),
- *     applyPatches() returns `{ status: 'skipped', reason: 'no-render' }` and
- *     exits 0. Callers should re-run once vendored deps are in place.
- *   - Can be imported from another ESM script via
- *     `import { applyPatches } from './apply-vendored-patches.mjs'`. The
- *     standalone `node scripts/apply-vendored-patches.mjs` invocation runs
- *     `applyPatches({ exitOnComplete: true })` so postinstall / cron /
- *     manual use stays in sync with the import path.
- *
- * Exit code (standalone invocation only):
- *   - 0 on success (all patches applied or already-applied)
- *   - non-zero (postinstall propagates) only if a patch actually fails to
- *     apply to a fresh tree. patch-package's stricter parser is bypassed.
- *
- * Escape hatch:
- *   - Set `SKIP_VENDORED_PATCHES=1` (or any non-empty value) to opt out.
- *     Useful for `npm install --ignore-scripts` users who manually manage
- *     the vendored tree.
- */
-
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -65,6 +8,7 @@ const root = resolve(here, '..');
 const patchesDir = resolve(root, 'patches');
 const scaffoldingDir = resolve(root, 'vendored', 'scaffolding');
 const renderPkg = resolve(scaffoldingDir, 'node_modules', 'scratch-render', 'package.json');
+const scratchRenderSrc = resolve(scaffoldingDir, 'node_modules', 'scratch-render', 'src');
 
 const PATCH_FILES = [
   'scratch-render+0.1.0.patch',
@@ -89,8 +33,11 @@ const PATCH_FILES = [
 
 /**
  * Idempotently apply all vendored scratch-render patches. Safe to call many
- * times — the marker-comment based detection skips patches that are already
- * applied.
+ * times — `git apply --reverse --check --recount` is the primary "is this
+ * patch already applied?" probe (status 0 means a clean reverse-apply
+ * succeeds, which is true iff every hunk the patch defines is present in
+ * the vendored source). When the reverse probe succeeds we mark the patch
+ * as already-applied without re-touching the source.
  *
  * Returns a structured result rather than throwing, so library callers can
  * decide what to do with failures (e.g. abort the setup script vs. fall
@@ -133,61 +80,68 @@ export function applyPatches(options = {}) {
       continue;
     }
 
-    // 1. Probe with `git apply --check --recount`. The `--recount` flag
-    //    re-derives the hunk header line counts from the actual context
-    //    in the target file, so a patch that was generated against a
-    //    fresh source still applies correctly to an already-patched
-    //    tree whose line numbers have shifted from the previous hunks.
-    const checkResult = spawnSync(
-      'git',
-      ['apply', '--check', '--recount', '-p1', '-v', `../../patches/${patchFile}`],
-      { cwd: scaffoldingDir, encoding: 'utf8', shell: false },
-    );
-
-    if (checkResult.status === 0) {
-      // 2a. Patch applies cleanly → actually apply it.
-      const applyResult = spawnSync(
-        'git',
-        ['apply', '--recount', '-p1', `../../patches/${patchFile}`],
-        { cwd: scaffoldingDir, encoding: 'utf8', shell: false },
-      );
-      if (applyResult.status === 0) {
-        applied.push(patchFile);
-        log(`[apply-vendored-patches] applied ${patchFile}`);
-      } else {
-        failures.push({ patch: patchFile, reason: applyResult.stderr });
-        console.error(
-          `[apply-vendored-patches] failed to apply ${patchFile}: ${applyResult.stderr}`,
-        );
-      }
-      continue;
-    }
-
-    // 2b. Patch does not apply → check whether the patch is already applied.
-    // We grep for a unique marker comment inside each patched file. If found,
-    // the patch is already in place and the apply error is benign.
-    const patchSource = readFileSync(patchPath, 'utf8');
-    const markers = extractUniqueMarkers(patchSource);
-    if (markers.length === 0) {
-      log(
-        `[apply-vendored-patches] ${patchFile} does not apply and no marker comment found; ` +
-          'treating as already-applied (best-effort).',
-      );
-      alreadyApplied.push(patchFile);
-      continue;
-    }
-
-    if (markers.every((m) => isMarkerInRenderSource(m))) {
+    // 0. Probe with `git apply --reverse --check --recount`. The `--recount`
+    //    flag re-derives hunk header line counts from the actual file
+    //    content, and `--reverse --check` succeeds iff every change in the
+    //    patch is currently present in the target tree. This is the most
+    //    robust "is this patch applied?" detector we have: it works even
+    //    when the source lacks our `// TurboWasm:` marker comments (e.g.
+    //    a regenerated patch whose context shifted enough that marker-based
+    //    detection returns false negatives), as long as the patch's own
+    //    context matches reality.
+    const reverseCheck = runGitApply(['apply', '--reverse', '--check', '--recount', '-p1', '-v', `../../patches/${patchFile}`], scaffoldingDir);
+    if (reverseCheck.status === 0) {
       alreadyApplied.push(patchFile);
       log(`[apply-vendored-patches] ${patchFile} already applied; skipping.`);
       continue;
     }
 
+    // 1. Fallback: marker-comment probe. Each patch introduces one or more
+    //    unique `// TurboWasm:` annotations that survive file rewrites. If
+    //    we can find every marker in the vendored source, the patch is
+    //    effectively in place even though `git apply --reverse --check`
+    //    disagrees (e.g. --recount failed on whitespace; or the patch was
+    //    re-applied with --ignore-whitespace and the context bytes drift).
+    //    Treat that as "already applied" to avoid corrupting the source.
+    const patchSource = readFileSync(patchPath, 'utf8');
+    const markers = extractUniqueMarkers(patchSource);
+    if (markers.length > 0 && markers.every((m) => isMarkerInRenderSource(m))) {
+      alreadyApplied.push(patchFile);
+      log(
+        `[apply-vendored-patches] ${patchFile} already applied (marker probe); skipping. ` +
+          'Run `npm run apply:scratch-render-patch` only if `git apply --reverse --check` is also failing.',
+      );
+      continue;
+    }
+
+    // 2. Fresh apply. The forward `--check` is a strict superset of the
+    //    reverse probe: we already know reverse failed, so a forward
+    //    failure means the patch is genuinely out of date with the
+    //    upstream source.
+    const checkResult = runGitApply(['apply', '--check', '--recount', '-p1', '-v', `../../patches/${patchFile}`], scaffoldingDir);
+    if (checkResult.status === 0) {
+      const applyResult = runGitApply(['apply', '--recount', '-p1', `../../patches/${patchFile}`], scaffoldingDir);
+      if (applyResult.status === 0) {
+        applied.push(patchFile);
+        log(`[apply-vendored-patches] applied ${patchFile}`);
+      } else {
+        failures.push({ patch: patchFile, reason: applyResult.stderr || applyResult.stdout });
+        console.error(
+          `[apply-vendored-patches] failed to apply ${patchFile}: ${applyResult.stderr || applyResult.stdout}`,
+        );
+      }
+      continue;
+    }
+
     const reason =
-      `git apply --check failed:\n${checkResult.stderr}\n` +
+      `git apply --check failed:\n${checkResult.stderr || checkResult.stdout}\n` +
+      `git apply --reverse --check failed:\n${reverseCheck.stderr || reverseCheck.stdout}\n` +
       'The vendored scratch-render was NOT patched. Common causes: malformed patch file ' +
       '(missing blank line between hunks, trailing newline, or out-of-date context), ' +
-      'or a vendored scratch-render version that no longer matches the patch.';
+      'or a vendored scratch-render version that no longer matches the patch. ' +
+      'Regenerate the patch (see scripts/regen-gpu-kernel-patches.mjs for GPU kernel patches; ' +
+      'the wasm-collision-runtime patch is regenerated by hand against upstream ' +
+      'TurboWarp/scaffolding@<SHA>).';
     failures.push({ patch: patchFile, reason });
     console.error(`[apply-vendored-patches] failed to apply ${patchFile}:\n${reason}`);
   }
@@ -203,6 +157,19 @@ export function applyPatches(options = {}) {
 }
 
 /**
+ * @param {string[]} args
+ * @param {string} cwd
+ * @returns {{status: number; stdout: string; stderr: string}}
+ */
+function runGitApply(args, cwd) {
+  return spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    shell: false,
+  });
+}
+
+/**
  * Extract unique marker comments from a patch file. We look for lines
  * inside `+` blocks that begin with `// TurboWasm:` — these are stable
  * annotations added by our patches and survive file rewrites.
@@ -210,7 +177,7 @@ export function applyPatches(options = {}) {
  * @param {string} patchText
  * @returns {string[]}
  */
-function extractUniqueMarkers(patchText) {
+export function extractUniqueMarkers(patchText) {
   const lines = patchText.split('\n');
   const markers = new Set();
   for (const line of lines) {
@@ -228,12 +195,12 @@ function extractUniqueMarkers(patchText) {
  * @returns {boolean}
  */
 function isMarkerInRenderSource(marker) {
+  if (!existsSync(scratchRenderSrc)) return false;
   // The wasm-collision-runtime patch carries hooks across RenderWebGL.js
-  // AND SVGSkin.js, plus other source files that may be added later. Probe
-  // every JS file under node_modules/scratch-render/src/ rather than
-  // hard-coding two filenames so a future patch hunk landing in a new
-  // file doesn't false-negative the marker check.
-  const scratchRenderSrc = resolve(scaffoldingDir, 'node_modules', 'scratch-render', 'src');
+  // and (historically) SVGSkin.js. Probe every JS file under
+  // node_modules/scratch-render/src/ rather than hard-coding two filenames
+  // so a future patch hunk landing in a new file doesn't false-negative
+  // the marker check.
   const candidates = [
     resolve(scratchRenderSrc, 'RenderWebGL.js'),
     resolve(scratchRenderSrc, 'PenSkin.js'),
