@@ -48,6 +48,15 @@ export interface RegionVerdictInputs {
    * losing the extraction-side diagnostics.
    */
   extractionDiagnostics?: readonly Diagnostic[];
+  /**
+   * §Phase 5 §5.2 — opt-out for the procedure-inliner. When `false`,
+   * `buildBlockSubsetVerdict` treats `procedure_call` /
+   * `argument_reporter_*` as D1-unsafe; any region containing them
+   * demotes to the JS path. Defaults to `true` (= inliner enabled)
+   * so existing callers (unit tests, CLI scripts) don't have to be
+   * updated.
+   */
+  inliningEnabled?: boolean;
 }
 
 export interface RegionVerdictOutputs {
@@ -124,6 +133,11 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
       comments: input.parsedProject.comments,
       parsedDirectives: resolved.directives,
       parsedDiagnostics: [...parsed.diagnostics, ...resolved.diagnostics],
+      // §Phase 5 §5.2 — propagate the inliner opt-out flag from the
+      // bootstrap entry point so `procedure_call` /
+      // `argument_reporter_*` are treated as D1-unsafe when the user
+      // disables custom-block inlining.
+      inliningEnabled: input.inliningEnabled ?? true,
     });
     // 3. D2: per-axis verdict.
     const axesResult = analyzeAxes(region, resolved.directives, input.parsedProject);
@@ -203,12 +217,14 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
  */
 export function collectRegionVerdictsFromArrayBuffer(
   parsedProject: ParsedProject,
+  options?: { inliningEnabled?: boolean },
 ): RegionVerdictOutputs {
   const { regions, diagnostics } = extractRegions(parsedProject);
   const outputs = buildRegionVerdicts({
     parsedProject,
     regions,
     extractionDiagnostics: diagnostics,
+    inliningEnabled: options?.inliningEnabled,
   });
   logCrossRegionSlotOverlap(outputs.verdicts);
   return outputs;

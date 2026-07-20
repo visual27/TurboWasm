@@ -1533,6 +1533,12 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   const settings = useSettingsStore.getState();
   const enableWasm = settings.enableWasm;
   const enableWebgpu = currentAdvanced?.enableWebgpu ?? true;
+  // §Phase 5 — opt-out gate for the procedure-inliner. When the user
+  // disables this toggle, `procedure_call` / `argument_reporter_*`
+  // remain on the D1-unsafe list and any region containing them
+  // demotes to the JS path (gpu-kernel-dsl-phase5-spec §5.5).
+  const customBlockInliningEnabled =
+    currentAdvanced?.customBlockInliningEnabled ?? true;
 
   // Short-circuit when the user has disabled the path explicitly.
   if (!enableWebgpu) {
@@ -1563,7 +1569,9 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   // (every diagnostic carries the adopted region's id) but the path
   // is wired for future extractors.
   const { verdicts: allVerdicts, extractionDiagnostics } =
-    collectRegionVerdictsFromArrayBuffer(parsed);
+    collectRegionVerdictsFromArrayBuffer(parsed, {
+      inliningEnabled: customBlockInliningEnabled,
+    });
   // §Phase 4 — the v9 nested-parallelization toggle was retired (see
   // `gpu-kernel-dsl-phase4-spec.md` and `STORAGE_VERSION = 10` in
   // `src/utils/constants.ts`). Every surviving Form A region is handed

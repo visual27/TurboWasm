@@ -399,6 +399,20 @@ describe('player.ts: bootstrapGpuKernels wiring (source-inspection)', () => {
     expect(src).not.toMatch(/nestedRepeatContainerBlockIds/);
   });
 
+  it('§Phase 5 — customBlockInliningEnabled reaches collectRegionVerdictsFromArrayBuffer', () => {
+    // §Phase 5 §5.5 — the bootstrap entry point reads the user's
+    // `customBlockInliningEnabled` preference and threads it through
+    // to the D1 verdict so `procedure_call` /
+    // `argument_reporter_*` are treated as D1-unsafe when disabled.
+    const src = readPlayerSource();
+    // The runtime reads the preference from `currentAdvanced`.
+    expect(src).toMatch(/currentAdvanced\?\.customBlockInliningEnabled/);
+    // The bootstrap forwards the flag into the pipeline. The
+    // call passes `{ inliningEnabled: ... }` as the second argument.
+    expect(src).toMatch(/collectRegionVerdictsFromArrayBuffer\(/);
+    expect(src).toMatch(/inliningEnabled:\s*customBlockInliningEnabled/);
+  });
+
   it("__exposeForBrowserVerify publishes `kernelRegistry` (size/jsOnly/canonicalKeys) under window.__turbowasm", () => {
     const src = readPlayerSource();
     // The harness reads `window.__turbowasm.kernelRegistry.size` (and
