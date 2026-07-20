@@ -29,6 +29,14 @@
  * `data_insertatlist`, `data_deletealloflist`,
  * `data_changevariableoflist`) touch the host list shape and are
  * still D1 demoted.
+ *
+ * §Phase 5 — `procedure_call`, `argument_reporter_string`, and
+ * `argument_reporter_boolean` are no longer in the unsafe set. The
+ * `procedure-inliner.ts` module expands `procedure_call` sites at
+ * pre-parse time so the resulting body contains only D1-safe opcodes;
+ * when the runtime gate (`advanced.customBlockInliningEnabled`) is off,
+ * the upstream `bootstrapGpuKernels` flips them back into the unsafe
+ * set for that one bootstrap pass (see `buildBlockSubsetVerdictWithUnsafe`).
  */
 
 import {
@@ -42,6 +50,7 @@ import {
   type RawBlock,
 } from './types';
 import { extractBlockReference } from './block-reference';
+import { inlineProcedures } from './procedure-inliner';
 import { collectIterationAdvancePatterns } from './iteration-advance-pattern';
 import { collectIndirectAccessPatterns } from './indirect-access-pattern';
 import { validateBoundBlockIds } from './bound-block-validator';
@@ -110,11 +119,20 @@ const GPU_UNSAFE_OPCODES: ReadonlySet<string> = new Set([
   'data_insertatlist',
   'data_deletealloflist',
   'data_changevariableoflist',
+]);
 
-  // Custom block calls (we don't trace `procedure_prototype` arg shapes).
+/**
+ * §Phase 5 — opcodes that the `procedure-inliner.ts` would expand on
+ * a successful inlining pass. When the user gates inlining off
+ * (`advanced.customBlockInliningEnabled === false`), these opcodes must
+ * surface as D1-unsafe again so the region demotes and falls back to
+ * the JS path. Used by `buildBlockSubsetVerdictWithUnsafe` (see below).
+ */
+const INLINER_OPCODES: readonly string[] = [
   'procedure_call',
   'argument_reporter_string',
-]);
+  'argument_reporter_boolean',
+];
 
 /**
  * §Phase 3 (gpu-kernel-dsl-phase3-spec §3.3) — diagnostic codes whose
@@ -167,6 +185,12 @@ export interface ClassifyBlockSubsetInput {
   project: ParsedProject;
   /** Map of commentId → ParsedComment for nested-region detection. */
   comments: Record<string, ParsedComment>;
+  /**
+   * §Phase 5 — overrides `region.bodyBlockIds` for the body-walk step.
+   * Used by `buildBlockSubsetVerdict` after `procedure-inliner` has
+   * expanded the body. Defaults to `region.bodyBlockIds`.
+   */
+  bodyBlockIds?: readonly string[];
 }
 
 /**
@@ -193,6 +217,13 @@ export function classifyBlockSubset(
  * の diagnostic が 1 件でも含まれる region は D1 demote
  * (`valid: false`, `demoteReason: 'd1'`) として返却する。warn severity
  * は後方互換のため `valid: true` を維持 (= 既存挙動)。
+ *
+ * §Phase 5: when `inliningEnabled === false`, the call site opts out
+ * of the procedure-inliner (`advanced.customBlockInliningEnabled` user
+ * toggle) and `procedure_call` / `argument_reporter_*` are temporarily
+ * added back to the unsafe-opcode set. The body walk then surfaces
+ * a D1 demote on the first such opcode, falling back to JS as before
+ * Phase 5.
  */
 export interface BuildBlockSubsetVerdictInput {
   region: ExtractedRegion;
@@ -206,6 +237,17 @@ export interface BuildBlockSubsetVerdictInput {
    * A `severity: 'error'` entry demotes the region to D1.
    */
   parsedDiagnostics?: readonly Diagnostic[];
+  /**
+   * §Phase 5 — when `false`, the `procedure-inliner` is skipped and
+   * `procedure_call` / `argument_reporter_*` are treated as D1-unsafe.
+   * Defaults to `true` so existing callers (which have always lived
+   * in the inlining-enabled world since this was added) keep working.
+   * `bootstrapGpuKernels` passes the user's `customBlockInliningEnabled`
+   * preference; legacy unit tests rely on the default `true` so the
+   * `procedure-inliner.test.ts` style cases continue to pass without
+   * exposing the gate at every test site.
+   */
+  inliningEnabled?: boolean;
 }
 
 export function buildBlockSubsetVerdict(
@@ -213,7 +255,35 @@ export function buildBlockSubsetVerdict(
 ): BlockSubsetVerdict {
   const { region, project, comments, parsedDirectives } = input;
   const parsedDiagnostics: readonly Diagnostic[] = input.parsedDiagnostics ?? [];
-  const base = classifyD1Only({ region, project, comments });
+  const inliningEnabled = input.inliningEnabled ?? true;
+
+  // §Phase 5 §5.2 — opt-out path. The user has disabled custom-block
+  // inlining; we re-introduce `procedure_call` /
+  // `argument_reporter_*` as D1-unsafe for this verdict so the region
+  // demotes to the JS path.
+  if (!inliningEnabled) {
+    return buildBlockSubsetVerdictWithUnsafe(input, [...INLINER_OPCODES]);
+  }
+
+  // §Phase 5 §5.2 — inlining enabled. Run `procedure-inliner` against
+  // the region's body and use the inlined body for D1 classification.
+  // Inliner errors (`PROCEDURE_RECURSION_UNSUPPORTED`,
+  // `PROCEDURE_PROTOTYPE_NOT_FOUND`) are folded into the diagnostic
+  // list and force a D1 demote via the same parser-error channel.
+  const inlined = inlineProcedures(region, project, region.spriteId);
+  const inliningErrorDiagnostics = inlined.diagnostics.filter(
+    (d) => d.severity === 'error',
+  );
+  if (inliningErrorDiagnostics.length > 0) {
+    return {
+      valid: false,
+      demoteReason: 'd1',
+      diagnostics: [...parsedDiagnostics, ...inlined.diagnostics],
+      effectivePatterns: [],
+    };
+  }
+
+  const base = classifyD1Only({ region, project, comments, bodyBlockIds: inlined.bodyBlockIds });
 
   // §Phase 2 (15.2): parser-error demote precedes D1 demote so the user
   // sees the broken-DSL diagnostic first (= the more actionable root
@@ -232,21 +302,93 @@ export function buildBlockSubsetVerdict(
     return {
       valid: false,
       demoteReason: 'd1',
-      diagnostics: [...base.diagnostics, ...parsedDiagnostics],
+      diagnostics: [...base.diagnostics, ...parsedDiagnostics, ...inlined.diagnostics],
       effectivePatterns: [],
     };
   }
 
   if (!base.valid) {
     // Preserve the existing D1-only return shape but include the warn-only
-    // parser diagnostics so the user can still see them on the ErrorLogPanel.
+    // parser + inliner diagnostics so the user can still see them on
+    // the ErrorLogPanel.
+    return {
+      ...base,
+      diagnostics: [...base.diagnostics, ...parsedDiagnostics, ...inlined.diagnostics],
+      effectivePatterns: [],
+    };
+  }
+
+  const blockMap = collectAllBlocks(project);
+  const iterResult = collectIterationAdvancePatterns(
+    blockMap,
+    inlined.bodyBlockIds,
+    parsedDirectives,
+  );
+  const indirectResult = collectIndirectAccessPatterns(
+    blockMap,
+    inlined.bodyBlockIds,
+    parsedDirectives,
+  );
+  const validationDiagnostics = validateBoundBlockIds(parsedDirectives, inlined.bodyBlockIds);
+
+  const merged = mergePatterns(iterResult.patterns, indirectResult.patterns, base);
+
+  return {
+    ...base,
+    effectivePatterns: merged.effective,
+    diagnostics: [
+      ...base.diagnostics,
+      ...parsedDiagnostics,
+      ...inlined.diagnostics,
+      ...iterResult.diagnostics,
+      ...indirectResult.diagnostics,
+      ...validationDiagnostics,
+      ...merged.diagnostics,
+    ],
+  };
+}
+
+/**
+ * §Phase 5 §5.2 — internal helper. Re-evaluates the body when an
+ * extra set of unsafe opcodes must be treated as D1-demoting (used
+ * when inlining is opted out). `UNSAFE_OPCODES_EXTRA` is appended to
+ * `GPU_UNSAFE_OPCODES` for the duration of the classification.
+ *
+ * Kept module-private because the public `buildBlockSubsetVerdict`
+ * already encodes the opt-out decision; callers outside this file
+ * should use the main entry with `inliningEnabled: false`.
+ */
+function buildBlockSubsetVerdictWithUnsafe(
+  input: BuildBlockSubsetVerdictInput,
+  unsafeOpcodesExtra: readonly string[],
+): BlockSubsetVerdict {
+  const { region, project, comments, parsedDirectives } = input;
+  const parsedDiagnostics: readonly Diagnostic[] = input.parsedDiagnostics ?? [];
+  // We do not run the inliner at all on the opt-out path so the
+  // `procedure_call` block survives in the body and trips the
+  // unsafe-opcode check inside `classifyD1OnlyWithUnsafe`.
+  const base = classifyD1OnlyWithUnsafe(
+    { region, project, comments },
+    unsafeOpcodesExtra,
+  );
+  const parserErrorDiagnostics = parsedDiagnostics.filter(
+    (d) => d.severity === 'error' || PARSER_ERROR_CODES.has(d.code),
+  );
+  if (parserErrorDiagnostics.length > 0) {
+    return {
+      valid: false,
+      demoteReason: 'd1',
+      diagnostics: [...base.diagnostics, ...parsedDiagnostics],
+      effectivePatterns: [],
+    };
+  }
+  if (!base.valid) {
     return {
       ...base,
       diagnostics: [...base.diagnostics, ...parsedDiagnostics],
       effectivePatterns: [],
     };
   }
-
   const blockMap = collectAllBlocks(project);
   const iterResult = collectIterationAdvancePatterns(
     blockMap,
@@ -259,9 +401,7 @@ export function buildBlockSubsetVerdict(
     parsedDirectives,
   );
   const validationDiagnostics = validateBoundBlockIds(parsedDirectives, region.bodyBlockIds);
-
   const merged = mergePatterns(iterResult.patterns, indirectResult.patterns, base);
-
   return {
     ...base,
     effectivePatterns: merged.effective,
@@ -281,13 +421,32 @@ export function buildBlockSubsetVerdict(
  * `classifyBlockSubset` (後方互換) から呼ばれる pure helper。
  */
 function classifyD1Only(input: ClassifyBlockSubsetInput): BlockSubsetVerdict {
+  return classifyD1OnlyWithUnsafe(input, []);
+}
+
+/**
+ * §Phase 5 — opt-out internal: same as `classifyD1Only` but with an
+ * extra set of opcodes treated as D1-unsafe. Used by the
+ * `inliningEnabled === false` branch so `procedure_call` /
+ * `argument_reporter_*` trip the D1 demote when the user explicitly
+ * disabled custom-block inlining.
+ */
+function classifyD1OnlyWithUnsafe(
+  input: ClassifyBlockSubsetInput,
+  extraUnsafe: readonly string[],
+): BlockSubsetVerdict {
   const { region, project } = input;
   const diagnostics: Diagnostic[] = [];
+  const bodyIds = input.bodyBlockIds ?? region.bodyBlockIds;
+  const unsafeSet =
+    extraUnsafe.length === 0
+      ? GPU_UNSAFE_OPCODES
+      : new Set<string>([...GPU_UNSAFE_OPCODES, ...extraUnsafe]);
 
-  const bodyBlocks = collectReachableBlocks(project, region.bodyBlockIds);
+  const bodyBlocks = collectReachableBlocks(project, bodyIds);
 
   for (const block of bodyBlocks) {
-    if (GPU_UNSAFE_OPCODES.has(block.opcode)) {
+    if (unsafeSet.has(block.opcode)) {
       const diag: Diagnostic = {
         severity: 'warn',
         code: 'd1.region_demoted',
