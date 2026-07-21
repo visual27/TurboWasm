@@ -127,10 +127,18 @@ const GPU_UNSAFE_OPCODES: ReadonlySet<string> = new Set([
  * (`advanced.customBlockInliningEnabled === false`), these opcodes must
  * surface as D1-unsafe again so the region demotes and falls back to
  * the JS path. Used by `buildBlockSubsetVerdictWithUnsafe` (see below).
+ *
+ * Includes the official scratch opcodes (`procedures_call`,
+ * `argument_reporter_string_number`) alongside the legacy in-repo
+ * aliases (`procedure_call`, `argument_reporter_string`) so both
+ * hand-crafted DTOs and pure-Scratch projects route through the same
+ * opt-out demote.
  */
 const INLINER_OPCODES: readonly string[] = [
   'procedure_call',
+  'procedures_call',
   'argument_reporter_string',
+  'argument_reporter_string_number',
   'argument_reporter_boolean',
 ];
 

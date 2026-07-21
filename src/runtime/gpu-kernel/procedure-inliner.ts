@@ -158,7 +158,7 @@ export function inlineProcedures(
     const block = ctx.blocks[blockId];
     if (!block) continue;
 
-    if (block.opcode !== 'procedure_call') {
+    if (!isProcedureCallOpcode(block.opcode)) {
       newBodyBlockIds.push(blockId);
       continue;
     }
@@ -309,10 +309,7 @@ function walkPrototypeBody(
     // into `newBlockIds` so downstream consumers
     // (`block-subset.collectReachableBlocks`) walk the substituted
     // argument and surface its opcodes in the body's D1 / D2 verdict.
-    if (
-      oldBlock.opcode === 'argument_reporter_string' ||
-      oldBlock.opcode === 'argument_reporter_boolean'
-    ) {
+    if (isArgumentReporterOpcode(oldBlock.opcode)) {
       const argName = readArgumentReporterName(oldBlock);
       const replacement = argName ? callSiteArgs.get(argName) : undefined;
       if (replacement) {
@@ -322,7 +319,7 @@ function walkPrototypeBody(
       }
     }
 
-    if (oldBlock.opcode === 'procedure_call') {
+    if (isProcedureCallOpcode(oldBlock.opcode)) {
       // Recursively inline further calls inside the prototype body.
       // The expanded body blocks are emitted in document order, but
       // their `next` chain keeps the original scratch order. We emit
@@ -388,6 +385,33 @@ function readProccode(callBlock: RawBlock): string {
   if (!mutation || typeof mutation !== 'object') return '';
   const proccode = (mutation as Record<string, unknown>)['proccode'];
   return typeof proccode === 'string' ? proccode : '';
+}
+
+/**
+ * Recognise both the official scratch opcode (`procedures_call`) and the
+ * legacy in-repo alias (`procedure_call`) used by GPU-内部 DTOs and
+ * older fixtures. The official form is what a pure-Scratch project
+ * would carry; the alias is preserved for backward compatibility with
+ * existing tests and in-memory block shapes.
+ */
+function isProcedureCallOpcode(opcode: string): boolean {
+  return opcode === 'procedure_call' || opcode === 'procedures_call';
+}
+
+/**
+ * Recognise both the official scratch argument reporter opcodes
+ * (`argument_reporter_string_number` / `argument_reporter_boolean`) and
+ * the legacy in-repo aliases (`argument_reporter_string` /
+ * `argument_reporter_boolean`). The official reporters store the
+ * argument name in `fields.VALUE`; the legacy aliases used
+ * `fields.VARIABLE`. `readArgumentReporterName` accepts both shapes.
+ */
+function isArgumentReporterOpcode(opcode: string): boolean {
+  return (
+    opcode === 'argument_reporter_string' ||
+    opcode === 'argument_reporter_string_number' ||
+    opcode === 'argument_reporter_boolean'
+  );
 }
 
 /**

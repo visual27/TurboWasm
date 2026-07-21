@@ -62,19 +62,19 @@ describe('custom-block-fixture.sb3 (§Phase 5 §5.6)', () => {
     expect(
       (prototypeBlocks[0]!.mutation as { proccode: string }).proccode,
     ).toBe('fn_apply_expo %s');
-    // Three procedure_call sites by proccode.
+    // Three procedures_call sites by proccode.
     const callBlocks = Object.values(sprite.blocks).filter(
-      (b) => b.opcode === 'procedure_call',
+      (b) => b.opcode === 'procedures_call',
     );
     expect(callBlocks.length).toBe(3);
   });
 
-  it('extracts 3 regions (one per procedure_call site)', async () => {
+  it('extracts 3 regions (one per procedures_call site)', async () => {
     const parsed = await loadFixture();
     const { regions, diagnostics } = extractRegions(parsed);
     // No extraction errors.
     expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([]);
-    // Each procedure_call site lives inside its own @compute-marked
+    // Each procedures_call site lives inside its own @compute-marked
     // control_repeat after inlining. The extractor runs pass-1 only
     // and finds the prototype body's kernel container as the single
     // shared region — 3 separate call sites all reference the same
@@ -85,11 +85,11 @@ describe('custom-block-fixture.sb3 (§Phase 5 §5.6)', () => {
     expect(regions.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('inlineProcedures expands each procedure_call into the prototype body', async () => {
+  it('inlineProcedures expands each procedures_call into the prototype body', async () => {
     const parsed = await loadFixture();
     const sprite = parsed.targets.find((t) => !t.isStage)!;
     const callBlocks = Object.values(sprite.blocks).filter(
-      (b) => b.opcode === 'procedure_call',
+      (b) => b.opcode === 'procedures_call',
     );
     expect(callBlocks.length).toBe(3);
     // Each call's body expansion has a successful inlining pass:
