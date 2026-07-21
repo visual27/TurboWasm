@@ -43,6 +43,7 @@ function mkVerdict(blockId: string, regionId: string, spriteId: string): RegionV
     spriteId,
     directives: [bind, workgroup],
     blockSubset: { valid: true, diagnostics: [], effectivePatterns: [] },
+    autoTmpVerdict: { valid: true, bindings: [], diagnostics: [] },
     axes: {},
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
     diagnostics: [],

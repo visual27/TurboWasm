@@ -27,6 +27,7 @@ function verdict(): RegionVerdict {
       },
     ],
     blockSubset: { valid: true, diagnostics: [] },
+    autoTmpVerdict: { valid: true, bindings: [], diagnostics: [] },
     axes: {},
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
     diagnostics: [],

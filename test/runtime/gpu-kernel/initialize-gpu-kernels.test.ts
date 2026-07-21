@@ -16,12 +16,13 @@ function makeVerdict(blockId: string, valid = true): RegionVerdict {
     spriteId: 'sprite',
     directives: [],
     blockSubset: { valid, diagnostics: [] },
+    autoTmpVerdict: { valid: true, bindings: [], diagnostics: [] },
     axes: {},
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
     diagnostics: [],
     parallelAxes: [],
     kernelContainerBlockId: blockId,
-    
+
     firstSubstackBlockId: '',
   };
 }

@@ -78,6 +78,7 @@ function makeVerdict(): {
     spriteId: 'sprite',
     directives: resolved.directives,
     blockSubset: { valid: true, diagnostics: [] },
+    autoTmpVerdict: { valid: true, bindings: [], diagnostics: [] },
     axes: {},
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
     diagnostics: [...parsed.diagnostics, ...resolved.diagnostics],
