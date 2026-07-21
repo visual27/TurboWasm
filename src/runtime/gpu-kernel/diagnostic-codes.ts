@@ -115,6 +115,38 @@ export const GPU_DIAGNOSTIC_CODES = {
    * exist in the sprite. Severity `error`.
    */
   PROCEDURE_PROTOTYPE_NOT_FOUND: 'gpu.procedure_prototype_not_found',
+  /**
+   * §Phase 6 (gpu-kernel-scratch-temporary-let-binding.md §3) —
+   * auto-tmp detector found a scratch `data_setvariableto` target
+   * that collides with an existing `@bind` / `@map` / `@repeat`
+   * directive name in the same region. Severity `error` — the
+   * owning region D1-demotes via `PARSER_ERROR_CODES`.
+   */
+  SCRATCH_VARIABLE_COLLISION: 'gpu.scratch_variable_collision',
+  /**
+   * §Phase 6 — auto-tmp detector found a cycle in the scratch `let`
+   * dependency DAG (= `tmp1 = tmp2 + 1; tmp2 = tmp1 + 1` style).
+   * Severity `error` — the owning region D1-demotes via
+   * `PARSER_ERROR_CODES`.
+   */
+  SCRATCH_VARIABLE_CYCLE: 'gpu.scratch_variable_cycle',
+  /**
+   * §Phase 6 — auto-tmp detector observed multiple `data_setvariableto`
+   * writes to the same scratch variable. The detector applies
+   * last-write-wins (the last write wins, earlier writes are dropped).
+   * Severity `warn` — the user may have meant to use `@map` for
+   * sequential binding or to surface the dynamic-semantics divergence.
+   */
+  SCRATCH_VARIABLE_DUPLICATE_WRITE: 'gpu.scratch_variable_duplicate_write',
+  /**
+   * §Phase 6 — auto-tmp detector observed a `data_changevariableby`
+   * targeting a non-`@bind`/non-`@repeat` scratch variable. The
+   * auto-tmp pass is single-assignment-only (WGSL `let` is
+   * non-reassignable), so such targets are not promoted. The user
+   * is expected to use an explicit `@map` or to inline the
+   * accumulation. Severity `info`.
+   */
+  SCRATCH_VARIABLE_CHANGEVARBY_IGNORED: 'gpu.scratch_variable_changevariableby_ignored',
 } as const;
 
 export type GpuDiagnosticCode =

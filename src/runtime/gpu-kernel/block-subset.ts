@@ -178,6 +178,11 @@ export const PARSER_ERROR_CODES: ReadonlySet<string> = new Set([
   'gpu.repeat_path_invalid',
   'gpu.repeat_path_not_found',
   'gpu.repeat_path_duplicate',
+  // §Phase 6 — auto-tmp detector collision / cycle errors. Both
+  // surface as D1 demotes via this set so the region falls back to
+  // the JS path without inventing a new severity channel.
+  'gpu.scratch_variable_collision',
+  'gpu.scratch_variable_cycle',
 ]);
 
 export interface ClassifyBlockSubsetInput {

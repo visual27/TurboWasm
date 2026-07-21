@@ -93,6 +93,15 @@ export const FIXTURE_GENERATORS = {
   // `test/runtime/gpu-kernel/custom-block-fixture.test.ts`.
   'custom-block-fixture.sb3': () =>
     import('./make-custom-block-fixture.mjs').then((m) => m.makeCustomBlockFixture()),
+  // §Phase 6 (gpu-kernel-scratch-temporary-let-binding.md) — auto-tmp
+  // fixture. A single `@compute` region whose body carries scratch
+  // `data_setvariableto` writes (`tmp0`, `tmp1`) without explicit
+  // `@map` bindings. Drives `detectAutoTmpBindings` end-to-end and
+  // pins the WGSL `let tmp0: f32 = ...; let tmp1: f32 = ...;`
+  // emission. Loaded by
+  // `test/runtime/gpu-kernel/auto-tmp-fixture-integration.test.tsx`.
+  'auto-tmp-fixture.sb3': () =>
+    import('./make-auto-tmp-fixture.mjs').then((m) => m.makeAutoTmpFixture()),
 };
 
 /**

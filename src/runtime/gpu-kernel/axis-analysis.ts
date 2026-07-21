@@ -50,6 +50,14 @@ export function analyzeAxes(
   region: ExtractedRegion,
   directives: readonly ParsedDirective[],
   project: ParsedProject,
+  /**
+   * §Phase 6 — names promoted to auto-tmp `let` bindings in the
+   * M3 stage. `findVariableWrites` excludes them from the "body
+   * writes to Ri" check so D2 does not spuriously demote an axis
+   * just because the body carries a scratch tmp write. Empty
+   * by default (legacy callers).
+   */
+  autoTmpNames?: ReadonlySet<string>,
 ): AxisAnalysisResult {
   const diagnostics: Diagnostic[] = [];
   const repeats = directives.filter(
@@ -64,7 +72,14 @@ export function analyzeAxes(
 
   const out: Record<string, AxisVerdict> = {};
   for (const r of repeats) {
-    const verdict = computeAxisVerdict(r, maps, bodyBlocks, region, directives);
+    const verdict = computeAxisVerdict(
+      r,
+      maps,
+      bodyBlocks,
+      region,
+      directives,
+      autoTmpNames,
+    );
     out[r.name] = verdict;
     diagnostics.push(...verdict.diagnostics);
   }
@@ -78,6 +93,13 @@ function computeAxisVerdict(
   bodyBlocks: RawBlock[],
   region: ExtractedRegion,
   directives: readonly ParsedDirective[],
+  /**
+   * §Phase 6 — names promoted to auto-tmp `let` bindings. When
+   * `findVariableWrites` reports a write to a name in this set,
+   * the write is `let`-managed and does NOT count as a write to
+   * the bound axis variable Ri.
+   */
+  autoTmpNames?: ReadonlySet<string>,
 ): AxisVerdict {
   if (r.axis === 'sequential') {
     return {
@@ -128,7 +150,7 @@ function computeAxisVerdict(
   }
 
   // (c) body does not write to Ri.
-  const writes = findVariableWrites(bodyBlocks);
+  const writes = findVariableWrites(bodyBlocks, autoTmpNames);
   if (writes.has(r.name)) {
     return {
       requestedAxis: r.axis,
@@ -262,7 +284,17 @@ const VARIABLE_WRITE_OPCODES: ReadonlySet<string> = new Set([
  * element via the helper's per-element scan, matching the legacy
  * `{ id }.id`-style id we used to read here.
  */
-function findVariableWrites(bodyBlocks: RawBlock[]): Set<string> {
+function findVariableWrites(
+  bodyBlocks: RawBlock[],
+  /**
+   * §Phase 6 — names promoted to auto-tmp `let` bindings. These
+   * are scratch-internal and survive D2 unaltered (their writes
+   * become `let` declarations in WGSL), so they do NOT count as
+   * writes to a bound axis variable Ri. Empty / undefined disables
+   * the exclusion (= legacy behaviour).
+   */
+  autoTmpNames?: ReadonlySet<string>,
+): Set<string> {
   const writes = new Set<string>();
   for (const block of bodyBlocks) {
     if (!VARIABLE_WRITE_OPCODES.has(block.opcode)) continue;
@@ -270,11 +302,17 @@ function findVariableWrites(bodyBlocks: RawBlock[]): Set<string> {
     const variable = fields['VARIABLE'];
     const refId = extractBlockReference(variable);
     if (refId) {
-      writes.add(refId.toLowerCase());
+      const lowered = refId.toLowerCase();
+      if (autoTmpNames && autoTmpNames.has(lowered)) continue;
+      writes.add(lowered);
     }
     // Some blocks carry the variable name as a top-level field.
     const variable2 = fields['FIELD_LIST'];
-    if (typeof variable2 === 'string') writes.add(variable2.toLowerCase());
+    if (typeof variable2 === 'string') {
+      const lowered = variable2.toLowerCase();
+      if (autoTmpNames && autoTmpNames.has(lowered)) continue;
+      writes.add(lowered);
+    }
   }
   return writes;
 }

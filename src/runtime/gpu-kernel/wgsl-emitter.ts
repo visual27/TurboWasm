@@ -6,7 +6,9 @@ import {
   type ScalarUniformBinding,
 } from './scalar-uniform-binding';
 import { extractBlockReference } from './block-reference';
+import { scratchBlockToWgslExpr, type ScratchBlockExprContext } from './scratch-block-expr';
 import type {
+  AutoTmpBinding,
   AxisFinal,
   BindDirective,
   Diagnostic,
@@ -379,6 +381,21 @@ interface EmitterContext {
    * through as-is.
    */
   axisVerdicts: Readonly<Record<string, { finalAxis: AxisFinal }>>;
+  /**
+   * §Phase 6 — scratch auto-tmp bindings (topologically ordered).
+   * `data_setvariableto` blocks whose target is in this set emit
+   * nothing at body position (the `let` declaration was already
+   * emitted above the body walk). `data_variableof` reporters
+   * resolve to the emit identifier through `scratchBlockToWgslExpr`'s
+   * `autoTmpEmitNames` lookup.
+   */
+  autoTmpBindings: readonly AutoTmpBinding[];
+  /**
+   * §Phase 6 — case-insensitive name lookup for auto-tmp emit
+   * identifiers. Built from `autoTmpBindings`. Lower-case keys mirror
+   * scratch's case-insensitive variable semantics.
+   */
+  autoTmpEmitNames: Readonly<Record<string, string>>;
 }
 
 export function clampWorkgroupSize(
@@ -611,6 +628,21 @@ export function emitRegion(input: EmitInput): EmitResult {
   const skipContext: SkipBlockContext = {
     effectivePatterns: regionVerdict.blockSubset.effectivePatterns ?? [],
   };
+  // §Phase 6 — materialise the auto-tmp binding table. The verdict
+  // already topo-sorted the candidates; we just resolve each surface
+  // name to a WGSL-safe identifier via the existing `safeIdentifier`
+  // helper so reserved-keyword collisions route through the same
+  // hash-renaming pass as `@bind` / `@map`.
+  const autoTmpBindings: AutoTmpBinding[] = (regionVerdict.autoTmpVerdict?.bindings ?? []).map(
+    (binding) => ({
+      ...binding,
+      emitName: safeIdentifier(binding.name),
+    }),
+  );
+  const autoTmpEmitNames: Record<string, string> = {};
+  for (const binding of autoTmpBindings) {
+    autoTmpEmitNames[binding.name.toLowerCase()] = binding.emitName;
+  }
   const context: EmitterContext = {
     regionId: regionVerdict.regionId,
     blocks,
@@ -632,6 +664,8 @@ export function emitRegion(input: EmitInput): EmitResult {
     skipContext,
     repeatByBlockId,
     axisVerdicts,
+    autoTmpBindings,
+    autoTmpEmitNames,
   };
 
   const lines: string[] = [
@@ -662,6 +696,10 @@ export function emitRegion(input: EmitInput): EmitResult {
   lines.push(`${mainSignature(regionVerdict.parallelAxes)} {`);
 
   const orderedMaps = orderMaps(maps, regionVerdict.cascade.topoOrder);
+  // §Phase 6 — shared `ScratchBlockExprContext` for both `@map`
+  // formula emission and auto-tmp `let` emission. Built once with the
+  // auto-tmp emit-name table so cross-tmp references resolve.
+  const scratchExprCtx = buildScratchBlockExprContextForEmit(context, scalarBindings);
   for (const map of orderedMaps) {
     // §Phase E: quoted `@map` names use `internalName` as the WGSL
     // `let` binding. The collision-rename pass above (renamed.renameTable)
@@ -671,6 +709,18 @@ export function emitRegion(input: EmitInput): EmitResult {
     const emittedName = renamed.renameTable[map.var] ?? map.var;
     const formula = emitFormula(map.formula, map, context);
     lines.push(`  let ${emittedName}: f32 = ${formula};`);
+  }
+  // §Phase 6 — auto-tmp `let` declarations. The bindings are already
+  // topologically ordered by `detectAutoTmpBindings`. Each binding's
+  // `data_setvariableto.inputs.VALUE` shadow chain is converted to a
+  // WGSL expression via the same `scratchBlockToWgslExpr` path used
+  // for `@map` formula emission, with `autoTmpEmitNames` threaded
+  // through `ScratchBlockExprContext` so cross-tmp references resolve.
+  for (const autoTmp of autoTmpBindings) {
+    const scratchBlock = blocks[autoTmp.blockId];
+    if (!scratchBlock) continue;
+    const expr = emitAutoTmpValueExpression(scratchBlock, context, scratchExprCtx);
+    lines.push(`  let ${autoTmp.emitName}: f32 = ${expr};`);
   }
 
   // §Phase 4: the kernel container itself is the body entry point.
@@ -1241,8 +1291,106 @@ function emitStatementChain(startId: string, context: EmitterContext): string[] 
   return lines;
 }
 
+/**
+ * §Phase 6 — convert a `data_setvariableto` `inputs.VALUE` shadow
+ * chain into the WGSL expression on the right-hand side of the
+ * `let <autoTmp.emitName>: f32 = <expr>;` declaration.
+ *
+ * `scratchBlockToWgslExpr` returns `null` for opcodes the scratch
+ * reverse-translator does not cover (e.g. `operator_random`). In
+ * that case we fall back to `0.0` and emit a one-shot
+ * `gpu.emitter_unsupported_opcode` warn diagnostic via the shared
+ * `diagnoseUnsupported` channel. The fallback matches the legacy
+ * behaviour for unsupported expression slots.
+ */
+function emitAutoTmpValueExpression(
+  block: RawBlock,
+  context: EmitterContext,
+  scratchExprCtx: ScratchBlockExprContext,
+): string {
+  const valueRef = block.inputs['VALUE'];
+  const valueBlock = resolveInputBlock(valueRef, context.blocks);
+  if (!valueBlock) return '0.0';
+  const text = scratchBlockToWgslExpr(valueBlock, context.blocks, scratchExprCtx);
+  if (text === null) {
+    diagnoseUnsupported(valueBlock, context);
+    return '0.0';
+  }
+  return text;
+}
+
+/**
+ * Resolve a scratch input slot to its concrete block, walking the
+ * same union of shapes `extractBlockReference` accepts. Returns
+ * `undefined` when the input is empty / malformed / literal.
+ */
+function resolveInputBlock(input: unknown, blocks: Record<string, RawBlock>): RawBlock | undefined {
+  const refId = extractBlockReference(input);
+  if (!refId) return undefined;
+  return blocks[refId];
+}
+
+/**
+ * Build a `ScratchBlockExprContext` that mirrors the emitter's
+ * current rename + scalar binding state, augmented with the auto-tmp
+ * emit-name table so `data_variableof` references resolve to the
+ * synthesised `let` identifier.
+ */
+function buildScratchBlockExprContextForEmit(
+  context: EmitterContext,
+  scalarBindings: readonly ScalarUniformBinding[],
+): ScratchBlockExprContext {
+  const bindingNameBySurface = new Map<string, string>();
+  for (const binding of context.bindings) {
+    bindingNameBySurface.set(binding.name, context.renameTable[binding.name] ?? binding.name);
+  }
+  return {
+    bindingNameBySurface,
+    scalarBindings,
+    renameTable: context.renameTable,
+    autoTmpEmitNames: context.autoTmpEmitNames,
+  };
+}
+
+/**
+ * Read a scratch variable name off a `data_setvariableto` /
+ * `data_changevariableby` block's `fields.VARIABLE` slot. Returns
+ * the surface name (case preserved) or `null` when the slot is
+ * missing or uses an unsupported shape. Mirrors the accept criteria
+ * in `axis-analysis.ts:findVariableWrites` /
+ * `auto-tmp-detector.ts:readScratchVariableName`.
+ */
+function readScratchVariableFieldName(block: RawBlock): string | null {
+  const field = block.fields['VARIABLE'];
+  if (!field) return null;
+  if (typeof field === 'string') return field;
+  if (Array.isArray(field)) {
+    for (const item of field) {
+      if (typeof item === 'string') return item;
+    }
+    return null;
+  }
+  if (typeof field === 'object') {
+    const obj = field as Record<string, unknown>;
+    if (typeof obj['name'] === 'string') return obj['name'];
+    if (typeof obj['id'] === 'string') return obj['id'];
+  }
+  return null;
+}
+
 function emitStatement(block: RawBlock, context: EmitterContext): string[] {
-  if (block.opcode === 'data_setvariableto') return [];
+  if (block.opcode === 'data_setvariableto') {
+    // §Phase 6 — when this `data_setvariableto` is the source of an
+    // auto-tmp binding, the WGSL `let` declaration has already been
+    // emitted at the top of the kernel body (above the `for` / repeat
+    // walk). The body position emits nothing so the actual `let`
+    // ordering is preserved (= dependency comes before consumer).
+    const name = readScratchVariableFieldName(block);
+    if (name && context.autoTmpEmitNames[name.toLowerCase()] !== undefined) {
+      return [];
+    }
+    return [];
+  }
   if (block.opcode === 'data_replaceitemoflist') {
     const statement = emitListWrite(block, context);
     return statement ? [statement] : [];

@@ -555,6 +555,42 @@ export interface CascadeVerdict {
 }
 
 /**
+ * §Phase 6 (gpu-kernel-scratch-temporary-let-binding.md) — auto-detected
+ * scratch `let` binding for a body-local temporary variable. The WGSL
+ * emitter consumes the topo-ordered list and emits a `let <name>: f32 =
+ * <formula>;` line per binding before the body walk.
+ *
+ * `name` is the surface name (e.g. `'tmp1'`). `emitName` is the WGSL-
+ * safe identifier (either `name` itself if WGSL-legal, or the FNV-1a
+ * hashed form `__tw_<hash>`). The `directives` map does NOT include
+ * auto-tmp bindings — they are an internal post-D1 structure, so the
+ * canonical key (`kernel-registry.ts:stripDirectiveVolatile`) is
+ * unaffected by auto-tmp name choices (scratch typos keep canonical
+ * equality).
+ */
+export interface AutoTmpBinding {
+  name: string;
+  emitName: string;
+  blockId: string;
+  sourceBlockId: string;
+}
+
+/**
+ * §Phase 6 — verdict of the auto-tmp detector stage. Lives between
+ * `blockSubset` and `axes` in the M3 pipeline
+ * (`region-verdict-pipeline.ts:buildRegionVerdicts`). Cycle and
+ * collision paths surface as `valid: false` with a `demoteReason`
+ * that the runtime treats as a D1 demote (forwarded through
+ * `PARSER_ERROR_CODES`).
+ */
+export interface AutoTmpVerdict {
+  valid: boolean;
+  demoteReason?: 'd1';
+  bindings: readonly AutoTmpBinding[];
+  diagnostics: Diagnostic[];
+}
+
+/**
  * The full verdict for one region. The runtime consults this in M5
  * (kernel-registry) to decide whether to build a pipeline.
  *
@@ -564,6 +600,11 @@ export interface CascadeVerdict {
  * consults the `repeatByBlockId` map to decide whether a target
  * `control_repeat` runs in parallel, sequential `for`, or is left
  * implicit (= `@repeat` directive missing).
+ *
+ * §Phase 6: `autoTmpVerdict` carries the auto-detected scratch
+ * `let` bindings. The runtime consults it inside M4 (`emitRegion`)
+ * to emit the `let` declarations above the body walk. Not included
+ * in canonical key (canonical equality is directive-keyed only).
  */
 export interface RegionVerdict {
   regionId: string;
@@ -577,6 +618,14 @@ export interface RegionVerdict {
    */
   directives: ResolvedParsedDirective[];
   blockSubset: BlockSubsetVerdict;
+  /**
+   * §Phase 6 — auto-detected scratch `let` bindings. The WGSL emitter
+   * (`emitRegion`) walks this list in order and emits `let
+   * <emitName>: f32 = <formula>;` above the body walk. `valid: false`
+   * means the region demotes to the JS path (= `blockSubset.valid`
+   * also false via the auto-tmp's own `PARSER_ERROR_CODES` route).
+   */
+  autoTmpVerdict: AutoTmpVerdict;
   axes: Record<string, AxisVerdict>;
   cascade: CascadeVerdict;
   diagnostics: Diagnostic[];

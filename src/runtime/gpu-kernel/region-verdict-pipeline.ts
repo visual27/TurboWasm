@@ -21,6 +21,8 @@ import { parseComputeComment } from './comment-parser';
 import { resolveRepeatPaths } from './repeat-path-resolver';
 import { analyzeAxes } from './axis-analysis';
 import { analyzeCascade } from './cascade-analysis';
+import { detectAutoTmpBindings } from './auto-tmp-detector';
+import { inlineProcedures } from './procedure-inliner';
 import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
 import type {
   AxisFinal,
@@ -139,9 +141,66 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
       // disables custom-block inlining.
       inliningEnabled: input.inliningEnabled ?? true,
     });
-    // 3. D2: per-axis verdict.
-    const axesResult = analyzeAxes(region, resolved.directives, input.parsedProject);
-    // 4. D3: cascade verdict (uses survived-axes set).
+    // 4. §Phase 6 — auto-tmp detector. Walks the inlined body to
+    // discover scratch `let` candidates, surfaces cycle / collision
+    // diagnostics through `PARSER_ERROR_CODES` so the region D1-demotes
+    // when the candidate set is malformed. The verdict feeds D2
+    // (auto-tmp names excluded from `findVariableWrites`) and M4
+    // (`emitRegion` emits `let` declarations before the body walk).
+    // The inlined body ids are reused from `inlineProcedures` so
+    // custom-block prototype bodies are covered transparently.
+    const inlinedForAutoTmp = inlineProcedures(region, input.parsedProject, region.spriteId);
+    const autoTmpVerdict = detectAutoTmpBindings({
+      region,
+      inlinedBodyIds: inlinedForAutoTmp.bodyBlockIds,
+      project: input.parsedProject,
+      directiveNames: collectDirectiveNameSets(resolved.directives),
+    });
+    // §Phase 6 — the detector's collision / cycle errors route through
+    // `PARSER_ERROR_CODES` so the owning region D1-demotes. We
+    // short-circuit here when the verdict is invalid: skipping D2 /
+    // D3 / emit avoids wasting work on a region that will fall back to
+    // the JS path anyway.
+    if (!autoTmpVerdict.valid) {
+      const demotedBlockSubset: typeof blockSubset = {
+        valid: false,
+        demoteReason: 'd1',
+        diagnostics: [...blockSubset.diagnostics, ...autoTmpVerdict.diagnostics],
+        effectivePatterns: [],
+      };
+      verdicts.push({
+        regionId: region.regionId,
+        blockId: region.blockId,
+        spriteId: region.spriteId,
+        directives: resolved.directives as RegionVerdict['directives'],
+        blockSubset: demotedBlockSubset,
+        autoTmpVerdict,
+        axes: {},
+        cascade: { valid: false, demoteReason: 'd1', diagnostics: [], topoOrder: [] },
+        diagnostics: [
+          ...blockSubset.diagnostics,
+          ...autoTmpVerdict.diagnostics,
+          ...(matchedExtraction.get(region.regionId) ?? []),
+        ],
+        parallelAxes: [],
+        kernelContainerBlockId: region.kernelContainerBlockId,
+        firstSubstackBlockId: region.firstSubstackBlockId,
+      });
+      for (const directive of parsed.directives) allDirectives.push(directive);
+      continue;
+    }
+    // 5. D2: per-axis verdict. Pass the auto-tmp name set so
+    // `findVariableWrites` excludes them from the "body writes to Ri"
+    // check (auto-tmp bindings are scratch-internal and survive D2
+    // unaltered). See `axis-analysis.ts:findVariableWrites` for the
+    // exclusion call site.
+    const axesResult = analyzeAxes(
+      region,
+      resolved.directives,
+      input.parsedProject,
+      new Set(autoTmpVerdict.bindings.map((b) => b.name.toLowerCase())),
+    );
+    // 6. D3: cascade verdict (uses survived-axes set).
     const survivedAxes = new Set<string>();
     for (const [name, verdict] of Object.entries(axesResult.axes)) {
       if (verdict.finalAxis !== 'sequential') survivedAxes.add(name);
@@ -178,6 +237,7 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
       spriteId: region.spriteId,
       directives: resolved.directives as RegionVerdict['directives'],
       blockSubset,
+      autoTmpVerdict,
       axes: axesResult.axes,
       cascade,
       diagnostics,
@@ -267,6 +327,29 @@ function logCrossRegionSlotOverlap(verdicts: readonly RegionVerdict[]): void {
       }
     }
   }
+}
+
+/**
+ * §Phase 6 — collect the lower-cased scratch name sets declared by
+ * directives in a single region. Used by `detectAutoTmpBindings` to
+ * distinguish bound variables (which keep their existing pipeline
+ * paths) from unbound scratch tmp candidates. Case-insensitive:
+ * scratch variable names are case-insensitive in the live runtime.
+ */
+function collectDirectiveNameSets(directives: readonly ParsedDirective[]): {
+  binds: ReadonlySet<string>;
+  maps: ReadonlySet<string>;
+  repeats: ReadonlySet<string>;
+} {
+  const binds = new Set<string>();
+  const maps = new Set<string>();
+  const repeats = new Set<string>();
+  for (const d of directives) {
+    if (d.kind === 'bind') binds.add(d.name.toLowerCase());
+    else if (d.kind === 'map') maps.add(d.var.toLowerCase());
+    else if (d.kind === 'repeat') repeats.add(d.name.toLowerCase());
+  }
+  return { binds, maps, repeats };
 }
 
 /**

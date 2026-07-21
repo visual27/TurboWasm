@@ -53,6 +53,16 @@ export interface ScratchBlockExprContext {
    * bindingNameBySurface の lookup に利用する。
    */
   renameTable: Readonly<Record<string, string>>;
+  /**
+   * §Phase 6 — auto-tmp `let` bindings synthesised by
+   * `auto-tmp-detector.ts`. Maps lower-cased surface name → WGSL
+   * emit identifier (= `safeIdentifier(name)` result). When a
+   * `data_variableof` reporter references a scratch variable that
+   * was promoted to auto-tmp, the resolver returns this emit
+   * identifier so the read picks up the `let` value. Empty when
+   * the region has no auto-tmp candidates.
+   */
+  autoTmpEmitNames?: Readonly<Record<string, string>>;
 }
 
 const MAX_RECURSION_DEPTH = 32;
@@ -69,6 +79,13 @@ export function buildScratchBlockExprContext(
   directives: readonly ParsedDirective[],
   renameTable: Readonly<Record<string, string>>,
   scalarBindings: readonly ScalarUniformBindingLike[] = [],
+  /**
+   * §Phase 6 — optional auto-tmp emit-name table. When provided,
+   * `data_variableof` resolvers pick up `let` bindings for scratch
+   * tmps declared via `data_setvariableto`. Defaults to `undefined`
+   * so existing callers (Phase 2/3 paths) keep their behaviour.
+   */
+  autoTmpEmitNames?: Readonly<Record<string, string>>,
 ): ScratchBlockExprContext {
   const bindingNameBySurface = new Map<string, string>();
   for (const d of directives) {
@@ -80,6 +97,7 @@ export function buildScratchBlockExprContext(
     bindingNameBySurface,
     scalarBindings,
     renameTable,
+    autoTmpEmitNames,
   };
 }
 
@@ -126,6 +144,12 @@ export function scratchBlockToWgslExpr(
       return binaryOp(block, blocks, context, depth);
 
     case 'data_variableof':
+    case 'data_variable':
+      // §Phase 6 — `data_variable` is the variable reporter block
+      // (the `()` round reporter in scratch UI). Phase 1+ fixtures
+      // route scratch reads through it; Phase 2 fixtures used
+      // `data_variableof`. Both share the same `fields.VARIABLE`
+      // shape, so the resolver is identical.
       return resolveVariableReference(block, context);
 
     case 'data_itemoflist':
@@ -167,12 +191,16 @@ function binaryOp(
 /**
  * Resolve `data_variableof` → WGSL expression.
  *
- * Priority (Phase 2 + Phase 3 互換):
- *   1. `scalarBindings` (= `@bind ..., scalar`) に name 一致があれば
+ * Priority (Phase 2 + Phase 3 + Phase 6 互換):
+ *   1. §Phase 6 — `autoTmpEmitNames` (= scratch `let` bindings
+ *      promoted from `data_setvariableto`) に name 一致があれば
+ *      そのまま emit identifier (= `let <emitName>: f32 = ...;` の
+ *      右辺で参照される変数名) を返す。
+ *   2. `scalarBindings` (= `@bind ..., scalar`) に name 一致があれば
  *      `u_scratch.<wgsl_name>` を返す (= scalar uniform)。
- *   2. `bindingNameBySurface` (= `@bind` list) に name 一致があれば
+ *   3. `bindingNameBySurface` (= `@bind` list) に name 一致があれば
  *      `&<storage>` を返す (e.g. `len(my_list)` の `my_list` sugar 経由)。
- *   3. どちらも無ければ `null` (Phase 2 ではここに必ず落ちる。Phase 3 で
+ *   4. どれも無ければ `null` (Phase 2 ではここに必ず落ちる。Phase 3 で
  *      scalarBindings に binding を追加すれば通る)。
  */
 function resolveVariableReference(
@@ -181,6 +209,16 @@ function resolveVariableReference(
 ): string | null {
   const varName = extractStringField(block.fields['VARIABLE']);
   if (!varName) return null;
+
+  // §Phase 6 — auto-tmp lookup runs first so a scratch tmp wins over
+  // a same-named `@bind` scalar binding (the auto-tmp detector would
+  // have D1-demoted such a collision at the M3 stage, but a defensive
+  // precedence keeps the contract robust against future direct calls
+  // to `scratchBlockToWgslExpr` outside the M3 pipeline).
+  if (context.autoTmpEmitNames) {
+    const autoTmpEmit = context.autoTmpEmitNames[varName];
+    if (autoTmpEmit) return autoTmpEmit;
+  }
 
   const scalarMatch = context.scalarBindings.find((b) => b.name === varName);
   if (scalarMatch) return `u_scratch.${scalarMatch.wgslName}`;
