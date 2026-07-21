@@ -1,14 +1,22 @@
 /**
- * End-to-end regression test for the Phase 4 nested @compute browser
- * harness.
+ * End-to-end regression test for the nested-variant browser harness.
+ *
+ * §Phase 4 (BREAKING) — nested parallelization was retired: the
+ * `advanced.nestedParallelizationEnabled` opt-in gate is gone, and the
+ * canonical model is loose-position Form A with `repeatPath` resolution.
+ * The nested SB3 fixture survives for byte-identical regression
+ * coverage of the legacy DSL shape, but the harness now runs the
+ * fixture through the same pipeline as the legacy fixture (no special
+ * gate to enable). The browser-verify layer still distinguishes
+ * `variant=nested` from `variant=legacy` so a future regression that
+ * breaks the legacy DSL format can be attributed to the right fixture.
  *
  * This test shells out to `scripts/verify-gpu-kernel.mjs` with
  * `TURBOWASM_VARIANT=nested`, which spins up `vite preview` + Playwright
  * Chromium and:
  *
  *   - Loads `test/.test-fixtures/expo-fixture-nested.sb3` with
- *     `enableWasm: true` AND `advanced.nestedParallelizationEnabled: true`
- *     (the Phase 4 opt-in gate) and captures the GPU pipeline's bootstrap
+ *     `enableWasm: true` and captures the GPU pipeline's bootstrap
  *     log line (`[gpu-kernel] bootstrapped ... device=...`) plus the
  *     `kernelRegistry` snapshot.
  *   - Loads the same fixture with `enableWasm: false` and captures the
@@ -17,8 +25,7 @@
  *     passes within 1e-6 absolute tolerance. When WebGPU was *not*
  *     observed (CI without GPU hardware), the harness exits 0 with a
  *     placeholder PNG — we still consider the run green because the
- *     pre-parse pipeline + Phase 4 gate are the load-bearing layers per
- *     nested-parallelization-05-phase4 §6.
+ *     pre-parse pipeline + SB3 shape are the load-bearing layers.
  *
  * Gated behind `RUN_E2E=1` because the harness needs a built `dist/`
  * and a Chromium binary. The default `npm test` skips it.

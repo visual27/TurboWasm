@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   existsSync,
   readdirSync,
@@ -90,12 +90,16 @@ describe('ensure-test-fixtures: registry wiring', () => {
 });
 
 describe('ensureTestFixtures: directory + write contract', () => {
+  // Snapshot once per describe (not per test). Re-running every
+  // fixture's generator + schema validation 5+ times in `beforeEach`
+  // was the dominant cost in the previous version of this file.
+  // The pretest hook already produces a populated workspace, so we
+  // skip regen and only regenerate when a test explicitly needs a
+  // fresh fixture (the garbage-stomp test below uses `only` to keep
+  // the cost of regen down to one fixture).
   let originals: Map<string, Buffer> | null = null;
 
-  beforeEach(async () => {
-    // Snapshot the current `test/.test-fixtures/` so we can restore them
-    // after stomping-on-by-idempotency tests. The real workspace is
-    // gitignored — local-only mutation, not a remote concern.
+  beforeAll(() => {
     originals = new Map();
     if (existsSync(realOutDir)) {
       for (const name of readdirSync(realOutDir)) {
@@ -103,11 +107,9 @@ describe('ensureTestFixtures: directory + write contract', () => {
         originals.set(name, readFileSync(join(realOutDir, name)));
       }
     }
-    // Seed the workspace if it's empty (e.g. fresh-clone scenario).
-    await ensureTestFixtures();
   });
 
-  afterEach(() => {
+  afterAll(() => {
     if (!originals) return;
     for (const [name, buf] of originals) {
       writeFileSync(join(realOutDir, name), buf);
