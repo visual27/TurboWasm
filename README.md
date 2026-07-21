@@ -163,22 +163,21 @@ overrides for debugging and benchmarking:
   Definition-of-Done parity requirement.
 
 The setting persists in `localStorage` (key `tw-viewer:settings:v1`,
-schema version 7). The `!reset-performance` debug command reverts the
-mode to `auto`; see [Debug commands](#debug-commands) below. A user who
-had pinned `'force-webgpu'` before the v6 retirement will be silently
-downgraded to `'auto'` on first load — the migration lives in
-`src/lib/persistence.ts`.
+schema version 11 — see [Breaking Changes](#breaking-changes)). A user
+who had pinned `'force-webgpu'` before the v6 retirement will be
+silently downgraded to `'auto'` on first load — the migration lives in
+`src/lib/persistence.ts:migratePerformanceMode`.
 
 ### GPU Kernels
 
 The `GPU Kernels` toggle enables the GPU compute kernel pipeline (the
 `@compute` comment DSL described in [GPU compute kernel DSL](#gpu-compute-kernel-dsl)).
-When `true`, every `control_repeat` substack whose first block carries an
-`@compute` block comment is pre-parsed on loadProject and, when feasible,
-turned into a WebGPU compute dispatch. The toggle defaults to `true`,
-mirroring the `TurboWasm Acceleration` policy. It is **always** coerced
-back to `true` by the "Set as default" button so the user cannot
-accidentally lock themselves off the GPU path.
+When `true`, every `control_repeat` block that carries an `@compute`
+block comment on itself (Phase 4 loose-position form) is pre-parsed on
+`loadProject` and, when feasible, turned into a WebGPU compute dispatch.
+The toggle defaults to `true`, mirroring the `TurboWasm Acceleration`
+policy. It is **always** coerced back to `true` by the "Set as default"
+button so the user cannot accidentally lock themselves off the GPU path.
 
 Short-circuit rules (any one disables GPU dispatch for this project):
 
@@ -209,16 +208,20 @@ independent modules, all test-covered:
 | Module | Responsibility |
 | --- | --- |
 | `comment-parser.ts` | Lexes `@compute` directive text. Case-insensitive on directive heads, CRLF/LF/TAB tolerant. |
-| `region-extractor.ts` | Walks project.json, finds `control_repeat` blocks whose first substack block carries a comment starting with `@compute`. |
-| `block-subset.ts` (D1) | Flags regions that contain unsafe opcodes (random, string ops, wait/broadcast/stop, pen/sound/sensing, list mutations, custom-block calls, nested `control_repeat_until/while/forever`). |
+| `region-extractor.ts` | Walks project.json, finds `control_repeat` blocks that carry a comment starting with `@compute` (Phase 4 loose-position form). |
+| `repeat-path-resolver.ts` (Phase 4) | Resolves each `@repeat`'s `repeatPath="<path>"` against the region's `repeatPathTable` to a concrete `control_repeat` block id. |
+| `block-subset.ts` (D1) | Flags regions that contain unsafe opcodes (random, string ops, wait/broadcast/stop, pen/sound/sensing, list mutations, custom-block calls, nested `control_repeat_until/while/forever`). The `procedure_call` / `argument_reporter_*` pair is D1-safe only when `inliningEnabled` is `true` (Phase 5). |
+| `procedure-inliner.ts` (Phase 5) | Pre-parse expands `procedure_call` blocks into the region body with cycle and depth (≤ `MAX_INLINING_DEPTH = 16`) guards. |
 | `axis-analysis.ts` (D2) | Five-condition axis safety check per `@repeat Ri:axis` (see [D2 axis safety](#d2-axis-safety-%C2%A74.2)). |
 | `cascade-analysis.ts` (D3) | `@map` DAG cycle detection + missing-`@map` cascade + identifier collision warnings. |
-| `wgsl-emitter.ts` | Builds the `@compute` WGSL module + `ScratchUniforms` + `@group(0) @binding(N)` storage bindings. |
+| `wgsl-emitter.ts` | Builds the `@compute` WGSL module + `ScratchUniforms` + `@group(0) @binding(N)` storage bindings. Lowercases `operator_mathop` into WGSL builtins (Phase 2). |
 | `kernel-registry.ts` (M5) | Canonical AST → GPipeline cache; cross-kernel buffer conflict analysis; region DAG. |
 | `__dispatch-kernel-sync.ts` (M5) | Per-dispatch synchronous path: pre-dispatch list length read → writeBuffer×N → submit (fire-and-forget) → mapAsync readback. |
-| `list-buffer-binding.ts` (M5) | Lazy-allocated GPU storage buffers per `@bind name`; `forDeviceLost()` rebuilds everything on `device.lost`. |
+| `list-buffer-binding.ts` (M5) | Lazy-allocated GPU storage buffers per `@bind name`; `forDeviceLost()` rebuilds everything on `device.lost`. Aggregates buffer size across regions and warns `gpu.regional_buffer_memory_pressure` at 80% of `device.limits.maxStorageBufferBindingSize` (Phase 3). |
 | `apply-gpu-kernels.ts` (M5) | Installs `window.__turboWasmGpuKernelLookup(blockId)` for the vendored scratch-vm hook. |
-| `initialize-gpu-kernels.ts` (M5) | Bootstraps the WebGPU device, emits WGSL per region, builds pipelines. |
+| `initialize-gpu-kernels.ts` (M5) | Bootstraps the WebGPU device, emits WGSL per region, builds pipelines. Aggregates emitter diagnostics into `InitializeResult.emitDiagnostics` (Phase 5 §15.14). |
+| `diagnostic-forwarding.ts` (Phase 5) | Single `forwardGpuDiagnostics` entry point with severity-bucketed routing. |
+| `scalar-uniform-binding.ts` (Phase 3) | Extracts `@bind ..., scalar` directives into WGSL `@group(1) @binding(0)` uniform buffer entries with host-side 16-byte stride packing. |
 
 The vendored-side hooks (M2) live in
 `patches/vendored/gpu-kernel-list-binding+0.1.0.patch` and
@@ -250,12 +253,19 @@ Comments are multi-line strings. CRLF, LF, mixed indentation (TAB /
 space), and leading `//` prefixes are all tolerated. The directive head
 is case-insensitive (`@Bind`, `@BIND`, `@bind` are equivalent).
 
-The comment must be attached to the **first substack block** of a
-`control_repeat`. Any other position (e.g. on the repeat block itself,
-on a `control_repeat_until`, on a `control_while`, on a `control_forever`)
-is treated as **no `@compute` region** by `region-extractor.ts`. A
-nested `@compute` inside a region's body D1-demotes the outer region
-per spec §4.5.
+The comment must be attached to a **`control_repeat` block itself**
+(§Phase 4 loose-position form; the kernel container = the marker host).
+The kernel container's `SUBSTACK` is the region body. A `@compute`
+marker on any other position — including the first substack entry
+block, a `control_repeat_until`, a `control_while`, or a
+`control_forever` — emits `gpu.legacy_compute_comment_position` warn
+and falls back to the JS path; the region is not extracted.
+
+A single sprite can carry multiple `@compute` markers on **different**
+`control_repeat` blocks. Each marker becomes an independent region with
+its own kernel container, body, and dispatch context. Two markers on
+the **same** `control_repeat` D1-demote the region with
+`gpu.multiple_compute_regions` (error).
 
 ### Directive reference
 
@@ -363,7 +373,7 @@ If the resolved size exceeds `device.limits.maxComputeWorkgroupSizeX/Y/Z`,
 the runtime clamps the offending axis and emits an `info`-level
 diagnostic (Q19).
 
-#### `@repeat R<i>[:<axis>] = <formula> [, blockId="<id>"]`
+#### `@repeat R<i>[:<axis>] = <formula> [, repeatPath="<path>"]`
 
 Declares one dispatch axis. Multiple `@repeat` directives are permitted
 on a single region — each surviving axis runs in parallel; demoted axes
@@ -374,13 +384,18 @@ fall back to sequential.
 | `i` | Index digit (typically `0`, `1`, `2`). |
 | `axis` | One of `global_x`, `global_y`, `global_z`, `local_x`, `local_y`, `local_z`, `workgroup_x`, `workgroup_y`, `workgroup_z`, or `sequential` (the safe fallback). |
 | `formula` | Raw formula text. WGSL-allowed syntax (see [Formula syntax](#formula-syntax)). |
-| `blockId` | Optional `blockId="<scratch-block-id>"` linking the directive to a specific scratch block in the body (Phase 0 nested parallelization §1.1). |
+| `repeatPath` | Optional `repeatPath="self"` or `repeatPath="<numeric path>"` (e.g. `"0"`, `"0.1"`) that selects the target `control_repeat`. Defaults to `"self"` (the kernel container). The resolver (`repeat-path-resolver.ts`) maps the path onto a concrete block id via the region's `repeatPathTable`. Missing/invalid/duplicate paths surface `gpu.repeat_path_*` errors and D1-demote the region. |
 
 The dispatch size for a parallel axis is computed at runtime as
 `ceil(runtime_list_length / workgroup_size_axis)` per spec §3.5.
 §Phase 2 (15.3) removed the previous `, max=<uint>` suffix and the
 `@max` directive entirely; the dispatch cap is now derived from the
 runtime list length at dispatch time.
+
+§Phase 4 (BREAKING) replaced the legacy `, blockId="<scratch-id>"`
+suffix with `repeatPath="<path>"`. Any leftover `blockId=` is rejected
+with `gpu.repeat_path_invalid` so old fixtures fail loud rather than
+silently keeping the v9 contract alive.
 
 #### `@map <var> <- <formula>`
 
@@ -456,7 +471,13 @@ inside the body (including nested sub-stacks of `control_if` etc.):
   `data_insertatlist`, `data_deletealloflist`,
   `data_replaceitemoflist`.
 - **Custom-block calls**: `procedure_call`, `argument_reporter_string`,
-  `argument_reporter_boolean`.
+  `argument_reporter_boolean`. These are **D1-safe** only when
+  `procedure-inliner.ts` can expand the call site — i.e. when
+  `advanced.customBlockInliningEnabled` is `true` AND the prototype
+  resolves AND the cycle/depth guard holds. When the inliner rejects
+  the call (depth > 16, cycle, missing prototype) the owning region
+  D1-demotes with `gpu.procedure_recursion_unsupported` or
+  `gpu.procedure_prototype_not_found`.
 
 Region nesting (another `control_repeat` inside the body carrying its
 own `@compute` comment) also D1-demotes the outer region (spec §4.5).
@@ -551,20 +572,35 @@ All GPU kernel diagnostics flow through `useErrorLogStore.push(...)` —
 no toasts, no modals. They show up in the inline `ErrorLogPanel` when
 their severity is `error` and stay in the store otherwise. Per spec
 §9.4, the first five region demotes are surfaced at `warn`; further
-demotes are downgraded to `info` to avoid log spam.
+demotes are downgraded to `info` to avoid log spam. Phase 5 adds a
+single `forwardGpuDiagnostics()` entry point
+(`src/runtime/gpu-kernel/diagnostic-forwarding.ts`) with severity-
+bucketed routing (errors unlimited, warn capped at 5 with overflow
+folded to info).
 
 | Code | Severity | When |
 | --- | --- | --- |
 | `gpu.adapter_unavailable` | `warn` | `navigator.gpu` missing. At most one per session. |
 | `gpu.dsl_syntax_error` | `warn` | Directive could not be parsed. Includes line / column. |
 | `gpu.identifier_collision` | `warn` | `@map var` collides with a reserved keyword. Emitter auto-renames. |
-| `gpu.emitter_unsupported_opcode` | `error` | Body block opcode not in the GPU-safe subset. |
+| `gpu.emitter_unsupported_opcode` | `error` | Body block opcode not in the GPU-safe subset (or `operator_mathop` not in the lowered set). |
 | `gpu.emitter_integer_division_substituted` | `info` | `//` rewritten to `floor(a/b)`. |
 | `gpu.emitter_generic_pow_substituted` | `info` | `^` rewritten to `exp(base*log(exp))`. |
 | `gpu.shader_module_failed` | `warn` | `createShaderModule` validate failed. |
 | `gpu.pipeline_create_failed` | `warn` | `createComputePipelineAsync` rejected. |
 | `gpu.list_buffer_resize` | `debug` | List length changed between dispatches. Console-only. |
 | `gpu.clamp_overflow` | `debug` | List length exceeded the GPU buffer cap. Console-only. |
+| `gpu.multiple_compute_regions` | `error` | Two `@compute` markers on the same `control_repeat`. D1 demote. |
+| `gpu.kernel_container_collision` | `warn` | A region adopted then dropped because its kernel container was already claimed. Phase 3. |
+| `gpu.bind_slot_collision` | `error` | Same `@bind` slot used twice inside one region. D1 demote. |
+| `gpu.regional_buffer_memory_pressure` | `warn` | Aggregate buffer size across regions exceeds 80% of `device.limits.maxStorageBufferBindingSize`. Phase 3. |
+| `gpu.legacy_compute_comment_position` | `warn` | `@compute` attached to the first substack entry block (pre-Phase 4 form). Region not extracted. |
+| `gpu.repeat_path_required` | `error` | `@repeat` directive omitted `repeatPath=`. D1 demote. Phase 4. |
+| `gpu.repeat_path_invalid` | `error` | `repeatPath` value did not match `'self'` or a numeric path. D1 demote. Phase 4. |
+| `gpu.repeat_path_not_found` | `error` | `repeatPath` not present in the region's `repeatPathTable`. D1 demote. Phase 4. |
+| `gpu.repeat_path_duplicate` | `error` | Two `@repeat` directives used the same `repeatPath`. D1 demote. Phase 4. |
+| `gpu.procedure_recursion_unsupported` | `error` | `procedure-inliner` depth exceeded `MAX_INLINING_DEPTH = 16` OR cycle detected. D1 demote. Phase 5. |
+| `gpu.procedure_prototype_not_found` | `error` | `procedure_call` referenced an undefined prototype. D1 demote. Phase 5. |
 | `d1.region_demoted` | `warn` | Body contains an unsafe opcode (see [D1](#d1--block-subset-demote-%C2%A74.1)). |
 | `d2.axis_demoted` | `warn` | One axis fails the five-condition safety check (see [D2](#d2--axis-safety-%C2%A74.2)). |
 | `d3.region_cascade_demoted` | `warn` | `@map` cycle / missing-`@map` / WGSL compile failure (see [D3](#d3--cascade-demote-%C2%A7)). |
@@ -578,55 +614,16 @@ AABB × pixel-multiply kernel. The body of the sprite's main block
 contains:
 
 ```
-@compute
-@bind aabb_w(0) ro f32
-@bind aabb_height(1) ro f32
-@bind buff_r(2) rw f32
-@bind tmp0(3) ro f32
-@workgroup_size(64,1,1)
-@repeat R0:global_x = aabb_w
-@repeat R1:global_y = aabb_height
-@repeat R2:global_z = 1
-@map R0 <- 0
-@map idx0 <- f32(R0)
-@map idx1 <- f32(R1) * aabb_width + idx0
-```
+@compute                                       ← attached to control_repeat below
+control_repeat (aabb_h)                        ← kernel container (Ry axis via @repeat)
+  idx1 = idx0
+  control_repeat (aabb_w)                      ← inner repeat (Rx axis via @repeat)
+    idx1 += 1
+    tmp1 = tmp0 * buff_r[idx1]
+    buff_r[idx1] = 1 + (tmp1 - 1) * (tmp1 < 1)
+    ... (g, b same pattern)
+  idx0 += screen_w
 
-(`pow2` is now inlined inside the `@compute` body as an
-`operator_mathop` chain: `tmp0 = e ^ (ln(2) * v)`. No custom block
-required. Scratch has no general `^` exponent operator; the chain
-combines `ln` and `e ^` from `operator_mathop`. See
-`wgsl-emitter.ts:emitMathop` and `test/runtime/gpu-kernel/operator-mathop.test.ts`.)
-
-With `aabb_w = 100`, `aabb_height = 64`, and a default 64-thread
-workgroup, the dispatched size is `ceil(100/64) × 64 × 1 = 2 × 64 × 1`
-workgroups → 8,192 invocations, completing in a single frame.
-
-### Nested `@compute` (Phase 4)
-
-The nested-parallelization plan extends the DSL so `@compute` can be
-placed on the substack first block of **any** `control_repeat`, not
-just the sprite-level top one. When the candidate is a nested
-`control_repeat`, `region-extractor.findKernelContainer` walks the
-parent chain and promotes the nearest ancestor `control_repeat` to
-the kernel container. The M3 → M5 pipeline then emits an implicit
-2D dispatch with axes derived from the surrounding loop counts:
-
-- kernel container's `inputs.TIMES` → `Ry:global_y`
-- nested repeats → `Rx0`, `Rx1`, ... `global_x`
-
-Pixel-level parallelism is achievable with scratch code that does
-not change at all — only the placement of the `@compute` comment and
-the new directives (`@bind ..., scalar`,
-`@repeat <name>:<axis> = <formula>` referencing nested scratch
-lists) are added.
-
-The vendored fixture `test/.test-fixtures/expo-fixture-nested.sb3`
-(generated by `scripts/make-expo-fixture.mjs`'s `buildNestedProject`
-helper, registered alongside the legacy fixture in
-`scripts/ensure-test-fixtures.mjs`) demonstrates the shape:
-
-```
 @compute
 @bind tmp0(0) ro f32
 @bind buff_r(1) rw f32
@@ -636,33 +633,174 @@ helper, registered alongside the legacy fixture in
 @bind aabb_h(9) ro f32
 @bind aabb_minx(6) ro f32
 @bind aabb_miny(7) ro f32
-@bind aabb_idx0(4) ro i32, scalar   ← Phase 3 Tier 2 uniform
-@bind aabb_tmp0(10) ro f32, scalar  ← Phase 3 Tier 2 uniform
-@bind screen_w(8) ro f32, scalar    ← Phase 3 Tier 2 uniform
+@bind aabb_idx0(4) ro i32, scalar
+@bind aabb_tmp0(10) ro f32, scalar
+@bind screen_w(8) ro f32, scalar
 @workgroup_size(64)
-@repeat Ry:global_y = aabb_h[aabb_idx0]
-@repeat Rx:global_x = aabb_tmp0
+@repeat Rx:global_x = aabb_w, repeatPath="0"     ← inner repeat axis
+@repeat Ry:global_y = aabb_h, repeatPath="self"  ← kernel container axis
 ```
 
-The `nestedParallelizationEnabled` toggle in the Settings dialog
-(TurboWasm section) gates the path at `player.ts:bootstrapGpuKernels`.
-The default is `false` (v8 → v9 migration seeds the field with
-`false`); flipping it to `true` lets nested regions through to the
-GPU pipeline while leaving the legacy outer-only layout on the same
-code path it has always used. Existing projects with nested layouts
-fall through to the JS path until the user opts in — bit-identical
-with the pre-Phase-4 baseline.
+`pow2` is inlined inside the `@compute` body as an `operator_mathop`
+chain (`e ^ (ln(2) * v)`); no custom block is required. See
+[`operator_mathop` → WGSL builtins](#operator_mathop--wgsl-builtins-phase-2)
+and `test/runtime/gpu-kernel/operator-mathop.test.ts`.
 
-> **Phase 4 BREAKING (v10):** the v9 nested-parallelization machinery
-> (`findKernelContainer` ancestor promotion, implicit 2D axes,
-> `advanced.nestedParallelizationEnabled` opt-in, the
-> `nestedRepeatContainerBlockIds` field) was entirely removed. The
-> Phase 4 reform made `@compute` placement always adopt the kernel
-> container block (= the `control_repeat` itself), so the
-> promotion machinery is structurally unreachable. The Settings
-> dialog toggle was removed; `@repeat` directives now require
-> `repeatPath="self"` or a numeric path resolving through the region's
-> `repeatPathTable`.
+With `aabb_w = 100`, `aabb_h = 64`, and a default 64-thread
+workgroup, the dispatched size is `ceil(100/64) × 64 × 1 = 2 × 64 × 1`
+workgroups → 8,192 invocations, completing in a single frame.
+
+### Loose comment position (Phase 4)
+
+The `@compute` marker attaches to a **`control_repeat` block itself**
+(§Phase 4). The marked repeat becomes the kernel container; its
+`SUBSTACK` is the region body. The kernel container's own dispatch
+axis is declared explicitly via `@repeat ... repeatPath="self"`; any
+inner `control_repeat` without an `@repeat` directive is emitted as a
+WGSL `for (...) { ... }` sequential loop.
+
+```
+@compute                                     ← attached to control_repeat below
+control_repeat (aabb_h)                      ← kernel container
+  idx1 = idx0
+  control_repeat (aabb_w)                    ← inner repeat (dispatch axis via @repeat)
+    idx1 += 1
+    tmp1 = tmp0 * buff_r[idx1]
+    buff_r[idx1] = 1 + (tmp1 - 1) * (tmp1 < 1)
+    ...
+  idx0 += screen_w
+
+@compute
+@bind tmp0(0) ro f32
+@bind buff_r(1) rw f32
+@bind buff_g(2) rw f32
+@bind buff_b(3) rw f32
+@bind aabb_w(5) ro f32
+@bind aabb_h(9) ro f32
+@bind aabb_minx(6) ro f32
+@bind aabb_miny(7) ro f32
+@bind aabb_idx0(4) ro i32, scalar
+@bind aabb_tmp0(10) ro f32, scalar
+@bind screen_w(8) ro f32, scalar
+@workgroup_size(64)
+@repeat Rx:global_x = aabb_w, repeatPath="0"   ← inner repeat axis
+@repeat Ry:global_y = aabb_h, repeatPath="self" ← kernel container axis
+```
+
+§Phase 4 BREAKING (v10) replaced the v9 nested-parallelization
+machinery (`findKernelContainer` ancestor promotion, implicit 2D axes,
+the `advanced.nestedParallelizationEnabled` opt-in, the
+`nestedRepeatContainerBlockIds` field) with the explicit
+`@repeat …, repeatPath="…"` form above. The Settings dialog toggle
+was removed. Old fixtures that placed `@compute` on the first substack
+entry block emit `gpu.legacy_compute_comment_position` warn and fall
+back to the JS path. See [Breaking Changes](#breaking-changes).
+
+### Multiple `@compute` regions per sprite
+
+A single sprite can carry multiple `@compute` markers, each on a
+**different** `control_repeat` block. Each marker becomes an
+independent region with its own kernel container, body, and dispatch
+context:
+
+- The same `control_repeat` block receiving multiple `@compute` markers
+  emits `gpu.multiple_compute_regions` (error) and D1-demotes.
+- Different `control_repeats` each become their own region.
+- Cross-region `@bind` slot overlap is allowed: the viewer does not
+  enforce ordering — the user's scratch code in `when flag clicked`
+  must dispatch the regions sequentially. WebGPU preserves
+  submission order within a single queue, so sequential dispatch is
+  deterministic.
+- Aggregate GPU memory across multiple regions is monitored via
+  `list-buffer-binding.ts`; exceeding 80% of
+  `device.limits.maxStorageBufferBindingSize` surfaces
+  `gpu.regional_buffer_memory_pressure` warn (Phase 3).
+
+The fixture `test/.test-fixtures/multi-region-fixture.sb3` (generated
+by `scripts/make-multi-region-fixture.mjs`) exercises the path; see
+`test/runtime/gpu-kernel/multi-region-fixture.test.ts`.
+
+### `operator_mathop` → WGSL builtins (Phase 2)
+
+Scratch's `operator_mathop` block (selectable from the math operators
+drawer) maps directly to WGSL intrinsics inside `@compute` regions.
+This lets you write the canonical `pow2(v) = e^(ln(2) * v)` idiom
+inline, without a custom block.
+
+| `operator_mathop.OPERATOR` | WGSL output | Unary / Binary |
+| --- | --- | --- |
+| `abs` | `abs(x)` | unary |
+| `floor` | `floor(x)` | unary |
+| `ceiling` | `ceil(x)` | unary |
+| `sqrt` | `sqrt(x)` | unary |
+| `sin`, `cos`, `tan` | `sin(radians(x))`, `cos(radians(x))`, `tan(radians(x))` | unary (degrees → radians) |
+| `asin`, `acos`, `atan` | `degrees(asin(x))`, `degrees(acos(x))`, `degrees(atan(x))` | unary (radians → degrees) |
+| `ln` | `log(x)` | unary |
+| `log` | `log(x) * (1 / log(10))` | unary (WGSL has no `log10`) |
+| `e ^` | `exp(x)` | unary |
+| `10 ^` | `pow(10.0, x)` | unary |
+
+Unsupported operators fall back to `0.0` and emit
+`gpu.emitter_unsupported_opcode` (warn) so the user can see what the
+parser missed. `atan2`, `mod`, and `round` are separate scratch opcodes
+(not part of `operator_mathop`) and are intentionally out of scope
+here. The lowering lives in `wgsl-emitter.ts:emitMathop`; the fixture
+`test/.test-fixtures/expo-fixture.sb3` uses `e ^ (ln(2) * v)` to
+assemble `pow2`.
+
+### Custom block inlining (Phase 5)
+
+`@compute` regions can reference scratch custom blocks via
+`procedure_call`. The pre-parse pipeline
+(`src/runtime/gpu-kernel/procedure-inliner.ts`) expands the call site
+at parse time, replacing `argument_reporter_string` /
+`argument_reporter_boolean` blocks with references to the call-site
+argument blocks.
+
+- **Depth limit**: 16 (`MAX_INLINING_DEPTH` in
+  `src/utils/constants.ts`). Exceeding this surfaces
+  `gpu.procedure_recursion_unsupported` (error, D1 demote).
+- **Cycle detection**: visited prototype block id set detects mutual
+  recursion independently of depth (Phase 5).
+- **Multi-call dispatch**: calling the same custom block N times
+  produces N independent regions that share the same compiled WGSL
+  pipeline via canonical-key caching. Each call site has its own
+  dispatch context with independent `scalarBindings`.
+- **User opt-out**: Settings dialog → "Custom Block Inlining" toggle
+  (`advanced.customBlockInliningEnabled`, default `true`). When
+  disabled, `procedure_call` and `argument_reporter_*` are treated
+  as D1-unsafe for that bootstrap pass (D1 demote). Unlike
+  `enableWebgpu` / `enableWasm`, **`Set as default` preserves the OFF
+  value** so a power user who explicitly disables inlining keeps that
+  setting across reloads.
+
+```
+define fn_apply_expo (v)
+  @compute
+  @bind tmp0(0) ro f32
+  @bind buff_r(1) rw f32
+  ...
+  control_repeat (aabb_h)
+    @repeat Rx:global_x = aabb_w, repeatPath="0"
+    ... pixel work ...
+
+when flag clicked
+  call fn_apply_expo (1.0)
+  call fn_apply_expo (2.0)
+  call fn_apply_expo (3.0)
+  ← inlining yields 3 regions, all sharing the same WGSL pipeline
+```
+
+Failure modes:
+
+| Diagnostic | Severity | Cause |
+| --- | --- | --- |
+| `gpu.procedure_recursion_unsupported` | error | Inlining depth > 16 OR cycle detected |
+| `gpu.procedure_prototype_not_found` | error | `procedure_call` references undefined prototype |
+
+`STORAGE_VERSION` is bumped from `10` to `11`. The `v10 → v11`
+migration in `src/lib/persistence.ts:sanitizeAdvanced` seeds
+`customBlockInliningEnabled` with `true` for older payloads.
 
 ### Phase 5 DSL — Custom Block Inlining
 
@@ -751,56 +889,150 @@ Fixtures and tests:
 
 ### Verifying locally
 
-### Verifying locally
-
 ```bash
-npm run fixtures:setup         # generates expo-fixture.sb3 alongside the others
+npm run setup                  # vendored bootstrap (idempotent)
+npm run fixtures:setup         # generates all fixtures (expo / expo-nested /
+                               # expo-byte-scalar / multi-region / custom-block /
+                               # gpu-kernel-diagnostics)
 npm run build                  # full build (vendored + wasm + vite)
 npm run preview                # serves dist/
-npm run verify:gpu-kernel      # runs scripts/verify-gpu-kernel.mjs against #expo
+npm run verify:gpu-kernel      # canvas compare GPU vs JS path (legacy + nested)
+TURBOWASM_VARIANT=legacy npm run verify:gpu-kernel
+TURBOWASM_VARIANT=nested npm run verify:gpu-kernel
 npm run bench:gpu-kernel       # writes ./logs/bench-gpu-kernel-init.out
 RUN_E2E=1 npx vitest run test/e2e/gpu-kernel.test.ts
 ```
 
-`verify:gpu-kernel` exits 0 in either case: when WebGPU is available it
-compares the canvas pixel buffer of the GPU path against the
-`legacy-only` path with a 1e-6 absolute tolerance; when WebGPU is
-absent it emits 1×1 placeholder PNGs to `./logs/turbowarp-equivalent-gpu-{default,legacy-only}.png`
+`verify:gpu-kernel` exercises both `legacy` (single-axis Form A) and
+`nested` (inner repeat + scalar uniforms) fixtures, each twice (GPU
+pass + JS pass). It exits 0 in either case: when WebGPU is available
+it compares the canvas pixel buffer of the GPU path against the JS
+path with a 1e-6 absolute tolerance; when WebGPU is absent it emits
+1×1 placeholder PNGs to `./logs/turbowarp-equivalent-gpu-{default,legacy-only}.png`
 and exits 0. The bench script measures pre-parse wall-time and
 pipeline cache hits across 10 consecutive loads.
+
+Available fixtures (all regenerated by `npm run fixtures:setup`):
+
+| File | Generator | Purpose |
+| --- | --- | --- |
+| `expo-fixture.sb3` | `scripts/make-expo-fixture.mjs` | Single-region, loose-position Form A (Phase 4) |
+| `expo-fixture-nested.sb3` | `scripts/make-expo-fixture.mjs` (nested) | Nested layout, scalar uniforms (Phase 3) |
+| `expo-fixture-byte-scalar.sb3` | `scripts/make-expo-fixture.mjs` (byte-scalar) | `byte` dtype + scalar (Phase 3) |
+| `multi-region-fixture.sb3` | `scripts/make-multi-region-fixture.mjs` | Multiple `@compute` regions per sprite (Phase 3) |
+| `custom-block-fixture.sb3` | `scripts/make-custom-block-fixture.mjs` | Procedure inlining demo (Phase 5) |
+| `gpu-kernel-diagnostics-fixture.sb3` | `scripts/make-gpu-kernel-diagnostics-fixture.mjs` | Diagnostic forwarding (Phase 5 §15.9 / §15.14) |
+| `bench-touching.sb3` | `scripts/gen-bench-sb3.mjs` | WASM hot-loop benchmark |
+| `svg-sprite-fixture.sb3` | `scripts/make-svg-sprite-fixture.mjs` | DoD Canvas pixel comparison |
+| `twconfig-fixture.sb3`, `twconfig-640x480.sb3` | `scripts/make-twconfig-fixture.mjs` etc. | `twconfig` stage-size smoke |
+| `repro.sb3` | `scripts/make-repro-fixture.mjs` | ExtensionPermissionDialog smoke |
+| `stage-size-sprite-repro.sb3` | `scripts/make-stage-size-sprite-repro.mjs` | twconfig second-load sprite redraw |
 
 ### Source layout
 
 ```
 src/runtime/gpu-kernel/
-├── comment-parser.ts          (@compute directive text → ParsedDirective[])
-├── region-extractor.ts        (project.json walk → ExtractedRegion[])
-├── block-subset.ts            (D1 demote classifier)
-├── axis-analysis.ts           (D2 demote per @repeat axis)
-├── cascade-analysis.ts        (D3 @map DAG + cycles)
-├── scratch-compat.ts          (scratch-compat header + JS reference impls)
-├── wgsl-emitter.ts            (RegionVerdict → WGSL string)
-├── list-buffer-binding.ts     (M5: lazy GPU buffer pool)
-├── kernel-registry.ts         (M5: canonical AST → Pipeline cache)
-├── __dispatch-kernel-sync.ts  (M5: pre/post dispatch + sync submit)
-├── apply-gpu-kernels.ts       (M5: install window.__turboWasmGpuKernelLookup)
-├── initialize-gpu-kernels.ts  (M5: boot WebGPU + emit + register)
-├── region-verdict-pipeline.ts (M6: glue between M3 and M5)
-├── types.ts                   (Diagnostic, ParsedDirective, RegionVerdict, AxisFinal)
-└── index.ts                   (public re-exports)
+├── comment-parser.ts            (lexer: @compute directive text → ParsedDirective[])
+├── region-extractor.ts          (project.json walk → ExtractedRegion[], single-pass)
+├── repeat-path-resolver.ts      (Phase 4: resolve repeatPath="…" to control_repeat id)
+├── procedure-inliner.ts         (Phase 5: procedure_call expansion + depth/cycle guard)
+├── block-subset.ts              (D1 demote classifier; procedure_call opt-in via inliningEnabled)
+├── bound-block-validator.ts     (inliner remaps + validateBoundBlockIds)
+├── axis-analysis.ts             (D2 demote per @repeat axis)
+├── cascade-analysis.ts          (D3 @map DAG + cycles)
+├── scratch-compat.ts            (scratch-compat header + JS reference impls)
+├── scratch-block-expr.ts        (Phase 2: scratch block → WGSL expression inverse)
+├── scalar-uniform-binding.ts    (Phase 3: @bind ..., scalar → @group(1) @binding(0) struct)
+├── wgsl-emitter.ts              (RegionVerdict → WGSL string + emitMathop + emitFormula)
+├── list-buffer-binding.ts       (M5: lazy GPU buffer pool + memory pressure detection)
+├── kernel-registry.ts           (M5: canonical AST → Pipeline cache; 1 entry × N dispatch)
+├── __dispatch-kernel-sync.ts    (M5: pre/post dispatch + sync submit + scalar read)
+├── dispatch-formula-evaluator.ts (Phase 3: WGSL formula → JS reducer chain)
+├── apply-gpu-kernels.ts         (M5: install window.__turboWasmGpuKernelLookup)
+├── initialize-gpu-kernels.ts    (M5: boot WebGPU + emit + register; Phase 5 emitDiagnostics)
+├── diagnostic-forwarding.ts     (Phase 5: severity-bucketed routing helper)
+├── region-verdict-pipeline.ts   (M6: glue between M3 and M5)
+├── formula-rewrite.ts           (Phase E+: name[idx] / len(name) / bool(x) sugar)
+├── diagnostic-codes.ts          (16 diagnostic codes; see Diagnostic codes)
+├── types.ts                     (Diagnostic, ParsedDirective, RegionVerdict, AxisFinal)
+└── index.ts                     (public re-exports)
 
-test/runtime/gpu-kernel/       (mirror of src/, vitest + jsdom)
-test/e2e/gpu-kernel.test.ts    (RUN_E2E=1 gated Playwright wrapper)
-test/runtime/gpu-kernel-patches.test.ts (vendored patch regression guard)
+test/runtime/gpu-kernel/         (mirror of src/, vitest + jsdom)
+test/e2e/gpu-kernel.test.ts      (RUN_E2E=1 gated Playwright wrapper)
+test/runtime/gpu-kernel-patches.test.ts   (vendored patch regression guard)
 test/runtime/gpu-kernel-player-wiring.test.ts (M6 unit tests)
 
 patches/vendored/gpu-kernel-list-binding+0.1.0.patch
 patches/vendored/gpu-kernel-runtime+0.1.0.patch
 
-scripts/make-expo-fixture.mjs
-scripts/verify-gpu-kernel.mjs
-scripts/bench-gpu-kernel-init.mjs
+scripts/make-expo-fixture.mjs                (legacy / nested / byte-scalar)
+scripts/make-multi-region-fixture.mjs        (Phase 3)
+scripts/make-custom-block-fixture.mjs        (Phase 5)
+scripts/make-gpu-kernel-diagnostics-fixture.mjs (Phase 5 §15.9/§15.14)
+scripts/verify-gpu-kernel.mjs                (canvas compare GPU vs JS path)
+scripts/bench-gpu-kernel-init.mjs            (pre-parse wall-time + cache hits)
 ```
+
+**Removed in Phase 4**: the `implicit-axis.ts` module
+(`collectImplicitAxes`), the `findKernelContainer` ancestor-promotion
+function, the `nestedRepeatContainerBlockIds` field, and the
+`advanced.nestedParallelizationEnabled` Settings toggle. Form A
+(`@compute` on `control_repeat` self) + `repeatPathTable` resolver
+supersede them.
+
+### Storage schema (cumulative history)
+
+The `localStorage` blob under `tw-viewer:settings:v1` carries an
+explicit `version` field. Migrations run on read; older payloads are
+folded forward silently. Current `STORAGE_VERSION = 11`
+(`src/utils/constants.ts`). Each bump:
+
+- v2: split `advanced` (runtime state) and `defaultAdvanced` (saved defaults).
+- v3: top-level `performanceMode` added.
+- v4: `advanced.svgAccelerationMode` added (Stage 2).
+- v5: top-level `userExplicitFps` added (Alt+Flag round-trip).
+- v6: `svgAccelerationMode` retired; `performanceMode: 'force-webgpu'` downgraded to `'auto'`.
+- v7: `advanced.enableGpuKernels` added (M1 of GPU kernel plan).
+- v8: top-level `performanceMode` collapsed into `enableWasm: boolean`; `enableGpuKernels` renamed to `enableWebgpu`.
+- v9: `advanced.nestedParallelizationEnabled` added (Phase 4 nested `@compute` opt-in).
+- v10: `nestedParallelizationEnabled` retired (Phase 4 BREAKING) — silently dropped on read.
+- v11: `advanced.customBlockInliningEnabled: boolean` added (Phase 5 inlining opt-out, default `true`). v10→v11 migration seeds `true` if unset.
+
+`!clear-storage` debug command drops the entire blob.
+
+## Breaking Changes
+
+### Phase 4 (combined with v9 nested parallelization removal)
+
+`@compute` markers on the **first substack entry block** of a
+`control_repeat` are no longer recognised. Move the marker to the
+`control_repeat` block itself (loose-position form, Form A). Inner
+`control_repeat`s that should remain parallel axes must add an
+explicit `@repeat R:axis = formula, repeatPath="<numeric path>"`
+directive; the kernel container takes `repeatPath="self"` (default).
+
+v9 `advanced.nestedParallelizationEnabled` opt-in toggle has been
+removed. The Settings dialog no longer exposes "Nested @compute
+(Experimental)". The `v9 → v10` migration in
+`src/lib/persistence.ts:sanitizeAdvanced` silently drops the
+`nestedParallelizationEnabled` field. The
+`nestedRepeatContainerBlockIds` field on `ExtractedRegion` is gone;
+`repeatPathTable` replaces it as the resolver's source of truth.
+
+Migration path: regenerate the fixture via
+`scripts/make-expo-fixture.mjs` (Form A) or manually move the
+`@compute` comment to the `control_repeat` block itself. Projects
+that have not migrated emit `gpu.legacy_compute_comment_position`
+warn and fall back to the JS path.
+
+### Phase 5 (additive, opt-out available)
+
+`procedure_call` inside `@compute` regions is now inlined by default
+(§Phase 5). To opt out, disable "Custom Block Inlining" in Settings.
+When the opt-out is active, `procedure_call` and `argument_reporter_*`
+are treated as D1-unsafe for that bootstrap pass (D1 demote).
+`STORAGE_VERSION` bumps `10 → 11`; the v10 → v11 migration seeds
+`customBlockInliningEnabled` with `true`.
 
 ## Extension points
 
