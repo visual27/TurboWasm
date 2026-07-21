@@ -23,9 +23,14 @@
  *     asserts `kernelRegistry.size >= 2`).
  */
 import JSZip from 'jszip';
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+function md5hex(buf) {
+  return createHash('md5').update(buf).digest('hex');
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -34,6 +39,11 @@ const outPath = resolve(outDir, 'multi-region-fixture.sb3');
 
 const INPUT_BLOCK_NO_SHADOW = 2;
 const MATH_NUM_PRIMITIVE = 4;
+// `data_listcontents` primitive id (= `[13, name, id]`). Used by
+// `listShadow` to encode a list-menu drop-down as a proper scratch
+// input descriptor instead of a bare block-id string (which the
+// loader would treat as an unknown block reference).
+const LIST_PRIMITIVE = 13;
 
 let nextBlockId = 1;
 const nextId = () => `b${nextBlockId++}`;
@@ -41,8 +51,12 @@ function resetCounter() {
   nextBlockId = 1;
 }
 
+function listIdFor(name) {
+  return `list_${name}`;
+}
+
 function listShadow(listName) {
-  return [INPUT_BLOCK_NO_SHADOW, listName];
+  return [INPUT_BLOCK_NO_SHADOW, [LIST_PRIMITIVE, listName, listIdFor(listName)]];
 }
 
 function makeBlock({ opcode, inputs = {}, fields = {}, next = null, parent = null, topLevel = false, shadow = false, x = 0, y = 0 }) {
@@ -77,9 +91,11 @@ function dataSetVarTo(varName, valueBlockId, parent = null) {
 }
 
 function dataVariable(varName, parent = null) {
+  // Use the same id as the variable key so the loader can resolve the
+  // referenced variable/list to a concrete entry in `target.variables`.
   return makeBlock({
     opcode: 'data_variable',
-    fields: { VARIABLE: [varName, null] },
+    fields: { VARIABLE: [varName, varName] },
     parent,
   });
 }
@@ -154,6 +170,7 @@ function buildProject() {
       LIST: listShadow('buff_r'),
       INDEX: [INPUT_BLOCK_NO_SHADOW, aR0Var.id],
     },
+    fields: { LIST: ['buff_r', listIdFor('buff_r')] },
     parent: null,
   });
   allBlocks[aBuffRead.id] = aBuffRead.block;
@@ -188,6 +205,7 @@ function buildProject() {
       LIST: listShadow('buff_r'),
       INDEX: [INPUT_BLOCK_NO_SHADOW, bR1Var.id],
     },
+    fields: { LIST: ['buff_r', listIdFor('buff_r')] },
     parent: null,
   });
   allBlocks[bBuffRead.id] = bBuffRead.block;
@@ -243,33 +261,13 @@ function buildProject() {
     isStage: true,
     name: 'Stage',
     variables: {
-      result: ['result', 0, 0, 0],
-      list_aabb_w: {
-        name: 'aabb_w',
-        isPersistent: true,
-        type: 'list',
-        value: [128],
-        x: 0,
-        y: 0,
-      },
-      list_buff_r: {
-        name: 'buff_r',
-        isPersistent: true,
-        type: 'list',
-        value: new Array(128).fill(0),
-        x: 0,
-        y: 0,
-      },
-      list_other_count: {
-        name: 'other_count',
-        isPersistent: true,
-        type: 'list',
-        value: [64],
-        x: 0,
-        y: 0,
-      },
+      result: ['result', 0],
     },
-    lists: {},
+    lists: {
+      list_aabb_w: ['aabb_w', [128]],
+      list_buff_r: ['buff_r', new Array(128).fill(0)],
+      list_other_count: ['other_count', [64]],
+    },
     broadcasts: {},
     blocks: {},
     comments: {},
@@ -278,8 +276,8 @@ function buildProject() {
       {
         name: 'blank',
         dataFormat: 'svg',
-        assetId: 'blank',
-        md5ext: 'blank.svg',
+        assetId: md5hex(Buffer.from(stageSvg, 'utf8')),
+        md5ext: `${md5hex(Buffer.from(stageSvg, 'utf8'))}.svg`,
         rotationCenterX: 240,
         rotationCenterY: 180,
         svg: stageSvg,
@@ -297,8 +295,8 @@ function buildProject() {
     isStage: false,
     name: 'MultiRegion',
     variables: {
-      R0: ['R0', 0, 0, 0],
-      R1: ['R1', 0, 0, 0],
+      R0: ['R0', 0],
+      R1: ['R1', 0],
     },
     lists: {},
     broadcasts: {},
@@ -309,8 +307,8 @@ function buildProject() {
       {
         name: 'dot',
         dataFormat: 'svg',
-        assetId: 'dot',
-        md5ext: 'dot.svg',
+        assetId: md5hex(Buffer.from(spriteSvg, 'utf8')),
+        md5ext: `${md5hex(Buffer.from(spriteSvg, 'utf8'))}.svg`,
         rotationCenterX: 8,
         rotationCenterY: 8,
         svg: spriteSvg,

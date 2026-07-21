@@ -4,9 +4,10 @@
  *
  * The fixture exercises the `procedure-inliner.ts` end-to-end. One
  * `procedures_prototype` (`fn_apply_expo %s`) defines an `@compute`
- * region inside its body. The `when_flag_clicked` handler invokes the
- * custom block via `procedure_call fn_apply_expo` three times. After
- * inlining we expect:
+ * region inside its body, wired through a `procedures_definition` so
+ * the project loads cleanly in pure TurboWarp. The `when_flag_clicked`
+ * handler invokes the custom block via `procedures_call
+ * fn_apply_expo` three times. After inlining we expect:
  *
  *   - 3 regions adopted by `region-extractor.ts` (one per call site)
  *   - All three share the same canonical key (kernel-registry has 1
@@ -17,25 +18,26 @@
  * Scratch layout
  * --------------
  *   when_flag_clicked (hat)
- *     procedure_call fn_apply_expo arg0=1   ← call site A
- *     procedure_call fn_apply_expo arg0=2   ← call site B
- *     procedure_call fn_apply_expo arg0=3   ← call site C
+ *     procedures_call fn_apply_expo arg0=1   ← call site A
+ *     procedures_call fn_apply_expo arg0=2   ← call site B
+ *     procedures_call fn_apply_expo arg0=3   ← call site C
  *
- *   procedures_prototype fn_apply_expo %s
- *     SUBSTACK -> kernelContainer (control_repeat with @compute comment)
- *       tmp0 = buff_r[R0] * arg_v
- *       buff_r[R0] = tmp0
+ *   procedures_definition (custom block hat)
+ *     custom_block input -> procedures_prototype fn_apply_expo %s
+ *       SUBSTACK -> kernelContainer (control_repeat with @compute comment)
+ *         buff_r[R0] = buff_r[R0] * arg_v (via argument_reporter_string_number)
  *
  * Notes
  * -----
  * The fixture intentionally reuses the same prototype for all three
  * call sites so the post-inlining canonical key collapses to one. The
  * `arg_v` argument reporter inside the prototype body gets rewired to
- * the call site's literal argument block (`arg1` / `arg2` / `arg3`).
+ * the call-site's literal argument block (`arg1` / `arg2` / `arg3`).
  *
- * Scratch parser validates the JSON shape but never executes the
- * project — the GPU kernel pipeline only cares about the `@compute`
- * marker / directive structure.
+ * Scratch parser validates the JSON shape and pure TurboWarp can
+ * execute the project end-to-end; the GPU kernel pipeline only cares
+ * about the `@compute` marker / directive structure inside the
+ * prototype body.
  */
 
 import JSZip from 'jszip';
@@ -70,6 +72,8 @@ function svgCostume(svg, name) {
 const INPUT_SAME_BLOCK_SHADOW = 1;
 const INPUT_BLOCK_NO_SHADOW = 2;
 const MATH_NUM_PRIMITIVE = 4;
+// `data_listcontents` primitive id (= `[13, name, id]`).
+const LIST_PRIMITIVE = 13;
 
 let nextBlockId = 1;
 const nextId = () => `b${nextBlockId++}`;
@@ -105,8 +109,12 @@ function makeBlock({
   };
 }
 
-function listShadow(listName) {
-  return [INPUT_SAME_BLOCK_SHADOW, listName];
+function listShadow(listName, listId) {
+  return [INPUT_SAME_BLOCK_SHADOW, [LIST_PRIMITIVE, listName, listId]];
+}
+
+function listIdFor(name) {
+  return `list_${name}`;
 }
 
 // --- Comment text (one per call site; identical so canonical keys match) ---
@@ -144,10 +152,10 @@ function dataItemOfList(listName, indexBlockId, parent = null) {
   const { id, block } = makeBlock({
     opcode: 'data_itemoflist',
     inputs: {
-      LIST: listShadow(listName),
+      LIST: listShadow(listName, listIdFor(listName)),
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
     },
-    fields: { LIST: [listName, null] },
+    fields: { LIST: [listName, listIdFor(listName)] },
     parent,
   });
   return { id, block };
@@ -156,7 +164,7 @@ function dataItemOfList(listName, indexBlockId, parent = null) {
 function dataLengthOfList(listName, parent = null) {
   const { id, block } = makeBlock({
     opcode: 'data_lengthoflist',
-    inputs: { LIST: listShadow(listName) },
+    inputs: { LIST: listShadow(listName, listIdFor(listName)) },
     parent,
   });
   return { id, block };
@@ -166,11 +174,11 @@ function dataReplaceItemOfList(listName, indexBlockId, valueBlockId, parent = nu
   const { id, block } = makeBlock({
     opcode: 'data_replaceitemoflist',
     inputs: {
-      LIST: listShadow(listName),
+      LIST: listShadow(listName, listIdFor(listName)),
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
       ITEM: [INPUT_BLOCK_NO_SHADOW, valueBlockId],
     },
-    fields: { LIST: [listName, null] },
+    fields: { LIST: [listName, listIdFor(listName)] },
     parent,
   });
   return { id, block };
@@ -194,7 +202,10 @@ function procedureCall(procCode, argBlockIds, parent = null) {
     inputs[`arg${i}`] = [INPUT_BLOCK_NO_SHADOW, argBlockIds[i]];
   }
   const { id, block } = makeBlock({
-    opcode: 'procedure_call',
+    // Official scratch opcode for invoking a custom block. The previous
+    // generator emitted `procedure_call` (an in-repo alias) which the
+    // vendored scratch-vm loader treats as unknown.
+    opcode: 'procedures_call',
     inputs,
     mutation: { proccode: procCode },
     parent,
@@ -217,7 +228,10 @@ function proceduresPrototype(procCode, argumentNames, substackHeadId) {
   };
   const { id, block } = makeBlock({
     opcode: 'procedures_prototype',
-    inputs: { SUBSTACK: substackHeadId },
+    // SUBSTACK must be an input descriptor (`[shadowKind, blockId]`),
+    // not a bare block-id string — the loader silently drops a bare
+    // string and the prototype ends up with no executable body.
+    inputs: { SUBSTACK: [INPUT_BLOCK_NO_SHADOW, substackHeadId] },
     mutation,
     topLevel: true,
     shadow: true,
@@ -227,10 +241,27 @@ function proceduresPrototype(procCode, argumentNames, substackHeadId) {
   return { id, block };
 }
 
+function proceduresDefinition(prototypeId) {
+  // Custom-block hat. Required by scratch-vm so the procedures_call sites
+  // can resolve the prototype by `proccode`. Without this the project
+  // loads but the call sites surface as unknown blocks at runtime.
+  const { id, block } = makeBlock({
+    opcode: 'procedures_definition',
+    inputs: { custom_block: [INPUT_SAME_BLOCK_SHADOW, prototypeId] },
+    topLevel: true,
+    x: 350,
+    y: 100,
+  });
+  return { id, block };
+}
+
 function argumentReporterString(name, parent = null) {
   const { id, block } = makeBlock({
-    opcode: 'argument_reporter_string',
-    fields: { VARIABLE: [name, null] },
+    // Official scratch opcode for an argument value reporter. The
+    // argument name lives in `fields.VALUE` (not `fields.VARIABLE`),
+    // matching the scratch-vm `argumentReporterStringNumber` handler.
+    opcode: 'argument_reporter_string_number',
+    fields: { VALUE: [name, null] },
     parent,
   });
   return { id, block };
@@ -297,7 +328,16 @@ function buildProject() {
   const prototype = proceduresPrototype('fn_apply_expo %s', ['v'], kernelContainer.id);
   allBlocks[prototype.id] = prototype.block;
 
-  // ===== Hat with 3 procedure_call sites =====
+  // ===== Custom-block hat (procedures_definition) =====
+  // Pairs the prototype with a definition so the vendored scratch-vm
+  // loader registers the custom block by proccode. Pure TurboWarp
+  // executes the prototype body when any of the procedures_call sites
+  // below fire; without this hat the callsites surface as unknown
+  // blocks at runtime and the project is effectively unrunnable.
+  const definition = proceduresDefinition(prototype.id);
+  allBlocks[definition.id] = definition.block;
+
+  // ===== Hat with 3 procedures_call sites =====
   const hat = whenFlagClicked();
   allBlocks[hat.id] = hat.block;
 
@@ -338,33 +378,21 @@ function buildProject() {
   };
 
   // ===== Stage / Sprite targets =====
+  // §SB3 format — lists belong under `target.lists` as `[name, value[]]`
+  // (the scratch-parser schema rejects the internal-VM object shape).
   const stageLists = {
-    list_aabb_w: {
-      name: 'aabb_w',
-      isPersistent: true,
-      type: 'list',
-      value: [128],
-      x: 0,
-      y: 0,
-    },
-    list_buff_r: {
-      name: 'buff_r',
-      isPersistent: true,
-      type: 'list',
-      value: [50],
-      x: 0,
-      y: 0,
-    },
+    list_aabb_w: ['aabb_w', [128]],
+    list_buff_r: ['buff_r', [50]],
   };
   const stageVars = {
-    R0: ['R0', 0, 0, 0],
+    R0: ['R0', 0],
   };
 
   const stageTarget = {
     isStage: true,
     name: 'Stage',
-    variables: { ...stageVars, ...stageLists },
-    lists: {},
+    variables: stageVars,
+    lists: stageLists,
     broadcasts: {},
     blocks: {},
     comments: {},

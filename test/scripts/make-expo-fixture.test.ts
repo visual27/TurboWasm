@@ -181,16 +181,16 @@ describe('make-expo-fixture.mjs: legacy COMPUTE_COMMENT_TEXT shape', () => {
     const project = await readProjectJson(out);
     const stage = project.targets.find((t) => t.isStage);
     expect(stage).toBeDefined();
-    const variables = (stage as unknown as { variables: Record<string, unknown> }).variables;
-    const tmp0 = variables['list_tmp0'] as
-      | { name: string; type: string; value: unknown[] }
-      | undefined;
+    // §SB3 format — lists live under `target.lists` as `[name, value[]]`
+    // tuples (the scratch-parser schema enforces `maxItems: 3` on
+    // variables and rejects the internal-VM object shape on lists).
+    const lists = (stage as unknown as { lists: Record<string, unknown> }).lists;
+    const tmp0 = lists['list_tmp0'] as [string, unknown[]] | undefined;
     expect(tmp0, 'list_tmp0 must be declared on the stage').toBeDefined();
-    expect(tmp0!.name).toBe('tmp0');
-    expect(tmp0!.type).toBe('list');
-    expect(Array.isArray(tmp0!.value)).toBe(true);
+    expect(tmp0![0]).toBe('tmp0');
+    expect(Array.isArray(tmp0![1])).toBe(true);
     // The pow2 chain reads tmp0[1]; the list must contain at least one element.
-    expect(tmp0!.value.length).toBeGreaterThanOrEqual(1);
+    expect(tmp0![1].length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -244,20 +244,20 @@ describe('make-expo-fixture.mjs: nested COMPUTE_COMMENT_TEXT shape', () => {
     const project = await readProjectJson(out);
     const stage = project.targets.find((t) => t.isStage);
     expect(stage).toBeDefined();
-    // scratch-vm encodes lists under `variables` with a `list_` prefix
-    // on the key (`list_aabb_len` -> { name: 'aabb_len', type: 'list',
-    // value: [...] }). Scalar variables share the same map without the
-    // prefix.
+    // §SB3 format — `target.lists` carries list tuples `[name, value[]]`
+    // and `target.variables` carries scalar tuples `[name, value]`. The
+    // legacy layout stuffed lists into `variables` with an internal-VM
+    // object shape which the scratch-parser schema rejects.
+    const lists = (stage as unknown as { lists: Record<string, unknown> }).lists;
     const variables = (stage as unknown as { variables: Record<string, unknown> }).variables;
     // aabb_* lists declared with non-zero `value` arrays in the generator.
     for (const listName of ['aabb_len', 'aabb_w', 'aabb_h', 'aabb_minx', 'aabb_miny']) {
       const key = `list_${listName}`;
-      expect(key in variables, `missing list ${listName}`).toBe(true);
-      const entry = variables[key] as { name: string; type: string; value: unknown[] };
-      expect(entry.name).toBe(listName);
-      expect(entry.type).toBe('list');
-      expect(Array.isArray(entry.value)).toBe(true);
-      expect(entry.value.length).toBeGreaterThan(0);
+      expect(key in lists, `missing list ${listName}`).toBe(true);
+      const entry = lists[key] as [string, unknown[]];
+      expect(entry[0]).toBe(listName);
+      expect(Array.isArray(entry[1])).toBe(true);
+      expect(entry[1].length).toBeGreaterThan(0);
     }
     // Phase 3 Tier 2 scalar uniforms — declared as plain variables.
     for (const scalarName of ['aabb_idx0', 'aabb_tmp0', 'screen_w']) {

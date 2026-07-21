@@ -23,9 +23,14 @@
  * fixtures:setup`.
  */
 import JSZip from 'jszip';
+import { createHash } from 'node:crypto';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+function md5hex(buf) {
+  return createHash('md5').update(buf).digest('hex');
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -53,6 +58,13 @@ const twconfigText = [
   '{"framerate":60,"hq":true,"width":720,"height":405} // _twconfig_',
 ].join('\n');
 
+// §SB3 format — `assetId` and the file-name part of `md5ext` must be
+// the MD5 hex digest of the asset bytes (scratch-parser schema:
+// `^[a-fA-F0-9]{32}$`). The legacy generator used human-readable names
+// (`blank-stage`, `redsquare`) which fail the schema check.
+const BLANK_ASSET_ID = md5hex(Buffer.from(BLANK_SVG, 'utf8'));
+const RED_ASSET_ID = md5hex(Buffer.from(RED_SQUARE_SVG, 'utf8'));
+
 const project = {
   targets: [
     {
@@ -78,14 +90,10 @@ const project = {
         {
           name: 'blank',
           dataFormat: 'svg',
-          assetId: 'blank-stage',
-          md5ext: 'blank-stage.svg',
+          assetId: BLANK_ASSET_ID,
+          md5ext: `${BLANK_ASSET_ID}.svg`,
           rotationCenterX: 240,
           rotationCenterY: 180,
-          // Embed the SVG directly so the runtime doesn't try to fetch a
-          // separate asset file (which doesn't exist in this minimal
-          // fixture).
-          fileContent: BLANK_SVG,
         },
       ],
       sounds: [],
@@ -108,11 +116,10 @@ const project = {
         {
           name: 'redsquare',
           dataFormat: 'svg',
-          assetId: 'redsquare',
-          md5ext: 'redsquare.svg',
+          assetId: RED_ASSET_ID,
+          md5ext: `${RED_ASSET_ID}.svg`,
           rotationCenterX: 25,
           rotationCenterY: 25,
-          fileContent: RED_SQUARE_SVG,
         },
       ],
       sounds: [],
@@ -143,8 +150,8 @@ async function writeStageSizeSpriteRepro() {
   const zip = new JSZip();
   // Embed the costumes as separate files. The runtime expects
   // `assetId + md5ext` to resolve to a file in the zip.
-  zip.file('blank-stage.svg', BLANK_SVG);
-  zip.file('redsquare.svg', RED_SQUARE_SVG);
+  zip.file(`${BLANK_ASSET_ID}.svg`, BLANK_SVG);
+  zip.file(`${RED_ASSET_ID}.svg`, RED_SQUARE_SVG);
   zip.file('project.json', JSON.stringify(project));
   const buf = await zip.generateAsync({ type: 'arraybuffer' });
   writeFileSync(outPath, Buffer.from(buf));

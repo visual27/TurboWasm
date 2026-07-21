@@ -21,9 +21,11 @@
  * against the real workspace without taking a sandbox dependency on
  * the module-load-time `outDir` constants in each generator.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import JSZip from 'jszip';
+import sb3fix from '@turbowarp/sb3fix';
 
 /**
  * Resolve the project root from a script URL.
@@ -121,6 +123,59 @@ export const DEFAULT_FIXTURES = Object.keys(FIXTURE_GENERATORS);
  *   The directory, plus the fixture names that were (re)generated vs the
  *   ones whose requested generator was not in the registry.
  */
+/**
+ * §SB3 schema regression gate — re-open every freshly written `.sb3`,
+ * unpack the embedded `project.json`, and run it through
+ * `@turbowarp/sb3fix.fixJSON(platform: 'scratch')` so that any
+ * shape-level regression (variables 4-tuple, list objects in
+ * `variables`, missing list primitive on input descriptors, non-MD5
+ * assetId, etc.) is surfaced at fixture-generation time rather than
+ * at first load. Pure-Scratch and pure-TurboWarp platforms are both
+ * validated.
+ *
+ * Skip when `options.skipSchemaValidate === true` so unit tests that
+ * drive the generator with bad intent can opt out.
+ */
+async function validateFixtures(outDir, names) {
+  const failures = [];
+  for (const name of names) {
+    const path = resolve(outDir, name);
+    let buf;
+    try {
+      buf = readFileSync(path);
+    } catch (e) {
+      failures.push(`${name}: cannot read (${e.message})`);
+      continue;
+    }
+    let zip;
+    try {
+      // Pass a fresh ArrayBuffer so JSZip sees exactly the bytes the
+      // file claims to contain (Node 24's Buffer can carry trailing
+      // metadata that confuses JSZip's reader).
+      const ab = new ArrayBuffer(buf.byteLength);
+      new Uint8Array(ab).set(buf);
+      zip = await new JSZip().loadAsync(ab);
+    } catch (e) {
+      failures.push(`${name}: zip unpack failed (${e.message})`);
+      continue;
+    }
+    const entry = zip.file('project.json');
+    if (!entry) {
+      failures.push(`${name}: project.json missing`);
+      continue;
+    }
+    const text = await entry.async('string');
+    for (const platform of ['scratch', 'turbowarp']) {
+      try {
+        sb3fix.fixJSON(text, { platform });
+      } catch (e) {
+        failures.push(`${name}: sb3fix(${platform}) rejected — ${e.message.slice(0, 400)}`);
+      }
+    }
+  }
+  return failures;
+}
+
 export async function ensureTestFixtures(options = {}) {
   const root = options.cwd ?? resolveRepoRoot();
   const outDir = resolve(root, 'test/.test-fixtures');
@@ -143,6 +198,15 @@ export async function ensureTestFixtures(options = {}) {
       written.push(name);
     } else {
       written.push(name);
+    }
+  }
+  if (!options.skipSchemaValidate) {
+    const failures = await validateFixtures(outDir, written);
+    if (failures.length > 0) {
+      const summary = failures.map((f) => `  - ${f}`).join('\n');
+      throw new Error(
+        `[ensure-test-fixtures] SB3 schema validation failed for ${failures.length} fixture(s):\n${summary}`,
+      );
     }
   }
   return { outDir, written, skipped };

@@ -30,9 +30,14 @@
  * candidate does not nest the first.
  */
 import JSZip from 'jszip';
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+function md5hex(buf) {
+  return createHash('md5').update(buf).digest('hex');
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -41,6 +46,9 @@ const outPath = resolve(outDir, 'gpu-kernel-diagnostics-fixture.sb3');
 
 const INPUT_BLOCK_NO_SHADOW = 2;
 const MATH_NUM_PRIMITIVE = 4;
+// `data_listcontents` primitive id (= `[13, name, id]`). See the
+// scratch-vm list-input encoding in `vendored/.../sb3.js:81-97`.
+const LIST_PRIMITIVE = 13;
 
 let nextBlockId = 1;
 const nextId = () => `b${nextBlockId++}`;
@@ -48,8 +56,12 @@ function resetCounter() {
   nextBlockId = 1;
 }
 
+function listIdFor(name) {
+  return `list_${name}`;
+}
+
 function listShadow(listName) {
-  return [INPUT_BLOCK_NO_SHADOW, listName];
+  return [INPUT_BLOCK_NO_SHADOW, [LIST_PRIMITIVE, listName, listIdFor(listName)]];
 }
 
 function makeBlock({ opcode, inputs = {}, fields = {}, next = null, parent = null, topLevel = false, shadow = false, x = 0, y = 0 }) {
@@ -86,7 +98,7 @@ function dataSetVarTo(varName, valueBlockId, parent = null) {
 function dataVariable(varName, parent = null) {
   return makeBlock({
     opcode: 'data_variable',
-    fields: { VARIABLE: [varName, null] },
+    fields: { VARIABLE: [varName, varName] },
     parent,
   });
 }
@@ -99,6 +111,7 @@ function dataReplaceItemOfList(listName, indexBlockId, valueBlockId, parent = nu
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
       ITEM: [INPUT_BLOCK_NO_SHADOW, valueBlockId],
     },
+    fields: { LIST: [listName, listIdFor(listName)] },
     parent,
   });
 }
@@ -286,25 +299,12 @@ function buildProject() {
     isStage: true,
     name: 'Stage',
     variables: {
-      result: ['result', 0, 0, 0],
-      list_aabb_w: {
-        name: 'aabb_w',
-        isPersistent: true,
-        type: 'list',
-        value: [128],
-        x: 0,
-        y: 0,
-      },
-      list_buff_r: {
-        name: 'buff_r',
-        isPersistent: true,
-        type: 'list',
-        value: [50],
-        x: 0,
-        y: 0,
-      },
+      result: ['result', 0],
     },
-    lists: {},
+    lists: {
+      list_aabb_w: ['aabb_w', [128]],
+      list_buff_r: ['buff_r', [50]],
+    },
     broadcasts: {},
     blocks: {},
     comments: {},
@@ -313,8 +313,8 @@ function buildProject() {
       {
         name: 'blank',
         dataFormat: 'svg',
-        assetId: 'blank',
-        md5ext: 'blank.svg',
+        assetId: md5hex(Buffer.from(stageSvg, 'utf8')),
+        md5ext: `${md5hex(Buffer.from(stageSvg, 'utf8'))}.svg`,
         rotationCenterX: 240,
         rotationCenterY: 180,
         svg: stageSvg,
@@ -332,7 +332,7 @@ function buildProject() {
     isStage: false,
     name: 'Diagnostics',
     variables: {
-      R0: ['R0', 0, 0, 0],
+      R0: ['R0', 0],
     },
     lists: {},
     broadcasts: {},
@@ -343,8 +343,8 @@ function buildProject() {
       {
         name: 'dot',
         dataFormat: 'svg',
-        assetId: 'dot',
-        md5ext: 'dot.svg',
+        assetId: md5hex(Buffer.from(spriteSvg, 'utf8')),
+        md5ext: `${md5hex(Buffer.from(spriteSvg, 'utf8'))}.svg`,
         rotationCenterX: 8,
         rotationCenterY: 8,
         svg: spriteSvg,

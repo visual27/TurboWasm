@@ -49,7 +49,12 @@ interface ParsedProjectJson {
 
 async function readFixtureProject(sb3Path: string): Promise<ParsedProjectJson> {
   const buf = readFileSync(sb3Path);
-  const zip = await new JSZip().loadAsync(buf);
+  // Pass a fresh ArrayBuffer copy — Node 24's Buffer sometimes carries
+  // extra bytes past the official length and JSZip's reader then trips
+  // on `End of data reached (data length = 0, asked index = N)`.
+  const ab = new ArrayBuffer(buf.byteLength);
+  new Uint8Array(ab).set(buf);
+  const zip = await new JSZip().loadAsync(ab);
   const entry = zip.file('project.json');
   if (!entry) throw new Error(`project.json missing in ${sb3Path}`);
   const text = await entry.async('string');
@@ -58,7 +63,9 @@ async function readFixtureProject(sb3Path: string): Promise<ParsedProjectJson> {
 
 async function loadProject(sb3Path: string): Promise<ParsedProject> {
   const buf = readFileSync(sb3Path);
-  const shape = await parseProjectJsonFromArrayBuffer(buf);
+  const ab = new ArrayBuffer(buf.byteLength);
+  new Uint8Array(ab).set(buf);
+  const shape = await parseProjectJsonFromArrayBuffer(ab);
   if (!shape) throw new Error(`parseProjectJsonFromArrayBuffer returned null for ${sb3Path}`);
   return toParsedProject(shape);
 }
@@ -113,14 +120,15 @@ describe('§Phase 2 — expo fixture with inlined pow2 chain', () => {
     );
     const stage = project.targets.find((t) => t.isStage);
     expect(stage).toBeDefined();
-    const variables = (stage as unknown as { variables: Record<string, unknown> }).variables;
-    const tmp0Entry = variables['list_tmp0'] as
-      | { name: string; type: string; value: unknown[] }
-      | undefined;
+    // §SB3 format — lists live under `target.lists` as `[name, value[]]`
+    // tuples. The legacy layout stuffed them into `variables` with the
+    // internal-VM `{name, type, value, x, y}` object which fails the
+    // scratch-parser schema (`maxItems: 3` for variables).
+    const lists = (stage as unknown as { lists: Record<string, unknown> }).lists;
+    const tmp0Entry = lists['list_tmp0'] as [string, unknown[]] | undefined;
     expect(tmp0Entry, 'list_tmp0 must exist on the stage').toBeDefined();
-    expect(tmp0Entry!.name).toBe('tmp0');
-    expect(tmp0Entry!.type).toBe('list');
-    expect(Array.isArray(tmp0Entry!.value)).toBe(true);
+    expect(tmp0Entry![0]).toBe('tmp0');
+    expect(Array.isArray(tmp0Entry![1])).toBe(true);
   });
 
   it('legacy pipeline emits the inlined pow2 chain and list-write in WGSL', async () => {

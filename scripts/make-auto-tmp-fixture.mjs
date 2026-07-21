@@ -40,9 +40,14 @@
  * overwrites the existing file.
  */
 import JSZip from 'jszip';
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+function md5hex(buf) {
+  return createHash('md5').update(buf).digest('hex');
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -51,6 +56,8 @@ const outPath = resolve(outDir, 'auto-tmp-fixture.sb3');
 
 const INPUT_BLOCK_NO_SHADOW = 2;
 const MATH_NUM_PRIMITIVE = 4;
+// `data_listcontents` primitive id (= `[13, name, id]`).
+const LIST_PRIMITIVE = 13;
 
 let nextBlockId = 1;
 const nextId = () => `b${nextBlockId++}`;
@@ -58,8 +65,12 @@ function resetCounter() {
   nextBlockId = 1;
 }
 
+function listIdFor(name) {
+  return `list_${name}`;
+}
+
 function listShadow(listName) {
-  return [INPUT_BLOCK_NO_SHADOW, listName];
+  return [INPUT_BLOCK_NO_SHADOW, [LIST_PRIMITIVE, listName, listIdFor(listName)]];
 }
 
 function inlineNumberInput(value) {
@@ -104,7 +115,7 @@ function dataLengthOfList(listName, parent = null) {
 function dataVariable(varName, parent = null) {
   return makeBlock({
     opcode: 'data_variable',
-    fields: { VARIABLE: [varName, null] },
+    fields: { VARIABLE: [varName, varName] },
     parent,
   });
 }
@@ -116,6 +127,7 @@ function dataItemOfList(listName, indexBlockId, parent = null) {
       LIST: listShadow(listName),
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
     },
+    fields: { LIST: [listName, listIdFor(listName)] },
     parent,
   });
 }
@@ -160,6 +172,7 @@ function dataReplaceItemOfList(listName, indexBlockId, valueBlockId, parent = nu
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
       ITEM: [INPUT_BLOCK_NO_SHADOW, valueBlockId],
     },
+    fields: { LIST: [listName, listIdFor(listName)] },
     parent,
   });
 }
@@ -275,26 +288,12 @@ function buildProject() {
     isStage: true,
     name: 'Stage',
     variables: {
-      tmp0: ['tmp0', 0, 0, 0],
-      tmp1: ['tmp1', 0, 0, 0],
+      tmp0: ['tmp0', 0],
+      tmp1: ['tmp1', 0],
     },
     lists: {
-      list_aabb_w: {
-        name: 'aabb_w',
-        isPersistent: true,
-        type: 'list',
-        value: [128],
-        x: 0,
-        y: 0,
-      },
-      list_buff_r: {
-        name: 'buff_r',
-        isPersistent: true,
-        type: 'list',
-        value: new Array(128).fill(0),
-        x: 0,
-        y: 0,
-      },
+      list_aabb_w: ['aabb_w', [128]],
+      list_buff_r: ['buff_r', new Array(128).fill(0)],
     },
     broadcasts: {},
     blocks: {},
@@ -304,8 +303,8 @@ function buildProject() {
       {
         name: 'blank',
         dataFormat: 'svg',
-        assetId: 'blank',
-        md5ext: 'blank.svg',
+        assetId: md5hex(Buffer.from(stageSvg, 'utf8')),
+        md5ext: `${md5hex(Buffer.from(stageSvg, 'utf8'))}.svg`,
         rotationCenterX: 240,
         rotationCenterY: 180,
         svg: stageSvg,
@@ -323,7 +322,7 @@ function buildProject() {
     isStage: false,
     name: 'AutoTmpSprite',
     variables: {
-      R0: ['R0', 0, 0, 0],
+      R0: ['R0', 0],
     },
     lists: {},
     broadcasts: {},
@@ -334,8 +333,8 @@ function buildProject() {
       {
         name: 'dot',
         dataFormat: 'svg',
-        assetId: 'dot',
-        md5ext: 'dot.svg',
+        assetId: md5hex(Buffer.from(spriteSvg, 'utf8')),
+        md5ext: `${md5hex(Buffer.from(spriteSvg, 'utf8'))}.svg`,
         rotationCenterX: 8,
         rotationCenterY: 8,
         svg: spriteSvg,

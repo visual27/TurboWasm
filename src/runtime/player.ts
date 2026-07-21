@@ -1909,8 +1909,24 @@ function computeInitialListLengths(
   // Walk the project JSON's variables for any list — the @bind name
   // matches the lower-cased list name. For projects that have no
   // @compute regions this stays empty (initialisation is lazy in M5).
+  //
+  // §SB3 format — pure-Scratch projects carry lists under
+  // `target.lists` as `[name, value[]]` tuples. The legacy
+  // internal-VM shape stuffed them into `target.variables` with a
+  // `{name, type:'list', value}` object, which the scratch-parser
+  // schema rejects. Read both shapes so legacy in-memory fixtures
+  // keep working.
   const listLengths: Record<string, number> = {};
   for (const target of shape.targets ?? []) {
+    const lists = (target as { lists?: Record<string, unknown> }).lists;
+    if (lists) {
+      for (const [, entry] of Object.entries(lists)) {
+        if (!Array.isArray(entry)) continue;
+        const [name, value] = entry as [unknown, unknown];
+        if (typeof name !== 'string') continue;
+        listLengths[name.toLowerCase()] = Array.isArray(value) ? value.length : 0;
+      }
+    }
     const vars = (target as { variables?: Record<string, { name?: string; type?: string; value?: unknown }> })
       .variables;
     if (!vars) continue;

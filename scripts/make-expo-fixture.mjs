@@ -94,6 +94,11 @@ function svgCostume(svg, name) {
 const INPUT_SAME_BLOCK_SHADOW = 1;
 const INPUT_BLOCK_NO_SHADOW = 2;
 const MATH_NUM_PRIMITIVE = 4;
+// `data_listcontents` primitive id (= `[13, name, id]`). Used by
+// `listShadow` to encode a list-menu drop-down as a proper scratch
+// input descriptor instead of a bare block-id string (which the
+// loader would treat as an unknown block reference).
+const LIST_PRIMITIVE = 13;
 
 let nextBlockId = 1;
 const nextId = () => `b${nextBlockId++}`;
@@ -105,8 +110,13 @@ function inlineNum(value) {
   return [INPUT_SAME_BLOCK_SHADOW, [MATH_NUM_PRIMITIVE, String(value)]];
 }
 
-function listShadow(listName) {
-  return [INPUT_SAME_BLOCK_SHADOW, listName];
+function listShadow(listName, listId) {
+  // Scratch loader resolves LIST inputs through the data_listcontents
+  // primitive (= list_primitive: `[13, listName, listId]`). The 2nd
+  // element of the resulting input descriptor is the primitive array,
+  // NOT a bare listName string. Without this the loader rejects the
+  // block as an unknown input shape.
+  return [INPUT_SAME_BLOCK_SHADOW, [LIST_PRIMITIVE, listName, listId]];
 }
 
 // --- Comment text templates -----------------------------------------------
@@ -317,10 +327,14 @@ function dataReadVar(varName, parent = null) {
   return { id, block };
 }
 
+function listIdFor(name) {
+  return `list_${name}`;
+}
+
 function dataLengthOfList(listName, parent = null) {
   const { id, block } = makeBlock({
     opcode: 'data_lengthoflist',
-    inputs: { LIST: listShadow(listName) },
+    inputs: { LIST: listShadow(listName, listIdFor(listName)) },
     parent,
   });
   return { id, block };
@@ -330,14 +344,14 @@ function dataItemOfList(listName, indexBlockId, parent = null) {
   const { id, block } = makeBlock({
     opcode: 'data_itemoflist',
     inputs: {
-      LIST: listShadow(listName),
+      LIST: listShadow(listName, listIdFor(listName)),
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
     },
     // The WGSL emitter's `bindingForList` keys on the first element of
     // `fields.LIST` (the surface name) to look up the matching
     // `BindDirective`. Slot 0 must therefore hold the human-readable
     // list name, not the scratch-vm internal `list_<name>` id.
-    fields: { LIST: [listName, null] },
+    fields: { LIST: [listName, listIdFor(listName)] },
     parent,
   });
   return { id, block };
@@ -424,13 +438,13 @@ function dataReplaceItemOfList(listName, indexBlockId, valueBlockId, parent = nu
   const { id, block } = makeBlock({
     opcode: 'data_replaceitemoflist',
     inputs: {
-      LIST: listShadow(listName),
+      LIST: listShadow(listName, listIdFor(listName)),
       INDEX: [INPUT_BLOCK_NO_SHADOW, indexBlockId],
       ITEM: [INPUT_BLOCK_NO_SHADOW, valueBlockId],
     },
     // `emitListWrite` resolves the binding through `fields.LIST[0]`
     // (the surface name). Keep slot 0 in sync with the binding name.
-    fields: { LIST: [listName, null] },
+    fields: { LIST: [listName, listIdFor(listName)] },
     parent,
   });
   return { id, block };
@@ -557,55 +571,32 @@ function buildLegacyProject({ computeCommentText, byteScalar = false }) {
   };
 
   // ===== Stage / Sprite targets =====
+  // §SB3 format — lists live under `target.lists` and use the tuple
+  // `[name, value[]]` shape (max 2 elements per the scratch-parser
+  // schema). The legacy generators stuffed them into `variables` with
+  // an internal-VM `{name, type, value, x, y}` object, which fails the
+  // `maxItems: 3` validator. Move them here and use the array shape.
   const stageLists = {
-    list_aabb_w: {
-      name: 'aabb_w',
-      isPersistent: true,
-      type: 'list',
-      value: [100],
-      x: 0,
-      y: 0,
-    },
-    list_aabb_height: {
-      name: 'aabb_height',
-      isPersistent: true,
-      type: 'list',
-      value: [200],
-      x: 0,
-      y: 0,
-    },
-    list_buff_r: {
-      name: 'buff_r',
-      isPersistent: true,
-      type: 'list',
-      value: [50],
-      x: 0,
-      y: 0,
-    },
+    list_aabb_w: ['aabb_w', [100]],
+    list_aabb_height: ['aabb_height', [200]],
+    list_buff_r: ['buff_r', [50]],
     // §Phase 2 — `tmp0` becomes a 1-element list so `@bind tmp0(0) ro f32`
     // remains a list binding (the GPU body now reads `tmp0[R0]`).
-    list_tmp0: {
-      name: 'tmp0',
-      isPersistent: true,
-      type: 'list',
-      value: [1],
-      x: 0,
-      y: 0,
-    },
+    list_tmp0: ['tmp0', [1]],
   };
   const stageVars = {
-    result: ['result', 0, 0, 0],
+    result: ['result', 0],
     // §Phase 4 (15.7) — `byte_state` is the scalar uniform referenced
     // by the byte-scalar variant. Mirrors `tmp0` (initial value 0)
     // for parity with the legacy fixture.
-    ...(byteScalar ? { byte_state: ['byte_state', 0, 0, 0] } : {}),
+    ...(byteScalar ? { byte_state: ['byte_state', 0] } : {}),
   };
 
   const stageTarget = {
     isStage: true,
     name: 'Stage',
-    variables: { ...stageVars, ...stageLists },
-    lists: {},
+    variables: stageVars,
+    lists: stageLists,
     broadcasts: {},
     blocks: {},
     comments: {},
@@ -623,7 +614,7 @@ function buildLegacyProject({ computeCommentText, byteScalar = false }) {
     isStage: false,
     name: 'Expo',
     variables: {
-      R0: ['R0', 0, 0, 0],
+      R0: ['R0', 0],
     },
     lists: {},
     broadcasts: {},
@@ -879,9 +870,12 @@ function buildNestedProject() {
   allBlocks[candidateRepeat.id] = candidateRepeat.block;
 
   // ===== Comments =====
-  // The @compute comment must be attached to the first substack block
-  // (= bodyEntry) — same convention as the legacy fixture, see
-  // `region-extractor.ts` spec §3.1.
+  // §Phase 4 (Form A, BREAKING) — the `@compute` marker sits on the
+  // candidate `control_repeat` itself (= `candidateRepeat`), not on
+  // the body's first substack block. The previous nested layout
+  // attached the marker to the bodyEntry, which was valid under the
+  // retired nested-parallelization model but no longer matches the
+  // current region-extractor contract.
   const comments = {
     cmt_pow2: {
       blockId: pow2Proto.id,
@@ -902,7 +896,7 @@ function buildNestedProject() {
       text: '// main: runs the nested GPU @compute demo (Phase 4)',
     },
     cmt_compute: {
-      blockId: bodyEntry.id,
+      blockId: candidateRepeat.id,
       x: 200,
       y: 300,
       width: 320,
@@ -913,92 +907,40 @@ function buildNestedProject() {
   };
 
   // ===== Stage / Sprite targets =====
+  // §SB3 format — lists belong under `target.lists` as
+  // `[name, value[]]` (the scratch-parser schema rejects any other
+  // shape). Scalar variables under `target.variables` are 2-tuples;
+  // a 3rd element is allowed only as `true` (= cloud variable).
   const stageLists = {
-    list_aabb_len: {
-      name: 'aabb_len',
-      isPersistent: true,
-      type: 'list',
-      value: [4],
-      x: 0,
-      y: 0,
-    },
-    list_aabb_w: {
-      name: 'aabb_w',
-      isPersistent: true,
-      type: 'list',
-      value: [128],
-      x: 0,
-      y: 0,
-    },
-    list_aabb_h: {
-      name: 'aabb_h',
-      isPersistent: true,
-      type: 'list',
-      value: [64],
-      x: 0,
-      y: 0,
-    },
-    list_aabb_minx: {
-      name: 'aabb_minx',
-      isPersistent: true,
-      type: 'list',
-      value: [0],
-      x: 0,
-      y: 0,
-    },
-    list_aabb_miny: {
-      name: 'aabb_miny',
-      isPersistent: true,
-      type: 'list',
-      value: [0],
-      x: 0,
-      y: 0,
-    },
-    list_buff_r: {
-      name: 'buff_r',
-      isPersistent: true,
-      type: 'list',
-      value: [50],
-      x: 0,
-      y: 0,
-    },
-    list_buff_g: {
-      name: 'buff_g',
-      isPersistent: true,
-      type: 'list',
-      value: [50],
-      x: 0,
-      y: 0,
-    },
-    list_buff_b: {
-      name: 'buff_b',
-      isPersistent: true,
-      type: 'list',
-      value: [50],
-      x: 0,
-      y: 0,
-    },
+    list_aabb_len: ['aabb_len', [4]],
+    list_aabb_w: ['aabb_w', [128]],
+    list_aabb_h: ['aabb_h', [64]],
+    list_aabb_minx: ['aabb_minx', [0]],
+    list_aabb_miny: ['aabb_miny', [0]],
+    list_buff_r: ['buff_r', [50]],
+    list_buff_g: ['buff_g', [50]],
+    list_buff_b: ['buff_b', [50]],
   };
   const stageVars = {
-    tmp0: ['tmp0', 0, 0, 0],
-    result: ['result', 0, 0, 0],
+    tmp0: ['tmp0', 0],
+    result: ['result', 0],
     // Phase 3 Tier 2 scalar uniforms: these scratch variables are
     // referenced from the @repeat formula (`@repeat Ry = aabb_h[aabb_idx0]`)
     // and from the kernel body via `@bind ..., scalar`. The runtime
     // adapter exposes them through `runtime.__getScalarValue(name)`.
-    aabb_idx0: ['aabb_idx0', 0, 0, 0],
-    aabb_tmp0: ['aabb_tmp0', 0, 0, 0],
-    screen_w: ['screen_w', 480, 0, 0],
-    scratch_setup: ['scratch_setup', 0, 0, 0],
-    kernel_setup: ['kernel_setup', 0, 0, 0],
-    idx1: ['idx1', 0, 0, 0],
+    aabb_idx0: ['aabb_idx0', 0],
+    aabb_tmp0: ['aabb_tmp0', 0],
+    screen_w: ['screen_w', 480],
+    scratch_setup: ['scratch_setup', 0],
+    kernel_setup: ['kernel_setup', 0],
+    idx1: ['idx1', 0],
   };
 
   const stageTarget = {
     isStage: true,
     name: 'Stage',
-    variables: { ...stageVars, ...stageLists },
-    lists: {},
+    variables: stageVars,
+    lists: stageLists,
     broadcasts: {},
     blocks: {},
     comments: {},
