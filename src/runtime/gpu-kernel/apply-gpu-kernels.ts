@@ -206,11 +206,32 @@ function installDispatcher(options: ApplyGpuKernelsOptions): void {
       ctx.listLengthBindings = listLengthBindings;
     }
     try {
-      // Phase 4 contract: return the DispatchResult (or its Promise)
-      // unchanged. The vendored hook awaits and inspects the
-      // structured shape so a D4 demote cannot silently skip the JS
-      // body via truthiness.
-      return dispatchKernel(kernel.id, ctx);
+      // §M7 — per-dispatch timing. `performance.now()` brackets the
+      // synchronous dispatch path so `scripts/measure-expo-custom-block.mjs`
+      // can read accumulated wall-time via
+      // `window.__turbowasm.gpuKernelTiming`. The async path (GPU
+      // command submission + mapAsync) is awaited inside
+      // `dispatchKernel`, so this measurement covers the full
+      // dispatch from JS call to `pass` completion.
+      const startedAt =
+        typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const result = dispatchKernel(kernel.id, ctx);
+      const finalize = (resolved: DispatchResult): DispatchResult => {
+        const finishedAt =
+          typeof performance !== 'undefined' ? performance.now() : Date.now();
+        recordKernelDispatchTiming(finishedAt - startedAt);
+        return resolved;
+      };
+      // The dispatcher returns `DispatchResult | Promise<DispatchResult>`
+      // (per spec §7 — the GPU path awaits `queue.onSubmittedWorkDone`
+      // for accurate wall-time). Normalise the union here so the
+      // timing snapshot covers both shapes.
+      const maybePromise = result as { then?: unknown };
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        const promise = maybePromise as unknown as Promise<DispatchResult>;
+        return promise.then(finalize);
+      }
+      return finalize(result as unknown as DispatchResult);
     } catch (err) {
       // Last-resort safety net: the dispatcher swallows throws, but
       // any synchronous failure here must not propagate to the VM.
@@ -255,4 +276,95 @@ function makeNullRuntime(): RuntimeAdapter {
     writeScalar: () => false,
     listLength: () => 0,
   };
+}
+
+/**
+ * Per-process dispatch-timing accumulator. Exposed on
+ * `window.__turbowasm.gpuKernelTiming` (see `__exposeForBrowserVerify`
+ * in `src/runtime/player.ts`) so browser-side benchmarks can read
+ * GPU kernel wall-time without poking into module-private state.
+ *
+ * §M7 (gpu-kernel §16) — `scripts/measure-expo-custom-block.mjs`
+ * reads this snapshot via `chrome-devtools-mcp evaluate_script` to
+ * compare GPU-kernel dispatch time against the scratch-VM JS path
+ * for the user-facing pixel-level expo calculation.
+ *
+ * The accumulator is published as a **live reference** (not a frozen
+ * snapshot) so browser-side `evaluate_script` polls see fresh counts
+ * each tick. `resetKernelTimingForTesting()` zeroes the accumulator;
+ * `recordKernelDispatchTiming()` updates it on every dispatch.
+ */
+interface KernelTimingSnapshot {
+  count: number;
+  totalMs: number;
+  lastMs: number;
+  minMs: number;
+  maxMs: number;
+}
+const ZERO_TIMING: KernelTimingSnapshot = {
+  count: 0,
+  totalMs: 0,
+  lastMs: 0,
+  minMs: Number.POSITIVE_INFINITY,
+  maxMs: 0,
+};
+
+let kernelTiming: KernelTimingSnapshot = { ...ZERO_TIMING };
+
+/**
+ * Live handle the browser exposes via `window.__turbowasm.gpuKernelTiming`.
+ * Returns a getter-backed object so `evaluate_script(...).gpuKernelTiming`
+ * reads the current accumulator every time it's accessed (= the
+ * measure script can poll mid-flight without needing to re-call
+ * `__exposeForBrowserVerify`). Mutating the returned object is a
+ * no-op (= the live reference is read-only externally).
+ */
+export function getKernelTimingLiveHandle(): {
+  readonly count: number;
+  readonly totalMs: number;
+  readonly lastMs: number;
+  readonly minMs: number;
+  readonly maxMs: number;
+  /** Zero the accumulator. Browser-side measure script calls this between modes. */
+  reset(): void;
+} {
+  return {
+    get count() {
+      return kernelTiming.count;
+    },
+    get totalMs() {
+      return kernelTiming.totalMs;
+    },
+    get lastMs() {
+      return kernelTiming.lastMs;
+    },
+    get minMs() {
+      return kernelTiming.minMs;
+    },
+    get maxMs() {
+      return kernelTiming.maxMs;
+    },
+    reset() {
+      kernelTiming = { ...ZERO_TIMING };
+    },
+  };
+}
+
+export function recordKernelDispatchTiming(durationMs: number): void {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return;
+  kernelTiming = {
+    count: kernelTiming.count + 1,
+    totalMs: kernelTiming.totalMs + durationMs,
+    lastMs: durationMs,
+    minMs: Math.min(kernelTiming.minMs, durationMs),
+    maxMs: Math.max(kernelTiming.maxMs, durationMs),
+  };
+}
+
+export function resetKernelTimingForTesting(): void {
+  kernelTiming = { ...ZERO_TIMING };
+}
+
+export function getKernelTimingSnapshot(): KernelTimingSnapshot {
+  return { ...kernelTiming };
 }

@@ -576,17 +576,65 @@ export interface AutoTmpBinding {
 }
 
 /**
+ * §Phase 6 (extended) — per-scratch-var mutable binding. Emitted as a
+ * `var <emitName>: f32 = <initial>;` declaration at the top of the
+ * WGSL body when the scratch var has at least one `data_changevariableby`.
+ *
+ * `initialInput` is the most-recent preceding `data_setvariableto`'s
+ * `inputs.VALUE` chain (the WGSL emitter recursively lowers it via
+ * `emitAutoTmpValueExpression`); `null` when there's no preceding
+ * `set` and we initialise to `0.0`.
+ *
+ * `changeBlockIds` are the body-side `data_changevariableby` blocks
+ * whose `inputs.VALUE` chain the WGSL emitter lowers into
+ * `<emitName> = <emitName> + <delta>;` statements at body position.
+ */
+export interface AutoTmpMutableBinding {
+  name: string;
+  /** Lower-cased scratch var name (matches `name.toLowerCase()`). */
+  lowered: string;
+  /** WGSL identifier shared with the latest preceding `set` SSA name. */
+  emitName: string;
+  /** Initial value input chain (`inputs.VALUE`) — `null` for 0-init. */
+  initialInput: unknown;
+  /** Body block ids for the `data_changevariableby` increments. */
+  changeBlockIds: readonly string[];
+}
+
+/**
  * §Phase 6 — verdict of the auto-tmp detector stage. Lives between
  * `blockSubset` and `axes` in the M3 pipeline
  * (`region-verdict-pipeline.ts:buildRegionVerdicts`). Cycle and
  * collision paths surface as `valid: false` with a `demoteReason`
  * that the runtime treats as a D1 demote (forwarded through
  * `PARSER_ERROR_CODES`).
+ *
+ * SSA uniqueness: every `data_setvariableto` block gets its own
+ * `AutoTmpBinding` (= its own `let` declaration), keyed by block id.
+ * `reads` is the per-read-block resolution table the WGSL emitter
+ * consults when lowering `data_variable` / `data_variableof` reporters
+ * that target an auto-tmp scratch var.
+ *
+ * `mutables` is the per-scratch-var mutable binding info used by the
+ * emitter to emit `var` declarations and `<emit> = <emit> + <delta>;`
+ * increments at body position. Empty when no scratch var has a
+ * `data_changevariableby` block in the body.
  */
 export interface AutoTmpVerdict {
   valid: boolean;
   demoteReason?: 'd1';
   bindings: readonly AutoTmpBinding[];
+  /**
+   * Per-read resolution: read-block-id → resolved SSA emit name.
+   * `scratchBlockToWgslExpr` consults this when a `data_variable`
+   * reporter targets a scratch var that's been auto-tmp-promoted.
+   */
+  reads: ReadonlyMap<string, string>;
+  /**
+   * Per-scratch-var mutable bindings (= one entry per scratch name
+   * with at least one `data_changevariableby`).
+   */
+  mutables: readonly AutoTmpMutableBinding[];
   diagnostics: Diagnostic[];
 }
 

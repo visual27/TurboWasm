@@ -207,16 +207,34 @@ function procedureCall(procCode, argBlockIds, parent = null) {
     // vendored scratch-vm loader treats as unknown.
     opcode: 'procedures_call',
     inputs,
-    mutation: { proccode: procCode },
+    // §scratch-vm `mutationToXML` requires `mutation.children` to be
+    // defined (otherwise `mutation.children.length` throws TypeError
+    // during `emitWorkspaceUpdate`). The empty array is valid — the
+    // prototype's `arg` descriptors carry the argument structure.
+    mutation: { tagName: 'mutation', children: [], proccode: procCode },
     parent,
   });
   return { id, block };
 }
 
 function proceduresPrototype(procCode, argumentNames, substackHeadId) {
+  // §scratch-vm `mutationToXML` requires `mutation.children` to be
+  // defined and recursively serializable. For
+  // `procedures_prototype` the children are `<arg>` descriptor
+  // nodes — one per argument — each carrying its own `tagName` /
+  // `children` for the loader's argument-reporter walk. Without
+  // these, the in-browser `emitWorkspaceUpdate` after
+  // `loadProject` throws a TypeError (the empty-`children`
+  // array is defined-length but the loader still chokes on the
+  // missing per-arg descriptors).
+  const argDescriptors = argumentNames.map((name) => ({
+    tagName: 'arg',
+    children: [],
+    name,
+  }));
   const mutation = {
     tagName: 'mutation',
-    children: [],
+    children: argDescriptors,
     proccode: procCode,
     argumentnames: JSON.stringify(argumentNames),
     argumentids: JSON.stringify(argumentNames.map((_, i) => `arg-${procCode}-${i}`)),
@@ -228,9 +246,6 @@ function proceduresPrototype(procCode, argumentNames, substackHeadId) {
   };
   const { id, block } = makeBlock({
     opcode: 'procedures_prototype',
-    // SUBSTACK must be an input descriptor (`[shadowKind, blockId]`),
-    // not a bare block-id string — the loader silently drops a bare
-    // string and the prototype ends up with no executable body.
     inputs: { SUBSTACK: [INPUT_BLOCK_NO_SHADOW, substackHeadId] },
     mutation,
     topLevel: true,

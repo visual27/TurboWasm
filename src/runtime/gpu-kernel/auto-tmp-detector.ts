@@ -15,19 +15,26 @@
  * scratch variable writes that are not bound by any directive into a
  * topologically ordered `let` chain.
  *
- * # Pipeline position
+ * # SSA uniqueness
  *
- * Lives in `region-verdict-pipeline.ts:buildRegionVerdicts` between
- * `buildBlockSubsetVerdict` (D1) and `analyzeAxes` (D2). The
- * detector's input is the inlined body (= post-`procedure-inliner`),
- * so a custom-block prototype's scratch tmps are also covered.
+ * Per block-id, not per name. `data_setvariableto` blocks targeting the
+ * same scratch var name (`tmp1 = buff_r ...; tmp1 = buff_g ...;`) each
+ * get their own `let <safeName>_<n>: f32 = ...;` so scratch reference
+ * semantics survive the immutability of WGSL `let`. Reads
+ * (`data_variableof` / `data_variable`) walk the inlined body in order
+ * and resolve to the most-recent preceding write of the same name; the
+ * resolved emit name is exposed via `autoTmpReads[blockId]`.
+ *
+ * # Mutable scratch vars
+ *
+ * `data_changevariableby` on a scratch var (e.g. `change idx1 by 1`)
+ * implies `var` semantics. The detector emits a single
+ * `var <name>: f32 = <initial>;` declaration that the latest SSA name
+ * for that scratch var reuses, and the WGSL emitter follows each
+ * `data_changevariableby` block with `<latestEmitName> = <latestEmitName> + <delta>;`.
  *
  * # Constraints (per gpu-kernel-scratch-temporary-let-binding.md)
  *
- * - **single-assignment only**: `data_setvariableto` is the only
- *   trigger. `data_changevariableby` is intentionally NOT promoted
- *   (WGSL `let` is non-reassignable); an `info` diagnostic surfaces
- *   the user's intent for opt-in to explicit `@map`.
  * - **scope = region body**: variables that do not appear in the
  *   region body are ignored.
  * - **collision rules**: scratch names that collide with `@bind`,
@@ -35,11 +42,6 @@
  *   the owning region via `PARSER_ERROR_CODES`.
  * - **cycle detection**: a `tmp1 = tmp2 + 1; tmp2 = tmp1 + 1`-style
  *   DAG cycle also D1-demotes via `PARSER_ERROR_CODES`.
- * - **last-write-wins**: multiple `data_setvariableto` writes to the
- *   same name are de-duplicated to the last occurrence; the dropped
- *   writes emit a `warn`-level `gpu.scratch_variable_duplicate_write`
- *   diagnostic so the user can surface the dynamic-semantics
- *   divergence.
  * - **canonical-key free**: `AutoTmpBinding` does NOT participate in
  *   `stripDirectiveVolatile`. Two regions with the same directives
  *   but different scratch tmp names share the same canonical key
@@ -47,15 +49,21 @@
  *
  * # Output
  *
- * Returns an `AutoTmpVerdict` carrying the topo-ordered
- * `AutoTmpBinding` list. The WGSL emitter (`emitRegion`) consumes
- * this verbatim and emits `let <emitName>: f32 = <formula>;` per
- * binding above the body walk.
+ * Returns an `AutoTmpVerdict` carrying:
+ *   - `bindings`: every `let <safeName>_<n>: f32 = <expr>;` declaration
+ *     in topological order (cycles/collisions cause `valid: false`).
+ *   - `reads`: per-read-block resolution table. The WGSL emitter
+ *     consults this when emitting `data_variableof` /
+ *     `data_variable` reporters that target an auto-tmp scratch var.
+ *   - `mutables`: per-scratch-var mutable binding info. Used by the
+ *     emitter to emit `var <name>: f32 = <initial>;` declarations and
+ *     `<latest> = <latest> + <delta>;` increments.
  */
 import { GPU_DIAGNOSTIC_CODES } from './diagnostic-codes';
 import { extractBlockReference } from './block-reference';
 import type {
   AutoTmpBinding,
+  AutoTmpMutableBinding,
   AutoTmpVerdict,
   Diagnostic,
   ExtractedRegion,
@@ -98,16 +106,24 @@ export function detectAutoTmpBindings(input: DetectAutoTmpInput): AutoTmpVerdict
   const { region, inlinedBodyIds, project, directiveNames } = input;
   const diagnostics: Diagnostic[] = [];
 
-  // §Phase 6 — single-assignment promotion. Walk the inlined body
-  // once and collect every `data_setvariableto` whose target name is
-  // NOT claimed by any directive in this region.
-  const writesByName = new Map<
-    string,
-    { blockId: string; valueBlockId: string; valueInput: unknown; scratchBlock: RawBlock }
-  >();
-  const changevariablebyTargets = new Set<string>();
+  // §Phase 6 (extended) — deep body walk. `inlineProcedures` only walks
+  // the kernel container's flat `next` chain, so a `data_setvariableto`
+  // or `data_changevariableby` block inside a nested control_repeat
+  // SUBSTACK would be invisible to the detector. We walk the body
+  // deeply (recursing into SUBSTACK / SUBSTACK2 inputs) so the SSA
+  // uniqueness + per-axis `change X by 1` folding reach every block
+  // the WGSL emitter will lower.
+  const deepBodyIds = collectDeepBodyIds(inlinedBodyIds, project);
 
-  for (const blockId of inlinedBodyIds) {
+  // §Phase 6 — SSA uniqueness per block id. Walk the inlined body once
+  // and collect every `data_setvariableto` / `data_changevariableby`
+  // whose target name is NOT claimed by any directive in this region.
+  const writesByName = new Map<string, AutoTmpWriteEntry[]>();
+  // Order-preserving list of all writes (used for cycle detection and
+  // topological sort).
+  const orderedWrites: AutoTmpWriteEntry[] = [];
+
+  for (const blockId of deepBodyIds) {
     const block = lookupBlock(project, blockId);
     if (!block) continue;
 
@@ -123,24 +139,19 @@ export function detectAutoTmpBindings(input: DetectAutoTmpInput): AutoTmpVerdict
         // Bound variable: skip (existing pipeline handles it).
         continue;
       }
-      const existing = writesByName.get(lowered);
-      if (existing) {
-        // last-write-wins — record the duplicate diagnostic against
-        // the earlier block so the user can locate it.
-        diagnostics.push({
-          severity: 'warn',
-          code: GPU_DIAGNOSTIC_CODES.SCRATCH_VARIABLE_DUPLICATE_WRITE,
-          message: `scratch variable '${name}' is written multiple times in region '${region.regionId}'; only the last write is promoted to a WGSL 'let'`,
-          regionId: region.regionId,
-          blockId: existing.blockId,
-        });
-      }
-      writesByName.set(lowered, {
+      const valueInput = block.inputs['VALUE'];
+      const entry: AutoTmpWriteEntry = {
         blockId,
-        valueBlockId: extractBlockReference(block.inputs['VALUE']) ?? '',
-        valueInput: block.inputs['VALUE'],
-        scratchBlock: block,
-      });
+        name,
+        lowered,
+        kind: 'set',
+        valueInput,
+        // Provisional emit name — finalised after topological sort so
+        // the SSA suffix matches the topo index.
+        emitName: '',
+      };
+      appendWrite(writesByName, entry, diagnostics);
+      orderedWrites.push(entry);
       continue;
     }
 
@@ -153,12 +164,27 @@ export function detectAutoTmpBindings(input: DetectAutoTmpInput): AutoTmpVerdict
         // `iteration-advance-pattern`. Skip silently.
         continue;
       }
-      if (!changevariablebyTargets.has(lowered)) {
-        changevariablebyTargets.add(lowered);
+      const deltaInput = block.inputs['VALUE'];
+      const entry: AutoTmpWriteEntry = {
+        blockId,
+        name,
+        lowered,
+        kind: 'change',
+        valueInput: deltaInput,
+        deltaInput,
+        emitName: '',
+      };
+      appendWrite(writesByName, entry, diagnostics);
+      orderedWrites.push(entry);
+      // Single info diagnostic per (name, regionId) so users get
+      // actionable context — surfaces the intent for opt-in to explicit
+      // `@map` or inlining.
+      if (!wroteChangeInfoFor.has(lowered)) {
+        wroteChangeInfoFor.add(lowered);
         diagnostics.push({
           severity: 'info',
           code: GPU_DIAGNOSTIC_CODES.SCRATCH_VARIABLE_CHANGEVARBY_IGNORED,
-          message: `scratch variable '${name}' is mutated via 'change variable by' in region '${region.regionId}'; auto-tmp is single-assignment-only, use an explicit '@map' or inline the accumulation`,
+          message: `scratch variable '${name}' is mutated via 'change variable by' in region '${region.regionId}'; auto-tmp will emit a 'var' declaration so each thread keeps a per-thread mutable copy`,
           regionId: region.regionId,
           blockId,
         });
@@ -179,6 +205,8 @@ export function detectAutoTmpBindings(input: DetectAutoTmpInput): AutoTmpVerdict
         valid: false,
         demoteReason: 'd1',
         bindings: [],
+        reads: new Map(),
+        mutables: [],
         diagnostics: [
           ...diagnostics,
           {
@@ -196,20 +224,23 @@ export function detectAutoTmpBindings(input: DetectAutoTmpInput): AutoTmpVerdict
   // reference other auto-tmp names via `data_variableof`. Walk every
   // VALUE chain to collect the immediate set of auto-tmp dependencies.
   const dependsOn = new Map<string, Set<string>>();
-  for (const [name, write] of writesByName.entries()) {
-    const deps = collectAutoTmpDependencies(write.valueInput, project, writesByName);
-    dependsOn.set(name, deps);
+  const nameSet = new Set(writesByName.keys());
+  for (const write of orderedWrites) {
+    const deps = collectAutoTmpDependencies(write.valueInput, project, nameSet);
+    dependsOn.set(write.blockId, deps);
   }
 
   // Cycle detection (DFS coloring — `cascade-analysis.ts` is the
   // reference implementation for the same pattern over `@map`s).
-  const cycle = detectAutoTmpCycle(writesByName, dependsOn);
+  const cycle = detectAutoTmpCycle(orderedWrites, dependsOn);
   if (cycle) {
     const cyclePath = cycle.join(' -> ');
     return {
       valid: false,
       demoteReason: 'd1',
       bindings: [],
+      reads: new Map(),
+      mutables: [],
       diagnostics: [
         ...diagnostics,
         {
@@ -224,27 +255,154 @@ export function detectAutoTmpBindings(input: DetectAutoTmpInput): AutoTmpVerdict
 
   // Topological sort (Kahn's algorithm). The output is one valid
   // topological order; the emitter uses it verbatim to emit `let`
-  // declarations above the body walk.
-  const topoOrder = topoSortAutoTmp(writesByName, dependsOn);
+  // declarations above the body walk. `topoSortAutoTmp` returns
+  // `set` writes in topological order; we then append `change` writes
+  // for the same scratch var so the mutable-binding builder can pair
+  // every change block with its scratch name.
+  const topoOrder = topoSortAutoTmp(orderedWrites, dependsOn);
+  for (const w of orderedWrites) {
+    if (w.kind === 'change' && !topoOrder.includes(w)) topoOrder.push(w);
+  }
+
+  // Assign emit names per topo order. When a scratch var has multiple
+  // `set` writes, every write gets its own SSA-unique emit name so
+  // scratch reference semantics survive the immutability of WGSL `let`.
+  // Single-write names keep the surface form so existing tests / WGSL
+  // introspection patterns (`let tmp0: f32 = ...;`) survive unchanged.
+  const writeCountByName = new Map<string, number>();
+  for (const w of topoOrder) {
+    writeCountByName.set(w.lowered, (writeCountByName.get(w.lowered) ?? 0) + 1);
+  }
+  for (let i = 0; i < topoOrder.length; i += 1) {
+    const write = topoOrder[i]!;
+    const total = writeCountByName.get(write.lowered) ?? 1;
+    write.emitName = total > 1
+      ? makeSsaEmitName(write.lowered, write.blockId, i)
+      : safeIdentifierForName(write.lowered);
+  }
+
+  // Build per-name mutable bindings. A scratch var becomes `var` when
+  // it has at least one `data_changevariableby`. The initial value is
+  // the most-recent preceding `data_setvariableto` (forward scan); when
+  // there's no preceding `set`, we initialise to 0.
+  const mutables: AutoTmpMutableBinding[] = [];
+  const latestEmitByName = new Map<string, string>();
+  const initialValueByName = new Map<string, unknown>();
+  for (const write of topoOrder) {
+    if (write.kind === 'set') {
+      latestEmitByName.set(write.lowered, write.emitName);
+      if (!initialValueByName.has(write.lowered)) {
+        // First `set` for this name wins as the `var` initialiser (we
+        // need a single initial value; later sets overwrite via body
+        // assignment statements).
+        initialValueByName.set(write.lowered, write.valueInput);
+      }
+    } else {
+      // `change`: the var's emit name is the LATEST SSA name for this
+      // scratch var (so increments land on the same `var` declaration).
+      const latestEmit = latestEmitByName.get(write.lowered);
+      if (!latestEmit) {
+        // `change` without preceding `set`: initialise to 0. The emit
+        // name reuses the change-block hash so the WGSL body can find
+        // the matching `var` declaration.
+        latestEmitByName.set(write.lowered, write.emitName);
+        initialValueByName.set(write.lowered, null);
+      } else {
+        write.emitName = latestEmit;
+      }
+      const initInput = initialValueByName.get(write.lowered) ?? null;
+      mutables.push({
+        name: write.name,
+        lowered: write.lowered,
+        emitName: latestEmit ?? write.emitName,
+        initialInput: initInput,
+        changeBlockIds: [
+          ...(mutables.find((m) => m.lowered === write.lowered)?.changeBlockIds ?? []),
+          write.blockId,
+        ],
+      });
+    }
+  }
+
+  // Build the per-read resolution table. Reads (`data_variable` /
+  // `data_variableof` for auto-tmp names) resolve to the latest
+  // preceding `set` of the same name. We walk the deep body in order
+  // and update `latestAtRead` as we cross each `set` block.
+  const reads = new Map<string, string>();
+  const latestAtRead = new Map<string, string>();
+  for (const blockId of deepBodyIds) {
+    const block = lookupBlock(project, blockId);
+    if (!block) continue;
+    if (block.opcode === 'data_setvariableto') {
+      const name = readScratchVariableName(block);
+      if (!name) continue;
+      const lowered = name.toLowerCase();
+      if (!nameSet.has(lowered)) continue;
+      // Find the topo-ordered write that matches this block id.
+      const write = orderedWrites.find((w) => w.blockId === blockId);
+      if (write) latestAtRead.set(lowered, write.emitName);
+      continue;
+    }
+    if (block.opcode === 'data_variable' || block.opcode === 'data_variableof') {
+      const name = readScratchVariableName(block);
+      if (!name) continue;
+      const lowered = name.toLowerCase();
+      const latest = latestAtRead.get(lowered);
+      if (latest) reads.set(blockId, latest);
+    }
+  }
 
   // Materialise the bindings. The WGSL emitter calls `safeIdentifier`
   // on the surface name to derive `emitName` (handles reserved-word
   // collision uniformly with the existing rename pipeline).
-  const bindings: AutoTmpBinding[] = topoOrder.map((name) => {
-    const write = writesByName.get(name)!;
-    return {
-      name: findOriginalCase(writesByName, name),
-      emitName: name,
+  const bindings: AutoTmpBinding[] = topoOrder
+    .filter((w) => w.kind === 'set')
+    .map((write) => ({
+      name: write.name,
+      emitName: write.emitName,
       blockId: write.blockId,
       sourceBlockId: write.blockId,
-    };
-  });
+    }));
 
   return {
     valid: true,
     bindings,
+    reads,
+    mutables,
     diagnostics,
   };
+}
+
+interface AutoTmpWriteEntry {
+  blockId: string;
+  name: string;
+  lowered: string;
+  kind: 'set' | 'change';
+  valueInput: unknown;
+  deltaInput?: unknown;
+  emitName: string;
+}
+
+const wroteChangeInfoFor = new Set<string>();
+
+function appendWrite(
+  writesByName: Map<string, AutoTmpWriteEntry[]>,
+  entry: AutoTmpWriteEntry,
+  diagnostics: Diagnostic[],
+): void {
+  const existing = writesByName.get(entry.lowered);
+  if (existing && existing.some((w) => w.kind === 'set') && entry.kind === 'set') {
+    diagnostics.push({
+      severity: 'warn',
+      code: GPU_DIAGNOSTIC_CODES.SCRATCH_VARIABLE_DUPLICATE_WRITE,
+      message: `scratch variable '${entry.name}' is written multiple times in region '${entry.blockId}'; SSA uniqueness keeps every write as its own 'let' so channel reads survive`,
+      regionId: '',
+      blockId: entry.blockId,
+    });
+  }
+  const list = writesByName.get(entry.lowered) ?? [];
+  list.push(entry);
+  writesByName.set(entry.lowered, list);
 }
 
 // --- helpers --------------------------------------------------------------
@@ -255,6 +413,54 @@ function lookupBlock(project: ParsedProject, id: string): RawBlock | undefined {
     if (block) return block;
   }
   return undefined;
+}
+
+/**
+ * Deep walk: starting from `inlinedBodyIds` (the kernel container's flat
+ * `next` chain), recurse into every `control_repeat` / `control_if`
+ * SUBSTACK / SUBSTACK2 input AND every input reference so the detector
+ * sees writes that live inside a nested repeat body OR are reached via
+ * an operator chain (= the user's `set idx1 = idx0` + `change idx1 by 1`
+ * inside the inner pixel-axis loop pattern, and the
+ * `data_variable tmp1` references inside the operator chains that
+ * follow).
+ *
+ * Mirrors `region-extractor.ts:walkSubstackBody` exactly so the
+ * auto-tmp-detector's read resolution sees every block the WGSL
+ * emitter will lower.
+ */
+function collectDeepBodyIds(
+  inlinedBodyIds: readonly string[],
+  project: ParsedProject,
+): string[] {
+  const visited = new Set<string>();
+  const out: string[] = [];
+
+  function visit(blockId: string | null | undefined): void {
+    if (!blockId || visited.has(blockId)) return;
+    visited.add(blockId);
+    out.push(blockId);
+    const block = lookupBlock(project, blockId);
+    if (!block) return;
+    // Recurse into nested control flow first so any substack reads
+    // are recorded before the parent's `next` chain continues.
+    for (const key of ['SUBSTACK', 'SUBSTACK2'] as const) {
+      const subId = extractBlockReference(block.inputs?.[key]);
+      if (subId) visit(subId);
+    }
+    // Walk every input reference (= operator chain operands, list
+    // read shadows, etc.) so the detector sees data_variable reporters
+    // reached through operator chains. Same `extractBlockReference`
+    // helper used by `region-extractor.ts:walkSubstackBody`.
+    for (const value of Object.values(block.inputs ?? {})) {
+      const refId = extractBlockReference(value);
+      if (refId) visit(refId);
+    }
+    visit(block.next ?? null);
+  }
+
+  for (const blockId of inlinedBodyIds) visit(blockId);
+  return out;
 }
 
 /**
@@ -297,7 +503,7 @@ function readScratchVariableName(block: RawBlock): string | null {
 function collectAutoTmpDependencies(
   valueInput: unknown,
   project: ParsedProject,
-  writesByName: ReadonlyMap<string, unknown>,
+  candidateNames: ReadonlySet<string>,
 ): Set<string> {
   const deps = new Set<string>();
   const stack: unknown[] = [valueInput];
@@ -321,7 +527,7 @@ function collectAutoTmpDependencies(
       // both encodings.
       if (block.opcode === 'data_variableof' || block.opcode === 'data_variable') {
         const name = readScratchVariableName(block);
-        if (name && writesByName.has(name)) deps.add(name);
+        if (name && candidateNames.has(name)) deps.add(name);
       }
       // Continue walking the block's inputs (operator sub-trees).
       for (const value of Object.values(block.inputs)) {
@@ -346,11 +552,11 @@ function collectAutoTmpDependencies(
  * `[a, b, c, a]` or `null` when acyclic.
  *
  * Mirrors `cascade-analysis.ts:detectCycle` but operates on the
- * `Map<name, Set<name>>` shape produced here. Kept module-local so
- * the two cycle detectors can evolve independently.
+ * `Map<blockId, Set<loweredName>>` shape produced here. Kept module-
+ * local so the two cycle detectors can evolve independently.
  */
 function detectAutoTmpCycle(
-  writesByName: ReadonlyMap<string, unknown>,
+  writes: readonly AutoTmpWriteEntry[],
   dependsOn: ReadonlyMap<string, ReadonlySet<string>>,
 ): string[] | null {
   enum Color {
@@ -360,7 +566,7 @@ function detectAutoTmpCycle(
   }
   const color = new Map<string, Color>();
   const stack: string[] = [];
-  for (const name of writesByName.keys()) color.set(name, Color.White);
+  for (const w of writes) color.set(w.blockId, Color.White);
 
   function visit(node: string): string[] | null {
     color.set(node, Color.Gray);
@@ -368,16 +574,24 @@ function detectAutoTmpCycle(
     const children = dependsOn.get(node);
     if (children) {
       for (const next of children) {
-        const c = color.get(next) ?? Color.White;
+        // Map the lowered-name dependency to the latest preceding
+        // `set` write's block id. We scan all `set` writes in body
+        // order; the DAG edge is "this write depends on the latest
+        // prior `set` of `next`" (later writes mask earlier ones in
+        // scratch reference semantics, so the cycle must close through
+        // the most-recent preceding write).
+        const targetBlockId = findLatestSetWrite(writes, next);
+        if (!targetBlockId) continue;
+        const c = color.get(targetBlockId) ?? Color.White;
         if (c === Color.Gray) {
-          const idx = stack.indexOf(next);
+          const idx = stack.indexOf(targetBlockId);
           if (idx >= 0) {
-            return stack.slice(idx).concat(next);
+            return stack.slice(idx).concat(targetBlockId);
           }
-          return [next, node];
+          return [targetBlockId, node];
         }
         if (c === Color.White) {
-          const r = visit(next);
+          const r = visit(targetBlockId);
           if (r) return r;
         }
       }
@@ -387,13 +601,34 @@ function detectAutoTmpCycle(
     return null;
   }
 
-  for (const name of writesByName.keys()) {
-    if ((color.get(name) ?? Color.White) === Color.White) {
-      const r = visit(name);
+  for (const w of writes) {
+    if ((color.get(w.blockId) ?? Color.White) === Color.White) {
+      const r = visit(w.blockId);
       if (r) return r;
     }
   }
   return null;
+}
+
+/**
+ * For a `data_setvariableto` write whose VALUE chain depends on the
+ * (lowered) name `next`, find the latest `set` write of `next` in the
+ * body's source order. The latest preceding write is the one a
+ * `data_variableof`/`data_variable` reporter in `next`'s chain would
+ * observe (scratch reads the most-recent prior assignment).
+ */
+function findLatestSetWrite(
+  writes: readonly AutoTmpWriteEntry[],
+  next: string,
+): string | undefined {
+  for (let i = writes.length - 1; i >= 0; i -= 1) {
+    const w = writes[i];
+    if (!w) continue;
+    if (w.lowered !== next) continue;
+    if (w.kind !== 'set') continue;
+    return w.blockId;
+  }
+  return undefined;
 }
 
 /**
@@ -403,34 +638,43 @@ function detectAutoTmpCycle(
  * emit `let` declarations).
  */
 function topoSortAutoTmp(
-  writesByName: ReadonlyMap<string, unknown>,
+  writes: readonly AutoTmpWriteEntry[],
   dependsOn: ReadonlyMap<string, ReadonlySet<string>>,
-): string[] {
-  const inDegree = new Map<string, number>();
-  const adj = new Map<string, string[]>();
-  for (const name of writesByName.keys()) {
-    inDegree.set(name, 0);
-    adj.set(name, []);
+): AutoTmpWriteEntry[] {
+  const setWrites = writes.filter((w) => w.kind === 'set');
+  const blockIdToIndex = new Map<string, number>();
+  for (let i = 0; i < setWrites.length; i += 1) {
+    const w = setWrites[i]!;
+    blockIdToIndex.set(w.blockId, i);
   }
-  for (const [dependent, deps] of dependsOn) {
+  const inDegree = new Array<number>(setWrites.length).fill(0);
+  const adj: number[][] = setWrites.map(() => []);
+  for (const w of setWrites) {
+    const deps = dependsOn.get(w.blockId);
+    if (!deps) continue;
     for (const dep of deps) {
-      if (!inDegree.has(dep)) continue;
-      adj.get(dep)?.push(dependent);
-      inDegree.set(dependent, (inDegree.get(dependent) ?? 0) + 1);
+      // Find the latest preceding write of `dep` (by block-id order
+      // in `writes`). If it exists in `setWrites`, that's the edge.
+      const depBlockId = findLatestSetWrite(writes, dep);
+      if (!depBlockId) continue;
+      const depIdx = blockIdToIndex.get(depBlockId);
+      if (depIdx === undefined) continue;
+      adj[depIdx]!.push(blockIdToIndex.get(w.blockId)!);
+      inDegree[blockIdToIndex.get(w.blockId)!]! += 1;
     }
   }
-  const queue: string[] = [];
-  for (const [name, deg] of inDegree) {
-    if (deg === 0) queue.push(name);
+  const queue: number[] = [];
+  for (let i = 0; i < inDegree.length; i += 1) {
+    if (inDegree[i] === 0) queue.push(i);
   }
-  const out: string[] = [];
+  const out: AutoTmpWriteEntry[] = [];
   while (queue.length > 0) {
     const n = queue.shift();
     if (n === undefined) continue;
-    out.push(n);
-    for (const m of adj.get(n) ?? []) {
-      const d = (inDegree.get(m) ?? 0) - 1;
-      inDegree.set(m, d);
+    out.push(setWrites[n]!);
+    for (const m of adj[n] ?? []) {
+      const d = (inDegree[m] ?? 0) - 1;
+      inDegree[m] = d;
       if (d === 0) queue.push(m);
     }
   }
@@ -438,21 +682,32 @@ function topoSortAutoTmp(
 }
 
 /**
- * Recover the original case of a scratch variable name from the
- * writes map. The detector stores names lower-cased for case-
- * insensitive Set membership tests, but the WGSL emitter wants the
- * user's surface form to honour scratch-vm case sensitivity at the
- * UI surface.
+ * Generate a stable, SSA-unique WGSL identifier for one auto-tmp
+ * write block. The naming scheme is `<safeName>_<shortHash>` where
+ * the hash is the FNV-1a 32-bit digest of the block id (mirrors
+ * `hashedIdentifier` from `wgsl-emitter.ts` so the runtime ABI stays
+ * uniform across the GPU kernel pipeline).
  */
-function findOriginalCase(
-  writesByName: ReadonlyMap<string, { scratchBlock: RawBlock }>,
-  lowered: string,
-): string {
-  const write = writesByName.get(lowered);
-  if (!write) return lowered;
-  const name = readScratchVariableName(write.scratchBlock);
-  // We stored lower-cased; the surface form is gone by the time we
-  // reach here, so return the lower-cased form as the canonical name.
-  // The WGSL emitter calls `safeIdentifier` on it anyway.
-  return name ?? lowered;
+function makeSsaEmitName(loweredName: string, blockId: string, index: number): string {
+  const safe = safeIdentifierForName(loweredName);
+  return `${safe}_${shortHash(blockId)}_${index}`;
+}
+
+function safeIdentifierForName(name: string): string {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return name;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < name.length; i += 1) {
+    hash ^= name.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `__tw_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function shortHash(id: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < id.length; i += 1) {
+    hash ^= id.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0').slice(0, 6);
 }

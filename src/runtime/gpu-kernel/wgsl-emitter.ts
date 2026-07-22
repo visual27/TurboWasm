@@ -396,6 +396,47 @@ interface EmitterContext {
    * scratch's case-insensitive variable semantics.
    */
   autoTmpEmitNames: Readonly<Record<string, string>>;
+  /**
+   * §Phase 6 (extended) — SSA-uniqueness resolution table. Maps every
+   * `data_variable` / `data_variableof` block id that targets an
+   * auto-tmp scratch var to the resolved SSA emit name (= the
+   * `let <name>_<hash>_<index>: f32 = ...;` declared for the most-
+   * recent preceding write). The emitter consults this when lowering
+   * expression contexts (operators, list reads) so a read between
+   * two `set tmp1 ...` writes sees the latest value, mirroring
+   * scratch's reference semantics.
+   */
+  autoTmpReads?: ReadonlyMap<string, string>;
+  /**
+   * §Phase 6 (extended) — per-scratch-var mutable bindings. Empty when
+   * no scratch var has a `data_changevariableby` block in the body.
+   * The emitter emits one `var <emitName>: f32 = <initial>;`
+   * declaration per entry above the body walk, then emits
+   * `<emitName> = <emitName> + <delta>;` at each `data_changevariableby`
+   * body position.
+   */
+  autoTmpMutables?: readonly {
+    name: string;
+    emitName: string;
+    initialInput: unknown;
+    changeBlockIds: readonly string[];
+  }[];
+  /**
+   * §Phase 6 (extended) — `data_changevariableby` block id → owning
+   * mutable binding. The emitter looks up the block id at body
+   * position to emit `<emitName> = <emitName> + <delta>;`.
+   */
+  autoTmpMutableByChangeBlockId?: ReadonlyMap<string, { emitName: string; initialInput: unknown }>;
+  /**
+   * §Phase 5 — surface name → `u_scratch.<wgsl_name>` field for any
+   * `@bind ..., scalar` directive. Used by `emitBlockExpression` so
+   * `data_variable` references inside expression contexts (e.g. as
+   * the `INDEX` slot of `data_itemoflist`) resolve to the same
+   * scalar uniform that `scratchBlockToWgslExpr` would produce for
+   * the same reporter. Mirrors `scalarBindings[*].wgslName` so the
+   * host ABI lookup stays in one place.
+   */
+  scalarFieldNames?: ReadonlyMap<string, string>;
 }
 
 export function clampWorkgroupSize(
@@ -629,19 +670,37 @@ export function emitRegion(input: EmitInput): EmitResult {
     effectivePatterns: regionVerdict.blockSubset.effectivePatterns ?? [],
   };
   // §Phase 6 — materialise the auto-tmp binding table. The verdict
-  // already topo-sorted the candidates; we just resolve each surface
-  // name to a WGSL-safe identifier via the existing `safeIdentifier`
-  // helper so reserved-keyword collisions route through the same
-  // hash-renaming pass as `@bind` / `@map`.
+  // already topo-sorted the candidates; we trust the detector's
+  // emit names (which carry SSA uniqueness when the same scratch
+  // name has multiple `set` writes) and only run them through
+  // `safeIdentifier` when the detector did not assign one (= legacy
+  // callers that build a synthetic `AutoTmpVerdict` without going
+  // through `detectAutoTmpBindings`).
   const autoTmpBindings: AutoTmpBinding[] = (regionVerdict.autoTmpVerdict?.bindings ?? []).map(
     (binding) => ({
       ...binding,
-      emitName: safeIdentifier(binding.name),
+      emitName: binding.emitName && binding.emitName.length > 0
+        ? binding.emitName
+        : safeIdentifier(binding.name),
     }),
   );
   const autoTmpEmitNames: Record<string, string> = {};
   for (const binding of autoTmpBindings) {
     autoTmpEmitNames[binding.name.toLowerCase()] = binding.emitName;
+  }
+  const autoTmpReads = regionVerdict.autoTmpVerdict?.reads;
+  const autoTmpMutables = regionVerdict.autoTmpVerdict?.mutables;
+  const autoTmpMutableByChangeBlockId = new Map<
+    string,
+    { emitName: string; initialInput: unknown }
+  >();
+  for (const m of autoTmpMutables ?? []) {
+    for (const cid of m.changeBlockIds) {
+      autoTmpMutableByChangeBlockId.set(cid, {
+        emitName: m.emitName,
+        initialInput: m.initialInput,
+      });
+    }
   }
   const context: EmitterContext = {
     regionId: regionVerdict.regionId,
@@ -666,6 +725,10 @@ export function emitRegion(input: EmitInput): EmitResult {
     axisVerdicts,
     autoTmpBindings,
     autoTmpEmitNames,
+    autoTmpReads,
+    autoTmpMutables,
+    autoTmpMutableByChangeBlockId,
+    scalarFieldNames,
   };
 
   const lines: string[] = [
@@ -700,6 +763,26 @@ export function emitRegion(input: EmitInput): EmitResult {
   // formula emission and auto-tmp `let` emission. Built once with the
   // auto-tmp emit-name table so cross-tmp references resolve.
   const scratchExprCtx = buildScratchBlockExprContextForEmit(context, scalarBindings);
+
+  // §Phase 6 (extended) — detect fold patterns. A scratch var with a
+  // `data_changevariableby` block INSIDE a parallel-axis
+  // control_repeat (= `axisVerdicts` reports a non-sequential axis)
+  // cannot use a `var` + increment pattern (each thread would do the
+  // increment once and end up with the same value). Instead, we fold
+  // the change into a `let name = <preceding_set_value> + <axisVar> *
+  // <delta>` declaration and skip the change block at body position.
+  //
+  // The fold map is keyed by the *lower-cased scratch var name*; the
+  // value carries the axis @map name (= the axis variable the body
+  // can reference, e.g. `Rx`) and the per-thread delta string (e.g.
+  // `Rx * 1.0`).
+  const foldPatterns = detectFoldPatterns(
+    blocks,
+    regionVerdict,
+    axisVerdicts,
+    repeatByBlockId,
+  );
+
   for (const map of orderedMaps) {
     // §Phase E: quoted `@map` names use `internalName` as the WGSL
     // `let` binding. The collision-rename pass above (renamed.renameTable)
@@ -708,7 +791,44 @@ export function emitRegion(input: EmitInput): EmitResult {
     // keyword collisions.
     const emittedName = renamed.renameTable[map.var] ?? map.var;
     const formula = emitFormula(map.formula, map, context);
-    lines.push(`  let ${emittedName}: f32 = ${formula};`);
+    // §Phase 6 (extended) — `__tw_gid.x` is a `vec3<u32>` element of
+    // type `u32`. WGSL requires explicit conversion `u32 → f32`, so
+    // wrap the formula in `f32(...)` whenever it references
+    // `__tw_gid` (= the kernel parameter that carries the
+    // `global_invocation_id` builtin). This is what lets a user write
+    // `@map R0 <- __tw_gid.x` and get a thread-indexed `let` binding.
+    const wrapped = wrapGidFormula(formula);
+    lines.push(`  let ${emittedName}: f32 = ${wrapped};`);
+  }
+  // §Phase 6 — mutable scratch-var `var` declarations. Each entry's
+  // `initialInput` is the most-recent preceding `set` (or `null` for
+  // 0-init). The same `var` is reused by every `data_changevariableby`
+  // body block via `autoTmpMutableByChangeBlockId`; the latest SSA
+  // name for the scratch name (= a `let` declared further down for a
+  // re-`set`) shadows the `var` but is the same `emitName`, so the
+  // increment assignment lands correctly.
+  //
+  // §Phase 6 (extended) — when a fold pattern targets this mutable's
+  // scratch var (= the `set X = <base>` lives outside the parallel
+  // axis loop and `change X by N` lives inside), append
+  // `+ <axisVar> * N` to the initialiser so each thread computes its
+  // own per-thread index in a single `var` declaration (= the body-
+  // position increment is then skipped by `isChangeInsideParallelAxis`).
+  for (const m of autoTmpMutables ?? []) {
+    const fold = foldPatterns.get(m.lowered);
+    if (m.initialInput === null) {
+      const suffix = fold ? ` + ${fold.suffix}` : '';
+      lines.push(`  var ${m.emitName}: f32 = 0.0${suffix};`);
+    } else {
+      const initialExpr = lowerMutableInitial(m.initialInput, context, scratchExprCtx);
+      if (initialExpr === null) {
+        const suffix = fold ? ` + ${fold.suffix}` : '';
+        lines.push(`  var ${m.emitName}: f32 = 0.0${suffix};`);
+      } else {
+        const suffix = fold ? ` + ${fold.suffix}` : '';
+        lines.push(`  var ${m.emitName}: f32 = ${initialExpr}${suffix};`);
+      }
+    }
   }
   // §Phase 6 — auto-tmp `let` declarations. The bindings are already
   // topologically ordered by `detectAutoTmpBindings`. Each binding's
@@ -716,11 +836,31 @@ export function emitRegion(input: EmitInput): EmitResult {
   // WGSL expression via the same `scratchBlockToWgslExpr` path used
   // for `@map` formula emission, with `autoTmpEmitNames` threaded
   // through `ScratchBlockExprContext` so cross-tmp references resolve.
+  //
+  // §Phase 6 (extended) — when a fold pattern targets this binding's
+  // scratch var (= the `set X = <base>` lives outside the parallel-
+  // axis loop and `change X by N` lives inside it), append
+  // `+ <axisVar> * N` to the let expression so each thread computes
+  // its own per-thread index in a single statement. When the same
+  // scratch var has a `var` mutable (= `data_changevariableby` outside
+  // any parallel axis), skip the `let` because the `var` already
+  // declares the storage and the body-position increment carries
+  // through.
+  const mutableLowerNames = new Set((autoTmpMutables ?? []).map((m) => m.lowered));
   for (const autoTmp of autoTmpBindings) {
+    if (mutableLowerNames.has(autoTmp.name.toLowerCase())) {
+      // Skip — `var` declaration already covers this scratch var.
+      continue;
+    }
     const scratchBlock = blocks[autoTmp.blockId];
     if (!scratchBlock) continue;
     const expr = emitAutoTmpValueExpression(scratchBlock, context, scratchExprCtx);
-    lines.push(`  let ${autoTmp.emitName}: f32 = ${expr};`);
+    const fold = foldPatterns.get(autoTmp.name.toLowerCase());
+    if (fold) {
+      lines.push(`  let ${autoTmp.emitName}: f32 = ${expr} + ${fold.suffix};`);
+    } else {
+      lines.push(`  let ${autoTmp.emitName}: f32 = ${expr};`);
+    }
   }
 
   // §Phase 4: the kernel container itself is the body entry point.
@@ -1331,6 +1471,231 @@ function resolveInputBlock(input: unknown, blocks: Record<string, RawBlock>): Ra
 }
 
 /**
+ * §Phase 6 (extended) — wrap an `@map` formula in `f32(...)` when it
+ * references `__tw_gid` so the WGSL type checker accepts the `u32`
+ * builtin result. Without the explicit cast WGSL rejects the implicit
+ * `u32 → f32` conversion with `TypeError: cannot convert value of type
+ * u32 to f32`.
+ *
+ * The wrap only fires when the formula actually contains a `__tw_gid`
+ * reference — every other formula is passed through verbatim.
+ */
+function wrapGidFormula(formula: string): string {
+  if (!formula.includes('__tw_gid')) return formula;
+  return `f32(${formula})`;
+}
+
+/**
+ * §Phase 6 (extended) — lower a mutable scratch-var initialiser to a
+ * WGSL expression. Mirrors `emitAutoTmpValueExpression` but resolves
+ * the `inputs.VALUE` shape directly (without `data_setvariableto`'s
+ * block wrapper). Returns `null` for opcodes the scratch reverse-
+ * translator does not cover so the caller can fall back to `0.0`.
+ */
+function lowerMutableInitial(
+  valueInput: unknown,
+  context: EmitterContext,
+  scratchExprCtx: ScratchBlockExprContext,
+): string | null {
+  const valueBlock = resolveInputBlock(valueInput, context.blocks);
+  if (!valueBlock) return null;
+  return scratchBlockToWgslExpr(valueBlock, context.blocks, scratchExprCtx);
+}
+
+interface FoldPattern {
+  /** Lower-cased scratch var name being folded. */
+  loweredName: string;
+  /** WGSL expression appended to the auto-tmp `let` declaration. */
+  suffix: string;
+}
+
+/**
+ * §Phase 6 (extended) — detect fold patterns in the kernel body.
+ *
+ * For each `data_changevariableby` block, walk the parent chain to see
+ * whether it lives inside a control_repeat whose directive (if any)
+ * maps to a parallel axis. If so, the change block must fold into the
+ * preceding `set` block (= `let X = <base> + <axisVar> * N`) instead of
+ * running sequentially on each thread.
+ *
+ * Returns a map keyed by lower-cased scratch var name → fold suffix
+ * (the `<axisVar> * N` portion that the emitter appends to the
+ * auto-tmp `let` declaration).
+ *
+ * The detector only emits ONE fold per scratch var; multiple change
+ * blocks for the same name are flattened into a single suffix (with
+ * the deltas summed) — this matches scratch's sequential semantics
+ * inside the parallel loop.
+ */
+function detectFoldPatterns(
+  blocks: Record<string, RawBlock>,
+  regionVerdict: RegionVerdict,
+  axisVerdicts: Readonly<Record<string, { finalAxis: AxisFinal }>>,
+  repeatByBlockId: ReadonlyMap<string, ResolvedRepeatDirective>,
+): Map<string, FoldPattern> {
+  const out = new Map<string, FoldPattern>();
+
+  // Build a reverse map: any control_repeat block id → its resolved
+  // directive's axisVar (= the @map variable name). Sequential axes
+  // don't qualify.
+  const repeatToAxisVar = new Map<string, string>();
+  for (const [blockId, directive] of repeatByBlockId.entries()) {
+    const axisName = directive.name;
+    const finalAxis = axisVerdicts[axisName]?.finalAxis ?? directive.axis;
+    if (finalAxis === 'sequential' || finalAxis.startsWith('local_')) continue;
+    repeatToAxisVar.set(blockId, axisName);
+  }
+
+  // Collect every `data_changevariableby` block in the body (including
+  // those inside nested control_repeat substack trees — the bodyIds
+  // reachable from any block in the project via parent/next walks).
+  for (const block of Object.values(blocks)) {
+    if (block.opcode !== 'data_changevariableby') continue;
+
+    // Walk the parent chain. The first control_repeat we encounter
+    // is the innermost loop (= the loop the change runs in). If that
+    // loop has a parallel axis, this change is foldable.
+    let parentId: string | null = block.parent;
+    let enclosingParallelRepeatId: string | null = null;
+    let depth = 0;
+    while (parentId && depth < 32) {
+      if (repeatToAxisVar.has(parentId)) {
+        enclosingParallelRepeatId = parentId;
+        break;
+      }
+      const parentBlock: RawBlock | undefined = blocks[parentId];
+      parentId = parentBlock?.parent ?? null;
+      depth += 1;
+    }
+    if (!enclosingParallelRepeatId) continue;
+
+    const axisVar = repeatToAxisVar.get(enclosingParallelRepeatId);
+    if (!axisVar) continue;
+    const axisVarRename = context_renameAxisVar(axisVar, regionVerdict);
+
+    const varName = readChangeVarName(block);
+    if (!varName) continue;
+
+    // Extract the delta as a numeric literal (or fallback to 1 for
+    // scratch's `change X by 1` style with literal-1 shadow). We
+    // only support literal-numeric deltas here — anything else would
+    // need a per-axis formula and is left to the WGSL-side increment
+    // path.
+    const delta = readLiteralNumber(block.inputs['VALUE'], blocks);
+    if (delta === null) continue;
+
+    const lowered = varName.toLowerCase();
+    const existing = out.get(lowered);
+    const foldSuffix = `${axisVarRename} * ${formatF32(delta)}`;
+    if (existing) {
+      // Multiple change blocks for the same name → sum the deltas.
+      out.set(lowered, {
+        loweredName: lowered,
+        suffix: `${existing.suffix} + ${foldSuffix}`,
+      });
+    } else {
+      out.set(lowered, { loweredName: lowered, suffix: foldSuffix });
+    }
+  }
+
+  return out;
+}
+
+function context_renameAxisVar(axisVar: string, regionVerdict: RegionVerdict): string {
+  for (const d of regionVerdict.directives) {
+    if (d.kind === 'map' && d.var === axisVar) return d.var;
+  }
+  return axisVar;
+}
+
+function readChangeVarName(block: RawBlock): string | null {
+  const field = block.fields['VARIABLE'];
+  if (!field) return null;
+  if (typeof field === 'string') return field;
+  if (Array.isArray(field)) {
+    for (const item of field) {
+      if (typeof item === 'string') return item;
+    }
+  }
+  if (field && typeof field === 'object') {
+    const obj = field as Record<string, unknown>;
+    if (typeof obj['name'] === 'string') return obj['name'];
+    if (typeof obj['id'] === 'string') return obj['id'];
+  }
+  return null;
+}
+
+function readLiteralNumber(input: unknown, blocks?: Record<string, RawBlock>): number | null {
+  if (input === null || input === undefined) return null;
+  if (typeof input === 'number') {
+    return Number.isFinite(input) ? input : null;
+  }
+  if (Array.isArray(input) && input.length >= 2) {
+    const tail = input[1];
+    if (Array.isArray(tail) && tail.length >= 2) {
+      const opcode = tail[0];
+      const literal = tail[1];
+      if ((opcode === 'math_number' || opcode === 'math_integer') && typeof literal === 'string') {
+        const n = Number(literal);
+        if (Number.isFinite(n)) return n;
+      }
+    }
+  }
+  if (typeof input === 'string') {
+    const n = Number(input);
+    if (Number.isFinite(n)) return n;
+  }
+  // Block reference: resolve via the project's block map and read the
+  // literal payload from `fields.NUM` (= `math_number` / `math_integer`
+  // shape). Two indirection levels (one for the input wrapper, one
+  // for the block fields) cover both `[shadowKind, 'blockId']` and
+  // `{ id: 'blockId' }` reference shapes.
+  if (blocks) {
+    const refId = extractBlockReference(input);
+    if (refId && blocks[refId]) {
+      const block = blocks[refId];
+      if (block && (block.opcode === 'math_number' || block.opcode === 'math_integer')) {
+        const numField = block.fields['NUM'];
+        // Accept both `[number, null]` (= freshly-built fixture / hand-
+        // written test) and `[string, null]` (= scratch-vm serialised).
+        if (Array.isArray(numField)) {
+          const raw = numField[0];
+          const n = typeof raw === 'string' ? Number(raw) : typeof raw === 'number' ? raw : NaN;
+          if (Number.isFinite(n)) return n;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * §Phase 6 (extended) — returns true when the change block sits inside
+ * a control_repeat whose directive is registered as a parallel axis
+ * (= the `axisVerdicts` map resolves the axis name to a non-sequential
+ * final axis). Used by the fold path to skip the change block at
+ * body position.
+ */
+function isChangeInsideParallelAxis(block: RawBlock, context: EmitterContext): boolean {
+  let parentId: string | null = block.parent;
+  let depth = 0;
+  while (parentId && depth < 32) {
+    if (context.repeatByBlockId.has(parentId)) {
+      const directive = context.repeatByBlockId.get(parentId);
+      if (!directive) return false;
+      const finalAxis =
+        context.axisVerdicts[directive.name]?.finalAxis ?? directive.axis;
+      if (finalAxis !== 'sequential' && !finalAxis.startsWith('local_')) return true;
+      return false;
+    }
+    const parentBlock: RawBlock | undefined = context.blocks[parentId];
+    parentId = parentBlock?.parent ?? null;
+    depth += 1;
+  }
+  return false;
+}
+
+/**
  * Build a `ScratchBlockExprContext` that mirrors the emitter's
  * current rename + scalar binding state, augmented with the auto-tmp
  * emit-name table so `data_variableof` references resolve to the
@@ -1352,32 +1717,6 @@ function buildScratchBlockExprContextForEmit(
   };
 }
 
-/**
- * Read a scratch variable name off a `data_setvariableto` /
- * `data_changevariableby` block's `fields.VARIABLE` slot. Returns
- * the surface name (case preserved) or `null` when the slot is
- * missing or uses an unsupported shape. Mirrors the accept criteria
- * in `axis-analysis.ts:findVariableWrites` /
- * `auto-tmp-detector.ts:readScratchVariableName`.
- */
-function readScratchVariableFieldName(block: RawBlock): string | null {
-  const field = block.fields['VARIABLE'];
-  if (!field) return null;
-  if (typeof field === 'string') return field;
-  if (Array.isArray(field)) {
-    for (const item of field) {
-      if (typeof item === 'string') return item;
-    }
-    return null;
-  }
-  if (typeof field === 'object') {
-    const obj = field as Record<string, unknown>;
-    if (typeof obj['name'] === 'string') return obj['name'];
-    if (typeof obj['id'] === 'string') return obj['id'];
-  }
-  return null;
-}
-
 function emitStatement(block: RawBlock, context: EmitterContext): string[] {
   if (block.opcode === 'data_setvariableto') {
     // §Phase 6 — when this `data_setvariableto` is the source of an
@@ -1385,11 +1724,35 @@ function emitStatement(block: RawBlock, context: EmitterContext): string[] {
     // emitted at the top of the kernel body (above the `for` / repeat
     // walk). The body position emits nothing so the actual `let`
     // ordering is preserved (= dependency comes before consumer).
-    const name = readScratchVariableFieldName(block);
-    if (name && context.autoTmpEmitNames[name.toLowerCase()] !== undefined) {
+    return [];
+  }
+  if (block.opcode === 'data_changevariableby') {
+    // §Phase 6 (extended) — mutable scratch var (`change <name> by
+    // <delta>`) lowers to `<emitName> = <emitName> + <delta>;` using
+    // the latest SSA emit name resolved by the auto-tmp detector. The
+    // matching `var` declaration lives at the top of the body so the
+    // increment assignment lands on the right storage.
+    //
+    // When the change block lives INSIDE a parallel axis loop AND
+    // its scratch var has a preceding `set` (= the fold pattern), the
+    // increment is rolled into the `let` declaration at the top of
+    // the kernel body and the change block is skipped here. Each
+    // thread then computes its own per-thread index in a single
+    // expression (`let X = <base> + Rx * N`) instead of every thread
+    // doing the same increment.
+    const mutable = context.autoTmpMutableByChangeBlockId?.get(block.id);
+    if (!mutable) {
+      diagnoseUnsupported(block, context);
       return [];
     }
-    return [];
+    // The detector passes fold info via `autoTmpMutables[*].changeBlockIds`.
+    // When the change is folded (parent chain reaches a parallel
+    // control_repeat AND a preceding `set` exists), skip the body
+    // position increment. The body's `let` declaration already carries
+    // the `+ <axisVar> * N` suffix.
+    if (isChangeInsideParallelAxis(block, context)) return [];
+    const deltaExpr = emitInput(block.inputs['VALUE'], context);
+    return [`${mutable.emitName} = ${mutable.emitName} + (${deltaExpr});`];
   }
   if (block.opcode === 'data_replaceitemoflist') {
     const statement = emitListWrite(block, context);
@@ -1407,28 +1770,32 @@ function emitStatement(block: RawBlock, context: EmitterContext): string[] {
     block.opcode === 'operator_mathop' ||
     block.opcode === 'data_itemoflist'
   ) {
-    return [`let __tw_expr_${shortHash(block.id)}: f32 = ${emitBlockExpression(block, context)};`];
+    return [`let __tw_expr_${shortHash(block.id)}: f32 = ${emitBlockExpression(block, context, block.id)};`];
   }
   diagnoseUnsupported(block, context);
   return [];
 }
 
-function emitBlockExpression(block: RawBlock, context: EmitterContext): string {
+function emitBlockExpression(block: RawBlock, context: EmitterContext, currentBlockId?: string): string {
   if (context.expressionStack.has(block.id)) {
     diagnoseUnsupported(block, context);
     return '0.0';
   }
   context.expressionStack.add(block.id);
-  const expression = emitBlockExpressionInner(block, context);
+  const expression = emitBlockExpressionInner(block, context, currentBlockId);
   context.expressionStack.delete(block.id);
   return expression;
 }
 
-function emitBlockExpressionInner(block: RawBlock, context: EmitterContext): string {
+function emitBlockExpressionInner(
+  block: RawBlock,
+  context: EmitterContext,
+  currentBlockId?: string,
+): string {
   const binaryInputs = BINARY_INPUTS[block.opcode];
   if (binaryInputs) {
-    const left = emitInput(block.inputs[binaryInputs[0]], context);
-    const right = emitInput(block.inputs[binaryInputs[1]], context);
+    const left = emitInput(block.inputs[binaryInputs[0]], context, currentBlockId);
+    const right = emitInput(block.inputs[binaryInputs[1]], context, currentBlockId);
     switch (block.opcode) {
       case 'operator_add':
         return `(${left} + ${right})`;
@@ -1455,7 +1822,7 @@ function emitBlockExpressionInner(block: RawBlock, context: EmitterContext): str
     }
   }
   if (block.opcode === 'operator_not') {
-    const operand = emitInput(block.inputs['OPERAND'], context);
+    const operand = emitInput(block.inputs['OPERAND'], context, currentBlockId);
     return `select(1.0, 0.0, scratch_bool(${operand}) != 0.0)`;
   }
   if (block.opcode === 'operator_mathop') {
@@ -1465,20 +1832,50 @@ function emitBlockExpressionInner(block: RawBlock, context: EmitterContext): str
   if (isNumberReporter(block.opcode)) return emitNumberField(block);
   if (block.opcode === 'data_variable') {
     const variable = fieldName(block.fields['VARIABLE']);
-    if (variable && context.mapNames.has(variable)) {
-      const name = context.renameTable[variable] ?? variable;
-      return context.sequentialNames.has(variable) ? `f32(${name})` : name;
+    if (variable) {
+      // §Phase 5: `@map` alias takes priority (scratch-side variable
+      // alias for an axis / dispatch coordinate).
+      if (context.mapNames.has(variable)) {
+        const name = context.renameTable[variable] ?? variable;
+        return context.sequentialNames.has(variable) ? `f32(${name})` : name;
+      }
+      // §Phase 6 (extended) — SSA-uniqueness resolution. The
+      // `autoTmpReads` map is keyed by the `data_variable` block id
+      // (= the reader block, NOT the caller block), so the lookup
+      // uses `block.id` directly. The detector walked the body and
+      // pinned each read to the latest preceding write of the same
+      // scratch var; we resolve to that emit name verbatim. Falls
+      // through to the legacy single-binding map when no SSA entry
+      // exists (= no writes for this name).
+      if (context.autoTmpReads) {
+        const ssaEmit = context.autoTmpReads.get(block.id);
+        if (ssaEmit) return ssaEmit;
+      }
+      // §Phase 6 — auto-tmp `let` binding wins next so a scratch tmp
+      // referenced inside a `data_itemoflist` index or a
+      // `operator_multiply` operand resolves to the synthesised
+      // identifier. Without this, an auto-tmp'd scratch var inside
+      // any nested expression would fall through to
+      // `diagnoseUnsupported` and silently degrade to `0.0`.
+      const autoTmpEmit = context.autoTmpEmitNames?.[variable.toLowerCase()];
+      if (autoTmpEmit) return autoTmpEmit;
+      // §Phase 3 — `@bind ..., scalar` routing. The runtime adapter
+      // reads the value through `u_scratch.<wgsl_name>` at dispatch
+      // time, so a direct reference here mirrors the scalarBindings
+      // path used by `scratchBlockToWgslExpr`.
+      const scalarField = context.scalarFieldNames?.get(variable);
+      if (scalarField) return `u_scratch.${scalarField}`;
     }
   }
   diagnoseUnsupported(block, context);
   return '0.0';
 }
 
-function emitInput(input: unknown, context: EmitterContext): string {
+function emitInput(input: unknown, context: EmitterContext, currentBlockId?: string): string {
   const reference = blockReference(input, context.blocks);
   if (reference) {
     const block = context.blocks[reference];
-    if (block) return emitBlockExpression(block, context);
+    if (block) return emitBlockExpression(block, context, currentBlockId);
   }
   const literal = inputLiteral(input, context.blocks);
   if (typeof literal === 'number') return formatF32(literal);

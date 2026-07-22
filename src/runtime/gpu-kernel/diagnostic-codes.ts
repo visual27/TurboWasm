@@ -131,20 +131,29 @@ export const GPU_DIAGNOSTIC_CODES = {
    */
   SCRATCH_VARIABLE_CYCLE: 'gpu.scratch_variable_cycle',
   /**
-   * §Phase 6 — auto-tmp detector observed multiple `data_setvariableto`
-   * writes to the same scratch variable. The detector applies
-   * last-write-wins (the last write wins, earlier writes are dropped).
-   * Severity `warn` — the user may have meant to use `@map` for
-   * sequential binding or to surface the dynamic-semantics divergence.
+   * §Phase 6 (extended) — auto-tmp detector observed multiple
+   * `data_setvariableto` writes to the same scratch variable in the
+   * region body. The detector applies **SSA uniqueness** — every
+   * write gets its own `let <name>_<hash>_<index>: f32 = ...;`
+   * declaration so a later read in the operator chain sees the
+   * latest value (mirrors scratch's reference semantics). The
+   * diagnostic surfaces a `warn` so the user can confirm the
+   * scratch-side dynamic semantics are intentional (e.g. per-
+   * channel R/G/B assignments to `tmp1`).
    */
   SCRATCH_VARIABLE_DUPLICATE_WRITE: 'gpu.scratch_variable_duplicate_write',
   /**
-   * §Phase 6 — auto-tmp detector observed a `data_changevariableby`
-   * targeting a non-`@bind`/non-`@repeat` scratch variable. The
-   * auto-tmp pass is single-assignment-only (WGSL `let` is
-   * non-reassignable), so such targets are not promoted. The user
-   * is expected to use an explicit `@map` or to inline the
-   * accumulation. Severity `info`.
+   * §Phase 6 (extended) — auto-tmp detector observed a
+   * `data_changevariableby` on a scratch variable. The detector
+   * emits a single `var <name>: f32 = <initial>;` declaration that
+   * the latest SSA name for that scratch var reuses, then the WGSL
+   * emitter follows each `data_changevariableby` block with
+   * `<latestEmitName> = <latestEmitName> + <delta>;`. When the
+   * change block sits inside a parallel-axis `control_repeat`, the
+   * detector folds the increment into the preceding `let` (=
+   * `let <name> = <base> + <axisVar> * <delta>`) so each thread
+   * computes its own per-thread index in one expression. Severity
+   * `info` — surfaces the intent without blocking the region.
    */
   SCRATCH_VARIABLE_CHANGEVARBY_IGNORED: 'gpu.scratch_variable_changevariableby_ignored',
 } as const;

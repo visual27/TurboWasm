@@ -95,6 +95,16 @@ export const FIXTURE_GENERATORS = {
   // `test/runtime/gpu-kernel/custom-block-fixture.test.ts`.
   'custom-block-fixture.sb3': () =>
     import('./make-custom-block-fixture.mjs').then((m) => m.makeCustomBlockFixture()),
+  // User-facing pixel-level expo calculation wrapped in a custom block
+  // (`fn_expo %s`). The `@compute` marker sits on the middle
+  // `repeat(aabb_h[aabb_idx0])` block (= Form A kernel container, per
+  // gpu-kernel-dsl-phase4 §4.1) and the inner `repeat(aabb_tmp0)`
+  // becomes the `global_x` dispatch axis via `repeatPath="0"`. Drives
+  // `scripts/measure-expo-custom-block.mjs` (real-device chrome-devtools
+  // benchmark) and the in-memory pipeline test in
+  // `test/runtime/gpu-kernel/expo-custom-block-fixture.test.ts`.
+  'expo-custom-block-fixture.sb3': () =>
+    import('./make-expo-custom-block-fixture.mjs').then((m) => m.makeExpoCustomBlockFixture()),
   // §Phase 6 (gpu-kernel-scratch-temporary-let-binding.md) — auto-tmp
   // fixture. A single `@compute` region whose body carries scratch
   // `data_setvariableto` writes (`tmp0`, `tmp1`) without explicit

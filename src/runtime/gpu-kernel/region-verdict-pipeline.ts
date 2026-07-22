@@ -174,7 +174,14 @@ export function buildRegionVerdicts(input: RegionVerdictInputs): RegionVerdictOu
         spriteId: region.spriteId,
         directives: resolved.directives as RegionVerdict['directives'],
         blockSubset: demotedBlockSubset,
-        autoTmpVerdict,
+        autoTmpVerdict: {
+          ...autoTmpVerdict,
+          // Guard against a missing `reads` / `mutables` (e.g. legacy
+          // callers that built a synthetic verdict without running
+          // through `detectAutoTmpBindings`).
+          reads: autoTmpVerdict.reads ?? new Map(),
+          mutables: autoTmpVerdict.mutables ?? [],
+        },
         axes: {},
         cascade: { valid: false, demoteReason: 'd1', diagnostics: [], topoOrder: [] },
         diagnostics: [

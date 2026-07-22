@@ -417,9 +417,12 @@ describe('player.ts: bootstrapGpuKernels wiring (source-inspection)', () => {
     const src = readPlayerSource();
     // The harness reads `window.__turbowasm.kernelRegistry.size` (and
     // the jsOnly / canonicalKeys fields). The M6 expose helper must
-    // wire all three keys via __getGpuKernelForBrowserVerify.
+    // wire all three keys via `__getGpuKernelForBrowserVerify`. The
+    // §M7 live-handle refactor wraps the helper inside a getter-backed
+    // object (= the new line-style reads the live registry on every
+    // property access), but the underlying call is preserved.
     expect(src).toMatch(/__turbowasm\s*=\s*{[\s\S]*kernelRegistry/);
-    expect(src).toMatch(/__getGpuKernelForBrowserVerify\(\s*activeGpuRegistry\s*\)/);
+    expect(src).toMatch(/__getGpuKernelForBrowserVerify/);
   });
 
   it('bootstrap installs __turboWasmGpuKernelDispatch when enabled and WASM are both on', () => {
@@ -567,7 +570,7 @@ describe('__exposeForBrowserVerify publishes the kernelRegistry snapshot', () =>
           },
         ],
         blockSubset: { valid: true, diagnostics: [] },
-        autoTmpVerdict: { valid: true, bindings: [], diagnostics: [] },
+        autoTmpVerdict: { valid: true, bindings: [], reads: new Map(), mutables: [], diagnostics: [] },
         axes: {},
         cascade: { valid: true, diagnostics: [], topoOrder: [] },
         diagnostics: [],

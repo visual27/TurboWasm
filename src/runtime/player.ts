@@ -34,6 +34,7 @@ import {
   __getGpuKernelForBrowserVerify,
   __setGpuKernelDispatcher,
   __uninstallGpuKernelRegistryForTesting,
+  getKernelTimingLiveHandle,
 } from '@/runtime/gpu-kernel/apply-gpu-kernels';
 import { initializeGpuKernels } from '@/runtime/gpu-kernel/initialize-gpu-kernels';
 import { KernelRegistry } from '@/runtime/gpu-kernel/kernel-registry';
@@ -578,15 +579,57 @@ function attachedScaffoldingHasVm(scaffolding: ScaffoldingInstance): boolean {
    * scope under `window.__turbowasm` so browser-based smoke tests can
    * inspect the installed TurboWasm hooks (`_twWasm*`). Production code
    * never calls this; it exists for `scripts/verify-browser.mjs`.
+   *
+   * The exposed object holds **live handles** for `kernelRegistry` and
+   * `gpuKernelTiming` (not frozen snapshots). Browser-side benchmarks
+   * (`scripts/measure-expo-custom-block.mjs`,
+   * `scripts/verify-gpu-kernel.mjs`) poll `window.__turbowasm` via
+   * `evaluate_script` and need to observe the live accumulator state
+   * mid-flight — a snapshot taken at the call site would be stale by
+   * the time the benchmark reads it.
    */
   export function __exposeForBrowserVerify(): void {
     if (typeof window === 'undefined') return;
     const renderer = (attachedScaffolding?.renderer ?? null) as
       | (Record<string, unknown> & { _twWasmIsTouchingDrawables?: unknown })
       | null;
+    // §M7 — live handle for the GPU kernel registry. Reads back the
+    // current registry state on every property access (= after
+    // `bootstrapGpuKernels` populates the registry post-project-load,
+    // the next `evaluate_script` call sees the updated `size`).
+    // Wraps `__getGpuKernelForBrowserVerify` (= the snapshot helper
+    // already exported from `apply-gpu-kernels.ts`) in a getter-backed
+    // object so the verify script's mid-flight polls observe fresh
+    // counts. Mirrors `getKernelTimingLiveHandle` below.
     const kernelRegistry = activeGpuRegistry
-      ? __getGpuKernelForBrowserVerify(activeGpuRegistry)
-      : { size: 0, jsOnly: 0, canonicalKeys: [] };
+      ? {
+          get size() {
+            return __getGpuKernelForBrowserVerify(activeGpuRegistry!).size;
+          },
+          get jsOnly() {
+            return __getGpuKernelForBrowserVerify(activeGpuRegistry!).jsOnly;
+          },
+          get canonicalKeys() {
+            return __getGpuKernelForBrowserVerify(activeGpuRegistry!).canonicalKeys;
+          },
+        }
+      : {
+          get size() {
+            return 0;
+          },
+          get jsOnly() {
+            return 0;
+          },
+          get canonicalKeys() {
+            return [] as string[];
+          },
+        };
+    // §M7 — kernel dispatch wall-time accumulator. Reset per
+    // project reload so browser-side benchmarks (e.g.
+    // `scripts/measure-expo-custom-block.mjs`) get a clean slate on
+    // each load. The accumulator itself is module-private in
+    // `apply-gpu-kernels.ts`; this snapshot is just a frozen copy.
+    const gpuKernelTiming = getKernelTimingLiveHandle();
     (window as unknown as { __turbowasm: unknown }).__turbowasm = {
       scaffolding: attachedScaffolding,
       renderer,
@@ -594,6 +637,7 @@ function attachedScaffoldingHasVm(scaffolding: ScaffoldingInstance): boolean {
       enableWasm: useSettingsStore.getState().enableWasm,
       kernelRegistry,
       enableWebgpu: currentAdvanced?.enableWebgpu ?? true,
+      gpuKernelTiming,
     };
   }
 

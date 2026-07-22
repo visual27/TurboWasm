@@ -48,7 +48,7 @@ function makeVerdict(blockId: string, binds: BindDirective[]): RegionVerdict {
     spriteId: 'sprite',
     directives: binds,
     blockSubset: { valid: true, diagnostics: [] },
-    autoTmpVerdict: { valid: true, bindings: [], diagnostics: [] },
+    autoTmpVerdict: { valid: true, bindings: [], reads: new Map(), mutables: [], diagnostics: [] },
     axes: {},
     cascade: { valid: true, diagnostics: [], topoOrder: [] },
     diagnostics: [],

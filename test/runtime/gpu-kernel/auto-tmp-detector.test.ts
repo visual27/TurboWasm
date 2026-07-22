@@ -224,7 +224,7 @@ describe('auto-tmp-detector (§Phase 6)', () => {
     expect(out.bindings).toHaveLength(0);
   });
 
-  it('warns (last-write-wins) on duplicate data_setvariableto writes', () => {
+  it('emits per-write SSA-unique bindings on duplicate data_setvariableto writes', () => {
     const a = block('a', 'data_setvariableto', {
       fields: { VARIABLE: ['tmp0', null] },
       inputs: { VALUE: [10, ['math_number', '1']] },
@@ -241,7 +241,16 @@ describe('auto-tmp-detector (§Phase 6)', () => {
       directiveNames: EMPTY_DIRECTIVES,
     });
     expect(out.valid).toBe(true);
-    expect(out.bindings).toHaveLength(1);
+    // §Phase 6 (extended) — SSA uniqueness means every `set` write to
+    // the same scratch name produces its own `let` declaration so a
+    // subsequent read sees the latest value. Two writes → two
+    // bindings, with the second one's `let` shadowing the first's
+    // name in the WGSL scope.
+    expect(out.bindings).toHaveLength(2);
+    expect(out.bindings[0]?.name.toLowerCase()).toBe('tmp0');
+    expect(out.bindings[1]?.name.toLowerCase()).toBe('tmp0');
+    // Emit names are unique so WGSL can declare both `let`s.
+    expect(out.bindings[0]?.emitName).not.toBe(out.bindings[1]?.emitName);
     expect(
       out.diagnostics.some(
         (d) => d.code === GPU_DIAGNOSTIC_CODES.SCRATCH_VARIABLE_DUPLICATE_WRITE,

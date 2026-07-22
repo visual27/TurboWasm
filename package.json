@@ -26,6 +26,7 @@
     "verify:turbowarp-equivalent": "node scripts/verify-turbowarp-equivalent.mjs",
     "verify:gpu-kernel": "node scripts/verify-gpu-kernel.mjs",
     "bench:gpu-kernel": "node scripts/bench-gpu-kernel-init.mjs",
+    "measure:expo-custom-block": "node scripts/measure-expo-custom-block.mjs",
     "verify:mcp": "node scripts/chrome-devtools-mcp-verify.mjs"
   },
   "dependencies": {
