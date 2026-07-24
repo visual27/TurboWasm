@@ -47,6 +47,36 @@
     --input: 240 3.7% 15.9%;
     --ring: 240 4.9% 83.9%;
   }
+
+  /*
+    Midnight — a deeper, achromatic take on Dark. Saturation is dropped
+    from ~10% to ~4% so the surface reads as near-neutral grey instead
+    of the slate-tinted Dark, and lightness is pushed close to true
+    black. Kept inside the same .dark branch via the `.midnight`
+    class appended alongside `.dark` by useTheme, so all `dark:`
+    Tailwind variants still fire.
+  */
+  .midnight {
+    --background: 240 4% 2.5%;
+    --foreground: 0 0% 96%;
+    --card: 240 4% 5%;
+    --card-foreground: 0 0% 96%;
+    --popover: 240 4% 5%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 0 0% 96%;
+    --primary-foreground: 240 4% 6%;
+    --secondary: 240 4% 9%;
+    --secondary-foreground: 0 0% 96%;
+    --muted: 240 4% 9%;
+    --muted-foreground: 240 4% 60%;
+    --accent: 240 4% 12%;
+    --accent-foreground: 0 0% 96%;
+    --destructive: 0 45% 25%;
+    --destructive-foreground: 0 0% 96%;
+    --border: 240 4% 12%;
+    --input: 240 4% 12%;
+    --ring: 240 4% 78%;
+  }
 }
 
 @layer base {

@@ -1,4 +1,4 @@
-export type Theme = 'system' | 'dark' | 'light';
+export type Theme = 'system' | 'dark' | 'light' | 'midnight';
 
 export type ScaffoldingResizeMode = 'preserve-ratio' | 'dynamic-resize' | 'stretch';
 

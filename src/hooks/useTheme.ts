@@ -9,7 +9,9 @@ function systemPrefersDark(): boolean {
   return window.matchMedia(QUERY).matches;
 }
 
-export function useTheme(): { resolved: 'dark' | 'light'; theme: Theme } {
+export type ResolvedTheme = 'dark' | 'light' | 'midnight';
+
+export function useTheme(): { resolved: ResolvedTheme; theme: Theme } {
   const theme = useSettingsStore((s) => s.theme);
   const [systemDark, setSystemDark] = useState<boolean>(() => systemPrefersDark());
 
@@ -21,15 +23,14 @@ export function useTheme(): { resolved: 'dark' | 'light'; theme: Theme } {
     return () => mq.removeEventListener('change', handler);
   }, []);
 
-  const resolved: 'dark' | 'light' = theme === 'system' ? (systemDark ? 'dark' : 'light') : theme;
+  const resolved: ResolvedTheme =
+    theme === 'system' ? (systemDark ? 'dark' : 'light') : theme;
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    if (resolved === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    const html = document.documentElement;
+    html.classList.toggle('dark', resolved !== 'light');
+    html.classList.toggle('midnight', resolved === 'midnight');
   }, [resolved]);
 
   return { resolved, theme };

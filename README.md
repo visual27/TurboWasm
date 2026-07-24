@@ -14,7 +14,7 @@ This project is **not** a Scratch editor — it is a read-only player for `.sb3`
 - **GPU compute kernels** (`@compute` comment DSL — see [GPU compute kernel DSL](#gpu-compute-kernel-dsl)): optional WebGPU offload for `control_repeat` regions marked with `@compute`. Falls back to the JS path when WebGPU is unavailable, when a region is unsupported (D1/D2/D3 demote), or when Performance Mode is `legacy-only`. Configured via the `GPU Kernels` toggle in the TurboWasm section of the Settings dialog.
 - Advanced settings (FPS, Interpolation, Warp Timer, High Quality Pen, Turbo Mode, Compiler toggle, Infinity Clones, Remove Fencing, Remove Misc Limits, Stage size, **Performance Mode**, **GPU Kernels**) with **immediate apply**.
 - `twconfig` parsing from project comments (read-only).
-- System / Light / Dark theme with `prefers-color-scheme` support.
+- System / Light / Dark / Midnight theme with `prefers-color-scheme` support.
 - Stage-only Fullscreen mode with overlay controls.
 - Project Metadata display (Title / Description / Instructions / Notes and Credits) for Project ID loads.
 - Inline error log panel — no toasts or modals.

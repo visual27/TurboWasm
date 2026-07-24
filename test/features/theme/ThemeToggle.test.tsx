@@ -46,9 +46,10 @@ describe('ThemeToggle vertical dropdown', () => {
     expect(screen.queryByTestId('theme-option-system')).toBeNull();
     expect(screen.queryByTestId('theme-option-light')).toBeNull();
     expect(screen.queryByTestId('theme-option-dark')).toBeNull();
+    expect(screen.queryByTestId('theme-option-midnight')).toBeNull();
   });
 
-  it('opens the dropdown and lists all three options vertically', async () => {
+  it('opens the dropdown and lists all four options vertically', async () => {
     renderWithProviders();
     fireEvent.click(screen.getByTestId('theme-toggle-trigger'));
     await waitFor(() => {
@@ -56,6 +57,7 @@ describe('ThemeToggle vertical dropdown', () => {
     });
     expect(screen.getByTestId('theme-option-light')).toBeInTheDocument();
     expect(screen.getByTestId('theme-option-dark')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-option-midnight')).toBeInTheDocument();
   });
 
   it('selects a theme by clicking its option', async () => {
@@ -66,12 +68,30 @@ describe('ThemeToggle vertical dropdown', () => {
     expect(useSettingsStore.getState().theme).toBe('dark');
   });
 
+  it('selects midnight by clicking its option', async () => {
+    renderWithProviders();
+    fireEvent.click(screen.getByTestId('theme-toggle-trigger'));
+    await waitFor(() => screen.getByTestId('theme-option-midnight'));
+    fireEvent.click(screen.getByTestId('theme-option-midnight'));
+    expect(useSettingsStore.getState().theme).toBe('midnight');
+  });
+
   it('marks the currently active theme with aria-checked', async () => {
     useSettingsStore.setState({ theme: 'light' });
     renderWithProviders();
     fireEvent.click(screen.getByTestId('theme-toggle-trigger'));
     await waitFor(() => screen.getByTestId('theme-option-light'));
     expect(screen.getByTestId('theme-option-light').getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('theme-option-dark').getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByTestId('theme-option-midnight').getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('marks midnight as active when selected', async () => {
+    useSettingsStore.setState({ theme: 'midnight' });
+    renderWithProviders();
+    fireEvent.click(screen.getByTestId('theme-toggle-trigger'));
+    await waitFor(() => screen.getByTestId('theme-option-midnight'));
+    expect(screen.getByTestId('theme-option-midnight').getAttribute('aria-checked')).toBe('true');
     expect(screen.getByTestId('theme-option-dark').getAttribute('aria-checked')).toBe('false');
   });
 });

@@ -258,7 +258,8 @@ export function StageView({ isFullscreen }: StageViewProps): React.JSX.Element {
     stageHeight,
   ]);
 
-  const stageBackground = resolved === 'dark' ? '#0a0a0a' : '#ffffff';
+  const stageBackground =
+    resolved === 'midnight' ? '#060608' : resolved === 'dark' ? '#0a0a0a' : '#ffffff';
   const isHidden = !isReady && !isFullscreen;
 
   return (

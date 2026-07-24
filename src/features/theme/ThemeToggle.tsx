@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Check, Monitor, Moon, Sun, Upload } from 'lucide-react';
+import { Check, Monitor, Moon, MoonStar, Sun, Upload } from 'lucide-react';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useProjectLoader } from '@/features/project-loader/useProjectLoader';
 import { isAllowedFileName } from '@/lib/validation';
@@ -18,6 +18,7 @@ const OPTIONS: ReadonlyArray<{
   { value: 'system', label: 'System', icon: Monitor },
   { value: 'light', label: 'Light', icon: Sun },
   { value: 'dark', label: 'Dark', icon: Moon },
+  { value: 'midnight', label: 'Midnight', icon: MoonStar },
 ];
 
 const OPTIONS_BY_VALUE: ReadonlyMap<Theme, React.ComponentType<{ className?: string }>> = new Map(
@@ -43,7 +44,7 @@ export interface ThemeToggleProps {
  *   [Theme button (▼)] [Upload button]
  *
  * Clicking the theme button opens a vertical dropdown with System / Light /
- * Dark options. Clicking the upload button opens a hidden file picker
+ * Dark / Midnight options. Clicking the upload button opens a hidden file picker
  * (accepts .sb3 / .sb2 / .sb) and runs the same loadFile flow as the
  * initial drop screen. Having the upload button next to the theme toggle
  * means a user can always load a new file from anywhere in the app, not

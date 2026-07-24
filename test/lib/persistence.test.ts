@@ -44,6 +44,39 @@ describe('persistence', () => {
     expect(settings.allowedExtensionUrls).toEqual(['https://example.com/a.js']);
   });
 
+  it('round-trips the midnight theme through storage', () => {
+    writeSettings({
+      theme: 'midnight',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+      enableWasm: true,
+      userExplicitFps: null,
+    });
+    const settings = readSettings();
+    expect(settings.theme).toBe('midnight');
+  });
+
+  it('falls back to system when a stored theme is an unrecognised string', () => {
+    localStorage.setItem(
+      STORAGE_KEYS.settings,
+      JSON.stringify({
+        state: {
+          theme: 'midnight-violet',
+          volume: 100,
+          lastNonMuteVolume: 100,
+          advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+          defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        },
+        version: STORAGE_VERSION,
+      }),
+    );
+    const settings = readSettings();
+    expect(settings.theme).toBe('system');
+  });
+
   it('clamps out-of-range values when reading', () => {
     localStorage.setItem(
       STORAGE_KEYS.settings,

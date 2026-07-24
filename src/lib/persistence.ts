@@ -57,7 +57,7 @@ class SafeStorage {
 const storage = new SafeStorage();
 
 function isTheme(v: unknown): v is Theme {
-  return v === 'system' || v === 'dark' || v === 'light';
+  return v === 'system' || v === 'dark' || v === 'light' || v === 'midnight';
 }
 
 function isExtensionSandboxMode(v: unknown): v is ExtensionSandboxMode {
