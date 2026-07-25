@@ -17,6 +17,21 @@ import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger
 import type { AdvancedSettings } from '@/types/settings';
 import { Button } from '@/components/ui/button';
 import { FPS_MAX, FPS_MIN } from '@/utils/constants';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+  canPop,
+  createInitialStack,
+  currentView,
+  popView,
+  pushView,
+  stackToBreadcrumb,
+} from '@/features/settings/navigation-state';
+import type {
+  SettingsViewEntry,
+  SettingsViewStack,
+} from '@/features/settings/types';
+import { DetailedSettingsScreen } from '@/features/settings/DetailedSettingsScreen';
+import { DetailedCategoryScreen } from '@/features/settings/DetailedCategoryScreen';
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -43,6 +58,65 @@ function FieldRow({ id, label, description, children }: FieldRowProps): React.JS
       </div>
       <div className="flex shrink-0 items-center gap-2">{children}</div>
     </div>
+  );
+}
+
+interface ClickableFieldRowProps {
+  id: string;
+  label: string;
+  description?: string;
+  onClick: () => void;
+  disabled?: boolean;
+  ariaLabel: string;
+  testId?: string;
+  children?: React.ReactNode;
+}
+
+/**
+ * Phase 0 — Foundation. FieldRow-shaped row that delegates activation
+ * to `onClick` instead of a child. Used for navigation rows (e.g.
+ * "Detailed Settings"). The wrapper button has `pointer-events: auto`
+ * inline because Radix Dialog applies `pointer-events: none` to
+ * `<body>` while open — that CSS is inherited by all descendants,
+ * including the portal-mounted row, and would otherwise swallow
+ * clicks. See AGENTS.md §「症状 → 見るべき場所」for the historical
+ * context.
+ *
+ * Optional `children` are rendered just before the chevron icon so a
+ * caller can decorate the trailing area (e.g. a "0/5 off" count).
+ */
+function ClickableFieldRow({
+  id,
+  label,
+  description,
+  onClick,
+  disabled,
+  ariaLabel,
+  testId,
+  children,
+}: ClickableFieldRowProps): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      id={id}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      data-testid={testId}
+      style={{ pointerEvents: 'auto' }}
+      className="group flex w-full items-start justify-between gap-4 py-4 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <div className="flex-1">
+        <span className="text-sm">{label}</span>
+        {description && (
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{description}</p>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        {children}
+        <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+      </div>
+    </button>
   );
 }
 
@@ -356,7 +430,8 @@ const LimitsSection = React.memo(function LimitsSection({
 const TurboWasmSection = React.memo(function TurboWasmSection({
   advanced,
   patch,
-}: RuntimeSectionProps): React.JSX.Element {
+  onOpenDetailed,
+}: RuntimeSectionProps & { onOpenDetailed?: () => void }): React.JSX.Element {
   const enableWasm = useSettingsStore((s) => s.enableWasm);
   const setEnableWasm = useSettingsStore((s) => s.setEnableWasm);
   return (
@@ -423,6 +498,25 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
           itself, with explicit `@repeat …, repeatPath="…"` directives)
           makes the toggle redundant; the kernel container always
           matches the marker host. */}
+      {/*
+        Phase 0 — Foundation. Power-user entry point into the detailed
+        settings screen. The row renders as a clickable FieldRow that
+        delegates navigation to the parent (so the section component
+        stays storage-free). Disabled when the master toggle is off so
+        a user who turned everything off can't poke toggles that have
+        no observable effect anyway — the runtime guard in
+        `useSettingsStore.toggleTurboWasmMaster(false)` forces every
+        detailed flag to false, so an enabled row would be a UI lie.
+      */}
+      <ClickableFieldRow
+        id="detailed-settings"
+        label="Detailed Settings"
+        description="Power-user experimental optimization toggles. Disabled when TurboWasm Acceleration is OFF."
+        onClick={() => onOpenDetailed?.()}
+        disabled={!advanced.turboWasmAccelerationEnabled}
+        ariaLabel="Open detailed settings"
+        testId="settings-detailed-row"
+      />
     </SettingsSection>
   );
 });
@@ -492,14 +586,31 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
   const patch = useSettingsStore((s) => s.patchAdvanced);
   const resetAdvanced = useSettingsStore((s) => s.resetAdvanced);
   const saveAdvancedAsDefault = useSettingsStore((s) => s.saveAdvancedAsDefault);
+  const detailedOptimizations = useSettingsStore((s) => s.detailedOptimizations);
+  const setDetailedOptimization = useSettingsStore((s) => s.setDetailedOptimization);
   const onResetClick = React.useCallback(() => resetAdvanced(), [resetAdvanced]);
   const onSetDefaultClick = React.useCallback(() => saveAdvancedAsDefault(), [saveAdvancedAsDefault]);
+
+  // Phase 0 — Foundation. Push/pop navigation state for the detailed
+  // settings screen. Reset to the root whenever the dialog re-opens
+  // so a user who opened the dialog last week and clicked around
+  // doesn't land back on the deep category they were inspecting.
+  const [stack, setStack] = React.useState<SettingsViewStack>(() => createInitialStack());
+  React.useEffect(() => {
+    if (open) setStack(createInitialStack());
+  }, [open]);
+  const push = React.useCallback(
+    (entry: SettingsViewEntry) => setStack((prev) => pushView(prev, entry)),
+    [],
+  );
+  const pop = React.useCallback(() => setStack((prev) => popView(prev)), []);
+  const view = currentView(stack);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/*
         Layout:
-          - Header (title) pinned to the top.
+          - Header (title + back button + breadcrumb) pinned to the top.
           - ScrollArea fills the rest of the dialog, holding the
             vertically-stacked SettingsSection blocks separated by
             horizontal rules.
@@ -508,8 +619,26 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
         the ScrollArea only provides vertical scrolling.
       */}
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
-        <DialogHeader className="px-8 pb-3 pt-8">
+        <DialogHeader className="flex-row items-center gap-3 px-8 pb-3 pt-8">
+          {canPop(stack) && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={pop}
+              aria-label="Back"
+              data-testid="settings-back"
+              style={{ pointerEvents: 'auto' }}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+          )}
           <DialogTitle>Settings</DialogTitle>
+          <span
+            aria-hidden="true"
+            className="ml-auto text-[10px] uppercase tracking-[0.25em] text-muted-foreground"
+          >
+            {stackToBreadcrumb(stack)}
+          </span>
         </DialogHeader>
         <Separator />
 
@@ -526,11 +655,36 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
         */}
         <ScrollArea className="min-h-0 h-0 flex-1" data-testid="settings-scroll-area">
           <div className="flex flex-col gap-7 px-8 py-6">
-            <RuntimeSection advanced={advanced} patch={patch} />
-            <RenderingSection advanced={advanced} patch={patch} />
-            <LimitsSection advanced={advanced} patch={patch} />
-            <TurboWasmSection advanced={advanced} patch={patch} />
-            <OthersSection advanced={advanced} patch={patch} />
+            {view.kind === 'section' && (
+              <>
+                <RuntimeSection advanced={advanced} patch={patch} />
+                <RenderingSection advanced={advanced} patch={patch} />
+                <LimitsSection advanced={advanced} patch={patch} />
+                <TurboWasmSection
+                  advanced={advanced}
+                  patch={patch}
+                  onOpenDetailed={() => push({ kind: 'detailed' })}
+                />
+                <OthersSection advanced={advanced} patch={patch} />
+              </>
+            )}
+            {view.kind === 'detailed' && (
+              <DetailedSettingsScreen
+                masterOn={advanced.turboWasmAccelerationEnabled}
+                detailed={detailedOptimizations}
+                onOpenCategory={(categoryId) =>
+                  push({ kind: 'detailed-category', categoryId })
+                }
+              />
+            )}
+            {view.kind === 'detailed-category' && (
+              <DetailedCategoryScreen
+                categoryId={view.categoryId}
+                masterOn={advanced.turboWasmAccelerationEnabled}
+                detailed={detailedOptimizations}
+                onToggle={setDetailedOptimization}
+              />
+            )}
           </div>
         </ScrollArea>
 
@@ -559,3 +713,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
     </Dialog>
   );
 }
+
+// Re-exported for unit tests and for downstream code that wants to
+// drive the navigation stack without going through the dialog (e.g.
+// a future command palette). Keep the surface minimal.
+export { ClickableFieldRow };
+export type { DetailedOptimizationMap } from '@/features/settings/types';

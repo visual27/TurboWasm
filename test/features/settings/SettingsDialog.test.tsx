@@ -36,7 +36,15 @@ describe('SettingsDialog — layout', () => {
     expect(screen.getByText('Runtime')).toBeInTheDocument();
     expect(screen.getByText('Rendering')).toBeInTheDocument();
     expect(screen.getByText('Limits')).toBeInTheDocument();
-    expect(screen.getByText('TurboWasm')).toBeInTheDocument();
+    // §Phase 0 — the breadcrumb span inside the DialogHeader also reads
+    // "TurboWasm" (root view label). Two matches are expected now;
+    // assert the section title is among them rather than the single
+    // match the pre-Phase-0 test relied on.
+    const turboWasmHeadings = screen.getAllByText('TurboWasm');
+    expect(turboWasmHeadings.length).toBeGreaterThanOrEqual(2);
+    expect(
+      turboWasmHeadings.some((el) => el.getAttribute('data-testid') === 'settings-section-turbowasm'),
+    ).toBe(true);
     expect(screen.getByText('Others')).toBeInTheDocument();
   });
 
@@ -600,5 +608,92 @@ describe('SettingsDialog — twconfig overrides propagation', () => {
     expect(useSettingsStore.getState().advanced.stageWidth).toBe(800);
     expect(fpsInput.value).toBe('60');
     expect((screen.getByLabelText('Stage width') as HTMLInputElement).value).toBe('800');
+  });
+});
+
+describe('SettingsDialog — Detailed Settings screen (§Phase 0)', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+      enableWasm: true,
+    });
+  });
+
+  it('renders a "Detailed Settings" navigation row inside the TurboWasm section', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(screen.getByTestId('settings-detailed-row')).toBeInTheDocument();
+  });
+
+  it('clicking the row pushes a detailed view and shows a back button', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-detailed-row'));
+    expect(screen.getByTestId('settings-back')).toBeInTheDocument();
+    // The detailed screen lists every category.
+    expect(screen.getByTestId('settings-section-detailed')).toBeInTheDocument();
+  });
+
+  it('the back button pops back to the root section view', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-detailed-row'));
+    await user.click(screen.getByTestId('settings-back'));
+    expect(screen.queryByTestId('settings-back')).toBeNull();
+    expect(screen.getByTestId('settings-section-runtime')).toBeInTheDocument();
+  });
+
+  it('disables the row when TurboWasm Acceleration master toggle is OFF', () => {
+    useSettingsStore.setState({
+      advanced: {
+        ...DEFAULT_ADVANCED_SETTINGS,
+        turboWasmAccelerationEnabled: false,
+      },
+    });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    const row = screen.getByTestId('settings-detailed-row') as HTMLButtonElement;
+    expect(row.disabled).toBe(true);
+  });
+
+  it('opens a category screen and shows every toggle for that category', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-detailed-row'));
+    await user.click(screen.getByTestId('detailed-category-row-comparison'));
+    // The comparison category ships two IDs.
+    expect(screen.getByTestId('detailed-toggle-row-comparison.shortCircuit')).toBeInTheDocument();
+    expect(screen.getByTestId('detailed-toggle-row-comparison.infinityBranchRemoval')).toBeInTheDocument();
+  });
+
+  it('toggling a detailed switch updates the store', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-detailed-row'));
+    await user.click(screen.getByTestId('detailed-category-row-semantics'));
+    const toggle = screen.getByLabelText('Truncated Modulo toggle') as HTMLButtonElement;
+    await user.click(toggle);
+    expect(useSettingsStore.getState().detailedOptimizations['semantics.truncatedModulo']).toBe(
+      false,
+    );
+  });
+
+  it('disables every toggle when the master is off', () => {
+    useSettingsStore.setState({
+      advanced: {
+        ...DEFAULT_ADVANCED_SETTINGS,
+        turboWasmAccelerationEnabled: false,
+      },
+    });
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    // The detail-row gate is the user-facing control point; when the
+    // master is off the row is disabled so the user cannot navigate
+    // into a screen whose every leaf would be locked-off anyway. The
+    // store-level guard (snapshot capture + forced-false) is covered
+    // in `useSettingsStore.test.ts`.
+    expect((screen.getByTestId('settings-detailed-row') as HTMLButtonElement).disabled).toBe(true);
   });
 });
