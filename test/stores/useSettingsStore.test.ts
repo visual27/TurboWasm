@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   useSettingsStore,
   computeMuteToggle,
@@ -730,5 +730,49 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
     const parsed = JSON.parse(raw) as { state: Record<string, unknown> };
     expect('detailedOptimizations' in parsed.state).toBe(false);
     expect('beforeTurboWasmMasterOffSnapshot' in parsed.state).toBe(false);
+  });
+});
+
+describe('useSettingsStore — [tw-optimization] log prefix (Phase 0)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetStore();
+  });
+
+  it('toggleTurboWasmMaster(false) emits a [tw-optimization] log line', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      useSettingsStore.getState().toggleTurboWasmMaster(false);
+      const calls = spy.mock.calls.map((c) => String(c[0]));
+      const matched = calls.some((msg) => msg.startsWith('[tw-optimization]'));
+      expect(matched, `expected [tw-optimization] log, got ${JSON.stringify(calls)}`).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('setDetailedOptimization(false) emits a [tw-optimization] log line', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', false);
+      const calls = spy.mock.calls.map((c) => String(c[0]));
+      const matched = calls.some((msg) => msg.startsWith('[tw-optimization]'));
+      expect(matched, `expected [tw-optimization] log, got ${JSON.stringify(calls)}`).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('setDetailedOptimization no-op (same value) produces no log line', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      // Default is true; setting it to true again is the no-op short-circuit.
+      useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', true);
+      const calls = spy.mock.calls.map((c) => String(c[0]));
+      const matched = calls.some((msg) => msg.startsWith('[tw-optimization]'));
+      expect(matched, 'no-op should not emit any log').toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
