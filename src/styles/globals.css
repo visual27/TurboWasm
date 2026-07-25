@@ -27,7 +27,7 @@
   }
 
   .dark {
-    --background: 240 10% 3.9%;
+    --background: 240 10% 4%;
     --foreground: 0 0% 98%;
     --card: 240 10% 3.9%;
     --card-foreground: 0 0% 98%;
@@ -57,7 +57,7 @@
     Tailwind variants still fire.
   */
   .midnight {
-    --background: 240 4% 2.5%;
+    --background: 240 4% 1.5%;
     --foreground: 0 0% 96%;
     --card: 240 4% 5%;
     --card-foreground: 0 0% 96%;
