@@ -1,4 +1,11 @@
 import type { AdvancedSettings } from '@/types/settings';
+import {
+  DETAILED_OPTIMIZATIONS_BY_CATEGORY,
+} from '@/features/settings/constants';
+import type {
+  DetailedOptimizationId,
+  DetailedOptimizationMap,
+} from '@/features/settings/types';
 
 export const APP_NAME = 'TurboWasm Viewer';
 
@@ -108,6 +115,37 @@ export const MAX_INLINING_DEPTH = 16;
  * now-deleted `'force-wasm'` mode did).
  */
 export const DEFAULT_ENABLE_WASM = true;
+
+/**
+ * Phase 0 — Foundation. Default per-toggle map for the detailed
+ * optimization screen. Every shipped ID starts `true` (the
+ * per-Phase patch decides whether to flip an individual ID off in
+ * `availableInMaster`). All IDs default-on so the Settings UI matches
+ * the upstream behaviour until the user explicitly opts out.
+ *
+ * Stored in `Record<DetailedOptimizationId, boolean>` rather than
+ * `Map` so deep-equal assertions (`toEqual`) work and JSON serialise
+ * stays trivial when Phase 1+ introduces persistence.
+ */
+export const DEFAULT_DETAILED_OPTIMIZATIONS: DetailedOptimizationMap = (() => {
+  const ids: DetailedOptimizationId[] = Object.values(
+    DETAILED_OPTIMIZATIONS_BY_CATEGORY,
+  ).flat();
+  return Object.freeze(
+    ids.reduce<Record<DetailedOptimizationId, boolean>>((acc, id) => {
+      acc[id] = true;
+      return acc;
+    }, {} as Record<DetailedOptimizationId, boolean>),
+  );
+})();
+
+/**
+ * Console-log prefix used by all Phase 0+ optimization toggle changes.
+ * Mirrors the `[tw-stage-size]` / `[gpu-kernel]` / `[tw-viewer debug]`
+ * convention documented in AGENTS.md so users can filter the DevTools
+ * console for `Filter: /\[tw-optimization\]/` while triaging a session.
+ */
+export const OPTIMIZATION_TOGGLE_LOG_PREFIX = '[tw-optimization]';
 
 export const ENV = {
   githubRepoUrl:

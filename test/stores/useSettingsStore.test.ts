@@ -7,7 +7,11 @@ import {
   FPS_SHORTCUT_DEFAULT,
   FPS_SHORTCUT_FALLBACK,
 } from '@/stores/useSettingsStore';
-import { DEFAULT_ADVANCED_SETTINGS, VOLUME_MAX } from '@/utils/constants';
+import {
+  DEFAULT_ADVANCED_SETTINGS,
+  DEFAULT_DETAILED_OPTIMIZATIONS,
+  VOLUME_MAX,
+} from '@/utils/constants';
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 
 function resetStore(): void {
@@ -27,6 +31,11 @@ function resetStore(): void {
     allowedExtensionUrls: [],
     enableWasm: true,
     userExplicitFps: null,
+    // Phase 0 — Foundation. The store init seeds these from the
+    // default constants; resetting the test fixture clears them too
+    // so each describe starts from a known master-on state.
+    detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
+    beforeTurboWasmMasterOffSnapshot: null,
   });
 }
 
@@ -576,5 +585,150 @@ it('patchAdvanced with a non-30 fps updates the latch even when advanced.fps mat
     // patchAdvanced with 30 (the system default) is a no-op for the latch.
     useSettingsStore.getState().patchAdvanced({ fps: 30 });
     expect(useSettingsStore.getState().userExplicitFps).toBe(45);
+  });
+});
+
+describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetStore();
+  });
+
+  it('seeds every detailed-optimization ID with default-on true', () => {
+    const map = useSettingsStore.getState().detailedOptimizations;
+    expect(map).toEqual(DEFAULT_DETAILED_OPTIMIZATIONS);
+    for (const value of Object.values(map)) {
+      expect(value).toBe(true);
+    }
+  });
+
+  it('setDetailedOptimization updates a single ID and leaves the rest untouched', () => {
+    useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', false);
+    const map = useSettingsStore.getState().detailedOptimizations;
+    expect(map['semantics.truncatedModulo']).toBe(false);
+    // Neighbouring ID stays default-on.
+    expect(map['semantics.caseSensitiveStrings']).toBe(true);
+  });
+
+  it('setDetailedOptimization is a no-op when the value already matches', () => {
+    // The console.log call must not fire — but we only assert the
+    // state stays identical (the no-op detection lives inside the
+    // setter).
+    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', true);
+    const before = useSettingsStore.getState().detailedOptimizations;
+    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', true);
+    expect(useSettingsStore.getState().detailedOptimizations).toBe(before);
+  });
+
+  it('toggleTurboWasmMaster(false) captures a snapshot and forces all related flags off', () => {
+    const before = useSettingsStore.getState();
+    expect(before.beforeTurboWasmMasterOffSnapshot).toBeNull();
+    expect(before.advanced.enableWebgpu).toBe(true);
+    expect(before.enableWasm).toBe(true);
+
+    useSettingsStore.getState().toggleTurboWasmMaster(false);
+
+    const after = useSettingsStore.getState();
+    expect(after.beforeTurboWasmMasterOffSnapshot).not.toBeNull();
+    expect(after.advanced.turboWasmAccelerationEnabled).toBe(false);
+    expect(after.advanced.enableWebgpu).toBe(false);
+    expect(after.advanced.customBlockInliningEnabled).toBe(false);
+    expect(after.enableWasm).toBe(false);
+    // Every detailed optimization flipped to false.
+    for (const value of Object.values(after.detailedOptimizations)) {
+      expect(value).toBe(false);
+    }
+    // The snapshot preserves the pre-off state.
+    const snap = after.beforeTurboWasmMasterOffSnapshot as unknown as {
+      advanced: { enableWebgpu: boolean };
+      enableWasm: boolean;
+      detailed: Record<string, boolean>;
+    };
+    expect(snap.advanced.enableWebgpu).toBe(true);
+    expect(snap.enableWasm).toBe(true);
+    expect(snap.detailed['comparison.shortCircuit']).toBe(true);
+  });
+
+  it('toggleTurboWasmMaster(true) restores from the snapshot and clears it', () => {
+    useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', false);
+    useSettingsStore.getState().patchAdvanced({ enableWebgpu: false });
+    useSettingsStore.getState().toggleTurboWasmMaster(false);
+    // We are now in the "all-off" state with a snapshot.
+    expect(useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot).not.toBeNull();
+
+    useSettingsStore.getState().toggleTurboWasmMaster(true);
+
+    const after = useSettingsStore.getState();
+    expect(after.advanced.turboWasmAccelerationEnabled).toBe(true);
+    expect(after.advanced.enableWebgpu).toBe(false); // restored from snapshot
+    expect(after.advanced.customBlockInliningEnabled).toBe(true);
+    expect(after.enableWasm).toBe(true);
+    expect(after.detailedOptimizations['semantics.truncatedModulo']).toBe(false); // restored
+    expect(after.beforeTurboWasmMasterOffSnapshot).toBeNull();
+  });
+
+  it('toggleTurboWasmMaster(true) without a snapshot is a no-op (idempotent)', () => {
+    // No prior off-flip in this test. Flipping to true must leave the
+    // runtime state intact.
+    useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', false);
+    const before = useSettingsStore.getState().advanced;
+
+    useSettingsStore.getState().toggleTurboWasmMaster(true);
+
+    const after = useSettingsStore.getState();
+    expect(after.advanced).toBe(before);
+    expect(after.detailedOptimizations['semantics.truncatedModulo']).toBe(false);
+    expect(after.beforeTurboWasmMasterOffSnapshot).toBeNull();
+  });
+
+  it('does not clobber an existing snapshot when flipping off twice', () => {
+    // First off-flip captures the initial state.
+    useSettingsStore.getState().toggleTurboWasmMaster(false);
+    const firstSnap = useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot;
+
+    // Flip back on. Snapshot is cleared.
+    useSettingsStore.getState().toggleTurboWasmMaster(true);
+    expect(useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot).toBeNull();
+
+    // Edit detailed map to a recognisable value, then off again.
+    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
+    useSettingsStore.getState().toggleTurboWasmMaster(false);
+    const secondSnap = useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot;
+
+    expect(secondSnap).not.toBe(firstSnap);
+    expect(secondSnap?.detailed['comparison.shortCircuit']).toBe(false);
+  });
+
+  it('saveAdvancedAsDefault clears the snapshot and keeps the forced-on invariant', () => {
+    useSettingsStore.getState().toggleTurboWasmMaster(false);
+    expect(useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot).not.toBeNull();
+
+    useSettingsStore.getState().saveAdvancedAsDefault();
+
+    const after = useSettingsStore.getState();
+    expect(after.beforeTurboWasmMasterOffSnapshot).toBeNull();
+    expect(after.defaultAdvanced.turboWasmAccelerationEnabled).toBe(true);
+    expect(after.defaultAdvanced.enableWebgpu).toBe(true);
+  });
+
+  it('resetAdvanced clears the snapshot', () => {
+    useSettingsStore.getState().toggleTurboWasmMaster(false);
+    expect(useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot).not.toBeNull();
+
+    useSettingsStore.getState().resetAdvanced();
+
+    expect(useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot).toBeNull();
+  });
+
+  it('does not persist detailedOptimizations or the snapshot to localStorage', async () => {
+    useSettingsStore.getState().toggleTurboWasmMaster(false);
+    // Drain any debounced persist.
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+    const raw = localStorage.getItem('tw-viewer:settings:v1');
+    if (!raw) return; // No prior persist — the assertion is trivially true.
+    const parsed = JSON.parse(raw) as { state: Record<string, unknown> };
+    expect('detailedOptimizations' in parsed.state).toBe(false);
+    expect('beforeTurboWasmMasterOffSnapshot' in parsed.state).toBe(false);
   });
 });

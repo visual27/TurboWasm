@@ -3,13 +3,20 @@ import type { AdvancedSettings, ExtensionSandboxMode, Theme } from '@/types/sett
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
   DEFAULT_ALLOWED_EXTENSION_URLS,
+  DEFAULT_DETAILED_OPTIMIZATIONS,
   DEFAULT_ENABLE_WASM,
+  OPTIMIZATION_TOGGLE_LOG_PREFIX,
   VOLUME_MAX,
   VOLUME_MIN,
 } from '@/utils/constants';
 import { clampFps, clampVolume } from '@/utils/format';
 import { readSettings, writeSettings } from '@/lib/persistence';
 import { buildProjectAdvanced } from '@/runtime/twconfig';
+import type {
+  DetailedMasterSnapshot,
+  DetailedOptimizationId,
+  DetailedOptimizationMap,
+} from '@/features/settings/types';
 
 export interface SettingsState {
   theme: Theme;
@@ -73,6 +80,32 @@ export interface SettingsState {
    * session picks up where they left off.
    */
   userExplicitFps: number | null;
+  /**
+   * Phase 0 — Foundation. Current effective detailed-optimization
+   * toggle map. Phase 0 keeps this in-memory only (the v11 schema
+   * bump that will introduce persistence lands in Phase 1+). The map
+   * shape matches {@link DEFAULT_DETAILED_OPTIMIZATIONS} so a deep-
+   * equal compare can confirm "everything is default".
+   */
+  detailedOptimizations: DetailedOptimizationMap;
+  /**
+   * Phase 0 — Foundation. Session-only snapshot of
+   * (`advanced`, `enableWasm`, `detailedOptimizations`) captured
+   * immediately before the master toggle was flipped OFF. `null`
+   * means the master has never been turned off in this session, or
+   * the snapshot was cleared by a "Set as default" / "Reset to
+   * defaults" / reload.
+   *
+   * Snapshot policy: in-memory only. A reload drops the snapshot
+   * intentionally — the master toggle's "OFF" state is session-only
+   * by design (AGENTS.md §Disable Compiler invariant: "Set as
+   * default" must not lock the user out of an acceleration tier).
+   * Phase 0 keeps the same invariant: reloading returns to the
+   * default-on state, and the user's most recent saved default
+   * (`defaultAdvanced.turboWasmAccelerationEnabled` — forced
+   * `true` on save) reasserts itself.
+   */
+  beforeTurboWasmMasterOffSnapshot: DetailedMasterSnapshot | null;
   setTheme: (theme: Theme) => void;
   setVolume: (volume: number) => void;
   /**
@@ -166,6 +199,33 @@ export interface SettingsState {
    * a reload right after the toggle picks up the same backend.
    */
   setEnableWasm: (value: boolean) => void;
+  /**
+   * Phase 0 — Foundation. Flip the master TurboWasm Acceleration
+   * switch (and the related WASM / WebGPU / custom-block-inlining
+   * toggles). When `value` is `false`, take an in-memory snapshot of
+   * (`advanced`, `enableWasm`, `detailedOptimizations`) so a later
+   * `true` can restore them, and force every related flag to `false`
+   * (WebGPU, WASM, custom-block-inlining, every detailed
+   * optimization). When `value` is `true`, restore from the snapshot
+   * if one exists; otherwise leave the current values alone (the
+   * "I never turned the master off" idempotent case).
+   *
+   * Mirrors the master field's persistence rule: the change is
+   * in-memory only. "Set as default" still forces
+   * `advanced.turboWasmAccelerationEnabled` back to `true` (the
+   * existing forced-true invariant on `saveAdvancedAsDefault`), so a
+   * user who presses "Set as default" while the master is off loses
+   * the off state and the snapshot is cleared.
+   */
+  toggleTurboWasmMaster: (value: boolean) => void;
+  /**
+   * Phase 0 — Foundation. Set a single detailed-optimization toggle.
+   * In-memory only; the change is observable by the runtime via
+   * `useSettingsStore.subscribe` but does not touch `localStorage`.
+   * Phase 1+ will introduce persistence behind a `STORAGE_VERSION`
+   * bump; the surface here is stable.
+   */
+  setDetailedOptimization: (id: DetailedOptimizationId, enabled: boolean) => void;
 }
 
 const initial = readSettings();
@@ -322,6 +382,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // and that helper returns `null` when both `advanced.fps` and
   // `defaultAdvanced.fps` are 30.
   userExplicitFps: initial.userExplicitFps ?? null,
+  // Phase 0 — Foundation. Seed every detailed-optimization ID with
+  // its default-on value. The map is rebuilt on every store init so a
+  // future Phase that adds a new ID gets the default without
+  // requiring a schema bump: the `DEFAULT_DETAILED_OPTIMIZATIONS`
+  // freeze makes that source-of-truth diff easy to spot.
+  detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
+  beforeTurboWasmMasterOffSnapshot: null,
   setTheme: (theme) => {
     set({ theme });
     persistImmediate(get());
@@ -430,6 +497,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // legacy path via "Set as default". Same applies to
     // `enableWebgpu`: turning the GPU pipeline off via "Set as
     // default" would lock the user out of every `@compute` region.
+    //
+    // Phase 0 — Foundation. The master toggle's in-memory snapshot
+    // must be cleared here: "Set as default" is the user explicitly
+    // committing the current state to disk. Keeping the master-off
+    // snapshot around after a "Set as default" press would let the
+    // user accidentally restore an off-state they have already
+    // accepted as the new default.
     const { advanced } = get();
     const snapshot: AdvancedSettings = {
       ...advanced,
@@ -442,7 +516,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // a reload picks up the same round-trip endpoint.
     const userExplicitFps =
       advanced.fps !== FPS_SHORTCUT_DEFAULT ? clampFps(advanced.fps) : get().userExplicitFps;
-    set({ defaultAdvanced: snapshot, userExplicitFps });
+    set({
+      defaultAdvanced: snapshot,
+      userExplicitFps,
+      beforeTurboWasmMasterOffSnapshot: null,
+    });
     persistImmediate(get());
   },
   setExtensionSandboxMode: (mode) => {
@@ -463,6 +541,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // off) and clear the extension allow-list. Also clear the Alt+Flag
     // FPS latch so the shortcut falls back to the saved default (or 60)
     // instead of a stale preference from before the reset.
+    //
+    // Phase 0 — Foundation. "Reset to defaults" is the explicit user
+    // signal to return to the saved baseline. The master toggle's
+    // snapshot must be cleared here as well, otherwise the next master
+    // OFF/ON round-trip would restore the pre-reset state, which
+    // contradicts the "reset" intent.
     const next: AdvancedSettings = { ...get().defaultAdvanced, disableCompiler: false };
     const userExplicitFps =
       next.fps !== FPS_SHORTCUT_DEFAULT ? clampFps(next.fps) : null;
@@ -470,6 +554,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       advanced: next,
       allowedExtensionUrls: [...DEFAULT_ALLOWED_EXTENSION_URLS],
       userExplicitFps,
+      beforeTurboWasmMasterOffSnapshot: null,
     });
     persistImmediate(get());
   },
@@ -522,6 +607,97 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // backend.
     set({ enableWasm: value });
     persistImmediate(get());
+  },
+  toggleTurboWasmMaster: (value) => {
+    // Phase 0 — Foundation. Two-sided master switch. Behaviour:
+    //
+    //  - value=true AND snapshot exists: restore the saved advanced,
+    //    enableWasm, and detailedOptimizations from the snapshot, then
+    //    clear the snapshot. The runtime is back to the exact state it
+    //    was in when the master was last flipped off.
+    //  - value=true AND no snapshot: no-op. The user has never turned
+    //    the master off in this session, so the current values stay
+    //    untouched.
+    //  - value=false: snapshot the current (advanced, enableWasm,
+    //    detailedOptimizations) into `beforeTurboWasmMasterOffSnapshot`
+    //    IF no snapshot already exists. We refuse to clobber a
+    //    snapshot — flipping off twice in a row keeps the original
+    //    capture, so a later "ON" restores to the first off-state.
+    //    Then force every related flag to false: WebGPU off, WASM off,
+    //    custom-block-inlining off, every detailed-optimization off.
+    //
+    // Persistence: in-memory only (per P0-3 design decision). The
+    // Settings dialog's "Set as default" still forces
+    // `advanced.turboWasmAccelerationEnabled` back to true; we mirror
+    // that invariant in `saveAdvancedAsDefault` below by clearing the
+    // snapshot.
+    if (value) {
+      const snap = get().beforeTurboWasmMasterOffSnapshot;
+      if (snap) {
+        set({
+          advanced: { ...snap.advanced },
+          enableWasm: snap.enableWasm,
+          detailedOptimizations: { ...snap.detailed },
+          beforeTurboWasmMasterOffSnapshot: null,
+        });
+        // eslint-disable-next-line no-console
+        console.log(
+          `${OPTIMIZATION_TOGGLE_LOG_PREFIX} toggleTurboWasmMaster on (snapshot restored)`,
+        );
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `${OPTIMIZATION_TOGGLE_LOG_PREFIX} toggleTurboWasmMaster on (no snapshot, no-op)`,
+        );
+      }
+      return;
+    }
+    const state = get();
+    const snapshot: DetailedMasterSnapshot | DetailedMasterSnapshot = state
+      .beforeTurboWasmMasterOffSnapshot ?? {
+      advanced: { ...state.advanced },
+      enableWasm: state.enableWasm,
+      detailed: { ...state.detailedOptimizations },
+    };
+    const nextDetailed: DetailedOptimizationMap = (
+      Object.keys(state.detailedOptimizations) as DetailedOptimizationId[]
+    ).reduce<Record<DetailedOptimizationId, boolean>>((acc, id) => {
+      acc[id] = false;
+      return acc;
+    }, {} as Record<DetailedOptimizationId, boolean>);
+    set({
+      advanced: {
+        ...state.advanced,
+        turboWasmAccelerationEnabled: false,
+        enableWebgpu: false,
+        customBlockInliningEnabled: false,
+      },
+      enableWasm: false,
+      detailedOptimizations: nextDetailed,
+      beforeTurboWasmMasterOffSnapshot: snapshot,
+    });
+    // eslint-disable-next-line no-console
+    console.log(`${OPTIMIZATION_TOGGLE_LOG_PREFIX} toggleTurboWasmMaster off (snapshot captured)`);
+  },
+  setDetailedOptimization: (id, enabled) => {
+    // Phase 0 — Foundation. Update a single ID in the
+    // `detailedOptimizations` map. The map is a plain
+    // `Record<id, boolean>` (not a frozen object) so the replacement
+    // is the cheapest possible. We do NOT persist here: the
+    // map is in-memory only until Phase 1+ introduces persistence
+    // (the `STORAGE_VERSION` bump lives in the persistence layer).
+    const prev = get().detailedOptimizations[id];
+    if (prev === enabled) return;
+    set({
+      detailedOptimizations: {
+        ...get().detailedOptimizations,
+        [id]: enabled,
+      },
+    });
+    // eslint-disable-next-line no-console
+    console.log(
+      `${OPTIMIZATION_TOGGLE_LOG_PREFIX} setDetailedOptimization ${id}=${enabled}`,
+    );
   },
 }));
 
