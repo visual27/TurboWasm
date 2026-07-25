@@ -114,6 +114,41 @@ export const FIXTURE_GENERATORS = {
   // `test/runtime/gpu-kernel/auto-tmp-fixture-integration.test.tsx`.
   'auto-tmp-fixture.sb3': () =>
     import('./make-auto-tmp-fixture.mjs').then((m) => m.makeAutoTmpFixture()),
+  // §Phase 0 — Foundation skeletons (phase-00-foundation.md §P0-1-B).
+  // Each generator ships a schema-valid but minimal sb3 so
+  // `npm run fixtures:setup` exercises the schema gate. Phase 1+
+  // expands `buildProjectJson` per fixture to express the specific
+  // scratch behaviour the underlying optimization needs.
+  'compat-layer-loop-fixture.sb3': () =>
+    import('./make-compat-layer-loop-fixture.mjs').then((m) => m.makeCompatLayerLoopFixture()),
+  'edge-hat-fixture.sb3': () =>
+    import('./make-edge-hat-fixture.mjs').then((m) => m.makeEdgeHatFixture()),
+  'compare-equal-fixture.sb3': () =>
+    import('./make-compare-equal-fixture.mjs').then((m) => m.makeCompareEqualFixture()),
+  'infinity-branch-fixture.sb3': () =>
+    import('./make-infinity-branch-fixture.mjs').then((m) => m.makeInfinityBranchFixture()),
+  'truncated-modulo-fixture.sb3': () =>
+    import('./make-truncated-modulo-fixture.mjs').then((m) => m.makeTruncatedModuloFixture()),
+  'case-sensitive-strings-fixture.sb3': () =>
+    import('./make-case-sensitive-strings-fixture.mjs').then((m) =>
+      m.makeCaseSensitiveStringsFixture(),
+    ),
+  'strict-equality-fixture.sb3': () =>
+    import('./make-strict-equality-fixture.mjs').then((m) => m.makeStrictEqualityFixture()),
+  'js-truthy-fixture.sb3': () =>
+    import('./make-js-truthy-fixture.mjs').then((m) => m.makeJsTruthyFixture()),
+  'propagate-nan-fixture.sb3': () =>
+    import('./make-propagate-nan-fixture.mjs').then((m) => m.makePropagateNanFixture()),
+  'procedure-lazy-cache-fixture.sb3': () =>
+    import('./make-procedure-lazy-cache-fixture.mjs').then((m) =>
+      m.makeProcedureLazyCacheFixture(),
+    ),
+  'constant-folding-fixture.sb3': () =>
+    import('./make-constant-folding-fixture.mjs').then((m) => m.makeConstantFoldingFixture()),
+  'compat-layer-branch-info-fixture.sb3': () =>
+    import('./make-compat-layer-branch-info-fixture.mjs').then((m) =>
+      m.makeCompatLayerBranchInfoFixture(),
+    ),
 };
 
 /**
