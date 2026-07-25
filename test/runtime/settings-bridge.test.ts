@@ -186,3 +186,38 @@ describe('applyAdvancedSettings: VM API mapping', () => {
     ]);
   });
 });
+
+describe('applyAdvancedSettings — master TurboWasm Acceleration gate (Phase 0)', () => {
+  it('skips setCompilerOptions + setRuntimeOptions when master is OFF', () => {
+    const { vm, setCompilerOptions, setRuntimeOptions } = makeVm();
+    applyAdvancedSettings(makeScaffolding(vm), {
+      ...DEFAULT_ADVANCED_SETTINGS,
+      turboWasmAccelerationEnabled: false,
+    });
+    expect(setCompilerOptions).not.toHaveBeenCalled();
+    expect(setRuntimeOptions).not.toHaveBeenCalled();
+  });
+
+  it('still calls setTurboMode + setFramerate + setInterpolation when master is OFF', () => {
+    const { vm, setTurboMode, setFramerate, setInterpolation } = makeVm();
+    applyAdvancedSettings(makeScaffolding(vm), {
+      ...DEFAULT_ADVANCED_SETTINGS,
+      turboWasmAccelerationEnabled: false,
+      turboMode: true,
+      fps: 45,
+      interpolation: true,
+    });
+    expect(setTurboMode).toHaveBeenCalledExactlyOnceWith(true);
+    expect(setFramerate).toHaveBeenCalledExactlyOnceWith(45);
+    expect(setInterpolation).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it('forwards setCompilerOptions when master is ON', () => {
+    const { vm, setCompilerOptions } = makeVm();
+    applyAdvancedSettings(makeScaffolding(vm), {
+      ...DEFAULT_ADVANCED_SETTINGS,
+      disableCompiler: true,
+    });
+    expect(setCompilerOptions).toHaveBeenCalledExactlyOnceWith({ enabled: false, warpTimer: false });
+  });
+});

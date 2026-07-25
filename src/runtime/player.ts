@@ -637,6 +637,11 @@ function attachedScaffoldingHasVm(scaffolding: ScaffoldingInstance): boolean {
       enableWasm: useSettingsStore.getState().enableWasm,
       kernelRegistry,
       enableWebgpu: currentAdvanced?.enableWebgpu ?? true,
+      // Phase 0 — Foundation. Master toggle exposed for the browser
+      // verification harness so it can assert the same invariant as
+      // `[gpu-kernel] master OFF; skipping @compute pre-parse` without
+      // scraping the console.
+      turboWasmAccelerationEnabled: currentAdvanced?.turboWasmAccelerationEnabled ?? true,
       gpuKernelTiming,
     };
   }
@@ -1583,6 +1588,21 @@ async function bootstrapGpuKernels(buf: ArrayBuffer): Promise<void> {
   // demotes to the JS path (gpu-kernel-dsl-phase5-spec §5.5).
   const customBlockInliningEnabled =
     currentAdvanced?.customBlockInliningEnabled ?? true;
+
+  // Phase 0 — Foundation. Short-circuit when the master
+  // TurboWasm Acceleration toggle is off. The master is the single
+  // truth source for "are we allowed to apply any TurboWasm-specific
+  // optimisation at all?"; when it's off the GPU kernel path is
+  // part of "the optimisation tier the user explicitly rejected",
+  // so we skip pre-parse before it can run. The existing per-feature
+  // gates (enableWebgpu, enableWasm) still apply when the master is
+  // on, so each path can be toggled independently inside the master.
+  const masterOn = currentAdvanced?.turboWasmAccelerationEnabled ?? true;
+  if (!masterOn) {
+    // eslint-disable-next-line no-console
+    console.log('[gpu-kernel] master OFF; skipping @compute pre-parse');
+    return;
+  }
 
   // Short-circuit when the user has disabled the path explicitly.
   if (!enableWebgpu) {

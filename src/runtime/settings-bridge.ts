@@ -73,16 +73,33 @@ export function applyAdvancedSettings(
     renderer.setUseHighQualityRender(next.highQualityPen);
   }
 
-  vm.runtime.setCompilerOptions({
-    enabled: !next.disableCompiler,
-    warpTimer: next.warpTimer,
-  });
+  // Phase 0 — Foundation. When the master TurboWasm Acceleration
+  // toggle is off we deliberately skip the compiler / runtime
+  // option calls below. The semantic flag set
+  // (`disableCompiler`, `warpTimer`, `removeMiscLimits`,
+  // `removeFencing`, `infiniteClones`) is orthogonal to the
+  // TurboWasm acceleration tier: a user turning the master off is
+  // saying "stop applying new TurboWasm-specific optimisations",
+  // not "reset every compiled/interpreted behaviour". Skipping the
+  // calls keeps the runtime in whatever state it was last set to
+  // (e.g. a previous session left the compiler enabled), so a later
+  // master-ON simply resumes with no behavioural drift.
+  //
+  // Turbo mode is still applied because it has visible UX side
+  // effects (no framerate cap) that the user might have toggled
+  // independently of TurboWasm acceleration.
+  if (next.turboWasmAccelerationEnabled) {
+    vm.runtime.setCompilerOptions({
+      enabled: !next.disableCompiler,
+      warpTimer: next.warpTimer,
+    });
 
-  vm.runtime.setRuntimeOptions({
-    miscLimits: !next.removeMiscLimits,
-    fencing: !next.removeFencing,
-    maxClones: next.infiniteClones ? Infinity : 300,
-  });
+    vm.runtime.setRuntimeOptions({
+      miscLimits: !next.removeMiscLimits,
+      fencing: !next.removeFencing,
+      maxClones: next.infiniteClones ? Infinity : 300,
+    });
+  }
 
   vm.setTurboMode(next.turboMode);
 

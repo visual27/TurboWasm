@@ -389,6 +389,16 @@ describe('player.ts: bootstrapGpuKernels wiring (source-inspection)', () => {
     expect(src).toMatch(/enableWasm\s*=\s*false\s*;\s*skipping\s+@compute/);
   });
 
+  it('§Phase 0 — master TurboWasm Acceleration OFF short-circuits the bootstrap (logged skip)', () => {
+    const src = readPlayerSource();
+    // The master-off guard reads `currentAdvanced?.turboWasmAccelerationEnabled`
+    // and logs a dedicated `[gpu-kernel] master OFF` message before
+    // returning. The literal text is what `scripts/verify-gpu-kernel.mjs`
+    // and the chrome-devtools-mcp harness grep for.
+    expect(src).toMatch(/master OFF;\s+skipping\s+@compute\s+pre-parse/);
+    expect(src).toMatch(/currentAdvanced\?\.turboWasmAccelerationEnabled/);
+  });
+
   it('§Phase 4 — the nestedParallelizationEnabled gate is fully removed', () => {
     // Phase 4 dropped the v9 nested-parallelization gate entirely.
     // `bootstrapGpuKernels` no longer reads `nestedParallelizationEnabled`
