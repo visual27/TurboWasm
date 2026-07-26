@@ -91,11 +91,11 @@ export const DETAILED_OPTIMIZATION_DESCRIPTIONS: Readonly<
   'compatLayer.procedureCacheThreadCompaction':
     'Compact the procedure cache on thread exit to bound memory under long loops.',
   'edgeHat.sentinelElimination':
-    'Replace the !oldEdgeValue sentinel path with a tighter in-place branch.',
+    'Skip the explicit `hasEdgeActivatedValue` probe when evaluating an edge-activated hat by relying on `updateEdgeActivatedValue` returning `undefined` (= falsy) on first access. Subsequent accesses return the previously stored value and reduce to the same `!old && new` expression as the legacy ternary.',
   'comparison.shortCircuit':
-    'Short-circuit `compareEqual` when both sides are already identical JS values.',
+    'Replace the double `typeof fast-path || v1 === v2` expression in compiled `compareEqual` with a block-form short-circuit: `v1 === v2` → true; both numbers non-NaN → false; otherwise fall through to `compareEqualSlow`. Identical output, fewer branches per call.',
   'comparison.infinityBranchRemoval':
-    'Remove the Infinity branch in compareGreaterThan/LessThan via bitselect.',
+    'Remove the Infinity special branch in Cast.compare by replacing the legacy `n1 - n2` subtraction-based path with direct `<` / `>` / `=== 0` comparison. Operators care only about the sign so the result is identical for every input pair.',
   'data.mapConversionEvaluation':
     'Evaluate map conversions at compile time when all keys are literals.',
   'data.constantFolding':
