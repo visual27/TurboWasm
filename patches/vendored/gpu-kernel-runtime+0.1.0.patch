@@ -1,8 +1,8 @@
 diff --git a/src/blocks/scratch3_control.js b/src/blocks/scratch3_control.js
-index ebf1951..f61fa33 100644
+index ebf1951514e91502779f9d9190968d94a44d80df..d8bae6f48a793dc0b29f00083dbf3d5d562213ab 100644
 --- a/src/blocks/scratch3_control.js
 +++ b/src/blocks/scratch3_control.js
-@@ -52,6 +52,84 @@ class Scratch3ControlBlocks {
+@@ -52,6 +52,91 @@ class Scratch3ControlBlocks {
  
      repeat (args, util) {
          const times = Math.round(Cast.toNumber(args.TIMES));
@@ -94,7 +94,7 @@ index ebf1951..f61fa33 100644
          // Initialize loop
          if (typeof util.stackFrame.loopCounter === 'undefined') {
              util.stackFrame.loopCounter = times;
-@@ -69,6 +147,39 @@ class Scratch3ControlBlocks {
+@@ -69,6 +154,44 @@ class Scratch3ControlBlocks {
  
      repeatUntil (args, util) {
          const condition = Cast.toBoolean(args.CONDITION);
@@ -139,7 +139,7 @@ index ebf1951..f61fa33 100644
          // If the condition is false (repeat UNTIL), start the branch.
          if (!condition) {
              util.startBranch(1, true);
-@@ -77,6 +188,39 @@ class Scratch3ControlBlocks {
+@@ -77,6 +200,44 @@ class Scratch3ControlBlocks {
  
      repeatWhile (args, util) {
          const condition = Cast.toBoolean(args.CONDITION);
