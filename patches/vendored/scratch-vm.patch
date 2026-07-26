@@ -349,3 +349,111 @@ index eeb029f..0bebdd2 100644
          return this.renderer.isTouchingDrawables(
              this.drawableID, drawableCandidates);
      }
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+index 61d69cd..3be99a5 100644
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -292,7 +292,18 @@ baseRuntime += `const compareEqualSlow = (v1, v2) => {
+     if (Number.isNaN(n2) || (n2 === 0 && isNotActuallyZero(v2))) return ('' + v1).toLowerCase() === ('' + v2).toLowerCase();
+     return n1 === n2;
+ };
+-const compareEqual = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);`;
++// TurboWasm: comparison-compare-equal-short-circuit
++const compareEqualLegacy = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);
++const compareEqual = (v1, v2) => {
++    if (v1 === v2) return true;
++    if (
++        typeof v1 === 'number' &&
++        typeof v2 === 'number' &&
++        !Number.isNaN(v1) &&
++        !Number.isNaN(v2)
++    ) return false;
++    return compareEqualSlow(v1, v2);
++};`;
+ 
+ /**
+  * Determine if one value is greater than another.
+diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
+index ebbdc6b..01d8643 100644
+--- a/src/compiler/jsgen.js
++++ b/src/compiler/jsgen.js
+@@ -556,9 +556,13 @@ class JSGenerator {
+             // Can matter if the input is not instantly evaluated.
+             this.source += `const resolvedValue = ${this.descendInput(node.condition)};\n`;
+             this.source += `const id = "${sanitize(node.id)}";\n`;
+-            this.source += 'const hasOldEdgeValue = target.hasEdgeActivatedValue(id);\n';
++            // TurboWasm: edge-detection-hat-sentinel-eliminated
++            // Drop the explicit `hasEdgeActivatedValue` probe; `updateEdgeActivatedValue`
++            // returns `undefined` on first access (== falsy), making `!undefined && v === v`.
++            // After the first call it returns the previously stored value, so the
++            // expression reduces to the same `!old && v` as the legacy ternary.
+             this.source += `const oldEdgeValue = target.updateEdgeActivatedValue(id, resolvedValue);\n`;
+-            this.source += `const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;\n`;
++            this.source += `const edgeWasActivated = !oldEdgeValue && resolvedValue;\n`;
+             this.source += `if (!edgeWasActivated) {\n`;
+             this.retire();
+             this.source += '}\n';
+diff --git a/src/engine/execute.js b/src/engine/execute.js
+index c9f2f11..5051e6f 100644
+--- a/src/engine/execute.js
++++ b/src/engine/execute.js
+@@ -62,16 +62,21 @@ const handleReport = function (resolvedValue, sequencer, thread, blockCached, la
+         if (thread.stackClick) {
+             thread.status = Thread.STATUS_RUNNING;
+         } else if (sequencer.runtime.getIsEdgeActivatedHat(opcode)) {
++            // TurboWasm: edge-detection-hat-sentinel-eliminated
+             // If this is an edge-activated hat, only proceed if the value is
+             // true and used to be false, or the stack was activated explicitly
+-            // via stack click
+-            const hasOldEdgeValue = thread.target.hasEdgeActivatedValue(currentBlockId);
++            // via stack click. The sentinel elimination is semantically invariant
++            // because `updateEdgeActivatedValue` returns `undefined` on first
++            // access (== falsy) and `!undefined && resolvedValue === resolvedValue`.
++            // Subsequent calls return the previously stored value, so the
++            // expression reduces to the same `!old && resolvedValue` as the
++            // legacy `hasOldEdgeValue ? (!old && new) : new` ternary.
+             const oldEdgeValue = thread.target.updateEdgeActivatedValue(
+                 currentBlockId,
+                 resolvedValue
+             );
+ 
+-            const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;
++            const edgeWasActivated = !oldEdgeValue && resolvedValue;
+             if (edgeWasActivated) {
+                 thread.status = Thread.STATUS_RUNNING;
+             } else {
+diff --git a/src/util/cast.js b/src/util/cast.js
+index d78717a..9032581 100644
+--- a/src/util/cast.js
++++ b/src/util/cast.js
+@@ -159,15 +159,21 @@ class Cast {
+             }
+             return 0;
+         }
+-        // Handle the special case of Infinity
+-        if (
+-            (n1 === Infinity && n2 === Infinity) ||
+-            (n1 === -Infinity && n2 === -Infinity)
+-        ) {
+-            return 0;
+-        }
+-        // Compare as numbers.
+-        return n1 - n2;
++        // TurboWasm: comparison-infinity-branch-removed
++        // The legacy `(n1 === Infinity && n2 === Infinity) || ...` special case
++        // existed only because `Infinity - Infinity === NaN`, so subtraction
++        // could not distinguish the equal-infinity pairs from the NaN path
++        // (which is short-circuited above). Direct `<` / `>` comparison is
++        // semantically invariant:
++        //   Infinity === Infinity  -> false / false -> 0
++        //   -Infinity === -Infinity -> false / false -> 0
++        //   Infinity > -Infinity  -> false / true -> 1
++        //   -Infinity < Infinity  -> true / false -> -1
++        //   Infinity > finite     -> false / true -> 1
++        //   finite < Infinity     -> true / false -> -1
++        if (n1 < n2) return -1;
++        if (n1 > n2) return 1;
++        return 0;
+     }
+ 
+     /**

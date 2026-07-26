@@ -34,6 +34,12 @@ export const fixtureDir = resolve(repoRoot, 'test/.test-fixtures');
 export const INPUT_SAME_BLOCK_SHADOW = 1;
 export const INPUT_BLOCK_NO_SHADOW = 2;
 export const MATH_NUM_PRIMITIVE = 4;
+// `text` primitive id (= 10 in `sb3.js`). Used to embed string
+// literals in operator inputs that accept both numbers and strings
+// (`operator_equals`, `operator_lt`, etc.). The sb3 schema requires
+// a `[TEXT_PRIMITIVE, "..."]` tuple shape; bare strings are
+// rejected as unknown optionalString types.
+export const TEXT_PRIMITIVE = 10;
 // `data_listcontents` primitive id. Used by `listShadow` to encode a
 // list-menu drop-down as a proper scratch input descriptor instead
 // of a bare block-id string (which the loader would treat as an
