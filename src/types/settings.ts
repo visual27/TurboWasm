@@ -180,6 +180,14 @@ export interface SettingsStoreShape {
    * `advanced.fps` / `defaultAdvanced.fps` on the v4 → v5 read.
    */
   userExplicitFps: number | null;
+  /**
+   * §Phase 1 — Per-toggle state for the detailed optimization screen.
+   * Persisted across reloads since `STORAGE_VERSION = 12`. Phase 0
+   * kept the map in-memory only; v11 → v12 migration seeds the field
+   * with `DEFAULT_DETAILED_OPTIMIZATIONS` for older payloads. Mirrors
+   * `useSettingsStore.detailedOptimizations`.
+   */
+  detailedOptimizations: Record<string, boolean>;
 }
 
 export interface SettingsStoreSerialized {

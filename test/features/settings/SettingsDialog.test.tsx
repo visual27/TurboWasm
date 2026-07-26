@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
+import { DEFAULT_DETAILED_OPTIMIZATIONS } from '@/utils/constants';
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsDialog } from '@/features/settings/SettingsDialog';
@@ -15,6 +16,10 @@ describe('SettingsDialog — layout', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
       enableWasm: true,
+      // §Phase 1 — `detailedOptimizations` is now persisted across
+      // sessions, so we must explicitly reset it in `beforeEach` to
+      // avoid the previous test's persisted value leaking through.
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
     });
   });
 
@@ -621,6 +626,10 @@ describe('SettingsDialog — Detailed Settings screen (§Phase 0)', () => {
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
       enableWasm: true,
+      // §Phase 1 — `detailedOptimizations` is now persisted across
+      // sessions, so we must explicitly reset it in `beforeEach` to
+      // avoid the previous test's persisted value leaking through.
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
     });
   });
 

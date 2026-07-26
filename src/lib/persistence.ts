@@ -10,7 +10,9 @@ import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
   DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_ALLOWED_EXTENSION_URLS,
+  DEFAULT_DETAILED_OPTIMIZATIONS,
 } from '@/utils/constants';
+import type { DetailedOptimizationId, DetailedOptimizationMap } from '@/features/settings/types';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume } from '@/utils/format';
 
 type Listener = () => void;
@@ -147,6 +149,30 @@ function sanitizeAllowedExtensionUrls(input: unknown): string[] {
   return out;
 }
 
+/**
+ * §Phase 1 — Sanitize a `detailedOptimizations` payload. Accepts any
+ * plain object that maps known `DetailedOptimizationId` strings to
+ * boolean values; unknown IDs are silently dropped (the read keeps a
+ * field at the wrong shape rather than rejecting the whole payload)
+ * and missing IDs are filled in from
+ * {@link DEFAULT_DETAILED_OPTIMIZATIONS}. This is intentionally
+ * permissive: the v11 → v12 migration writes a freshly-seeded default
+ * map when the payload omits the field, but a user who toggled a few
+ * rows under Phase 0 (in-memory only) does not get those choices
+ * silently rolled back.
+ */
+function sanitizeDetailedOptimizations(input: unknown): DetailedOptimizationMap {
+  const base: DetailedOptimizationMap = { ...DEFAULT_DETAILED_OPTIMIZATIONS };
+  if (!input || typeof input !== 'object') return base;
+  const r = input as Record<string, unknown>;
+  const out: Record<DetailedOptimizationId, boolean> = { ...base };
+  for (const id of Object.keys(base) as DetailedOptimizationId[]) {
+    const raw = r[id];
+    if (typeof raw === 'boolean') out[id] = raw;
+  }
+  return out;
+}
+
 function emptyShape(): SettingsStoreShape {
   return {
     theme: 'system',
@@ -159,6 +185,10 @@ function emptyShape(): SettingsStoreShape {
     // No user history yet; the Alt+Flag shortcut falls back to
     // defaultAdvanced.fps (when !== 30) or 60.
     userExplicitFps: null,
+    // §Phase 1 — Default-on map for every shipped `DetailedOptimizationId`.
+    // Mirrors the in-memory seed in `useSettingsStore.ts` so a brand-new
+    // install and a `!clear-storage` reset both land on the same shape.
+    detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
   };
 }
 
@@ -251,6 +281,12 @@ export function readSettings(): SettingsStoreShape {
         enableWasm: DEFAULT_ENABLE_WASM,
         // v4 → v5 migration: seed `userExplicitFps` from the v1 fields.
         userExplicitFps: deriveUserExplicitFps(advanced, defaultAdvanced),
+        // §Phase 1 — v11 → v12 migration also walks through the v1
+        // branch. Older payloads never wrote `detailedOptimizations`,
+        // so seed it from the default-on map. Note this branch is
+        // only reached when a v1 payload is encountered (rare in
+        // practice — every modern Viewer save is v2+).
+        detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
       };
     }
 
@@ -294,6 +330,15 @@ export function readSettings(): SettingsStoreShape {
     // explicit v9 → v10 conversion if more than a silent field-drop
     // is required.
     void parsed.state;
+    // §Phase 1 — v11 → v12 migration: seed `detailedOptimizations`
+    // from the in-memory defaults when the payload omits the field.
+    // Older payloads that pre-date Phase 1 land on the default-on
+    // map; payloads written by Phase 0 (impossible today, but safe)
+    // are also handled because `sanitizeDetailedOptimizations` falls
+    // back to defaults for missing IDs.
+    const detailedOptimizations = sanitizeDetailedOptimizations(
+      (parsed.state as unknown as { detailedOptimizations?: unknown })?.detailedOptimizations,
+    );
     return {
       theme,
       volume,
@@ -303,6 +348,7 @@ export function readSettings(): SettingsStoreShape {
       allowedExtensionUrls,
       enableWasm,
       userExplicitFps,
+      detailedOptimizations,
     };
   } catch {
     return emptyShape();

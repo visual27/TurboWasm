@@ -331,6 +331,11 @@ function schedulePersist(snapshot: SettingsState): void {
           allowedExtensionUrls: snap.allowedExtensionUrls,
           enableWasm: snap.enableWasm,
           userExplicitFps: snap.userExplicitFps,
+          // §Phase 1 — Persist the detailed-optimization map so a
+          // reload picks up the user's per-toggle choices for the
+          // scratch-vm patches (Phase 1-A compareEqual, Phase 1-B
+          // edge hat, Phase 1-C Infinity branch).
+          detailedOptimizations: snap.detailedOptimizations,
         });
       }
     };
@@ -361,6 +366,8 @@ function persistImmediate(state: SettingsState): void {
     allowedExtensionUrls: state.allowedExtensionUrls,
     enableWasm: state.enableWasm,
     userExplicitFps: state.userExplicitFps,
+    // §Phase 1 — see `schedulePersist` comment.
+    detailedOptimizations: state.detailedOptimizations,
   });
 }
 
@@ -387,7 +394,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // future Phase that adds a new ID gets the default without
   // requiring a schema bump: the `DEFAULT_DETAILED_OPTIMIZATIONS`
   // freeze makes that source-of-truth diff easy to spot.
-  detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
+  // §Phase 1 — In-memory seed. `initial.detailedOptimizations` is
+  // sanitised by `persistence.ts:sanitizeDetailedOptimizations` for v12
+  // payloads; for any older payload (or when the field is missing) the
+  // `??` falls back to the in-memory defaults so the UI is fully
+  // populated from the first render.
+  detailedOptimizations:
+    (initial.detailedOptimizations as DetailedOptimizationMap | undefined) ??
+    DEFAULT_DETAILED_OPTIMIZATIONS,
   beforeTurboWasmMasterOffSnapshot: null,
   setTheme: (theme) => {
     set({ theme });
@@ -719,6 +733,8 @@ export function flushSettingsPersistForTesting(): void {
       allowedExtensionUrls: snap.allowedExtensionUrls,
       enableWasm: snap.enableWasm,
       userExplicitFps: snap.userExplicitFps,
+      // §Phase 1 — see `schedulePersist` comment.
+      detailedOptimizations: snap.detailedOptimizations,
     });
   }
 }

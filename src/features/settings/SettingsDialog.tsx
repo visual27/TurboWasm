@@ -434,6 +434,15 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
 }: RuntimeSectionProps & { onOpenDetailed?: () => void }): React.JSX.Element {
   const enableWasm = useSettingsStore((s) => s.enableWasm);
   const setEnableWasm = useSettingsStore((s) => s.setEnableWasm);
+  // §Phase 1 — the master switch drives `toggleTurboWasmMaster(value)`
+  // (= snapshot + force-all-false + clear-on-reset), not a bare
+  // `patch` call. Going through the dedicated action guarantees that
+  // a user who toggles the master off captures a snapshot of the
+  // detailed-optimization map and restores it on the next ON. A
+  // bare `patch({ turboWasmAccelerationEnabled: false })` would
+  // leave the detailed toggles untouched (= UI lie: the master is
+  // off but the leaf switches still render as ON).
+  const toggleMaster = useSettingsStore((s) => s.toggleTurboWasmMaster);
   return (
     <SettingsSection id="turbowasm" title="TurboWasm">
       <FieldRow
@@ -444,7 +453,7 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
         <SwitchField
           id="turbo-wasm-acceleration"
           checked={advanced.turboWasmAccelerationEnabled}
-          onChange={(v) => patch({ turboWasmAccelerationEnabled: v })}
+          onChange={(v) => toggleMaster(v)}
           ariaLabel="TurboWasm Acceleration toggle"
         />
       </FieldRow>

@@ -14,15 +14,24 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { readSettings, writeSettings } from '@/lib/persistence';
-import { STORAGE_KEYS, STORAGE_VERSION, DEFAULT_ADVANCED_SETTINGS } from '@/utils/constants';
+import {
+  DEFAULT_ADVANCED_SETTINGS,
+  DEFAULT_DETAILED_OPTIMIZATIONS,
+  STORAGE_KEYS,
+  STORAGE_VERSION,
+} from '@/utils/constants';
 
 describe('persistence: v10 → v11 migration (§Phase 5)', () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  it('STORAGE_VERSION is 11', () => {
-    expect(STORAGE_VERSION).toBe(11);
+  it('STORAGE_VERSION is 12 (Phase 1 bumped from 11)', () => {
+    // Phase 1 (`patches/vendored/scratch-vm.patch`) added the
+    // `detailedOptimizations` map to `SettingsStoreShape`. The
+    // `STORAGE_VERSION` constant moved from 11 to 12 so future
+    // `readSettings` knows it has to read the new field.
+    expect(STORAGE_VERSION).toBe(12);
   });
 
   it('seeds customBlockInliningEnabled = true when missing from v10 payload', () => {
@@ -70,6 +79,7 @@ describe('persistence: v10 → v11 migration (§Phase 5)', () => {
         allowedExtensionUrls: [],
         enableWasm: true,
         userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
       },
       version: 10,
     };
@@ -93,6 +103,7 @@ describe('persistence: v10 → v11 migration (§Phase 5)', () => {
         allowedExtensionUrls: [],
         enableWasm: true,
         userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
       },
       version: 10,
     };
@@ -115,7 +126,8 @@ describe('persistence: v10 → v11 migration (§Phase 5)', () => {
         },
         allowedExtensionUrls: ['https://example.com/ext.js'],
         enableWasm: false,
-        userExplicitFps: 45,
+        userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
       },
       version: 10,
     };
@@ -144,6 +156,7 @@ describe('persistence: v10 → v11 migration (§Phase 5)', () => {
       allowedExtensionUrls: [],
       enableWasm: true,
       userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
     });
     const settings = readSettings();
     expect(settings.advanced.customBlockInliningEnabled).toBe(false);
@@ -159,8 +172,102 @@ describe('persistence: v10 → v11 migration (§Phase 5)', () => {
       allowedExtensionUrls: [],
       enableWasm: true,
       userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
     });
     const settings = readSettings();
     expect(settings.advanced.customBlockInliningEnabled).toBe(true);
+  });
+});
+
+/**
+ * §Phase 1 — v11 → v12 migration. The detailed-optimization map
+ * (`SettingsStoreShape.detailedOptimizations`) was added in this
+ * phase. Older payloads are missing the field, so `readSettings`
+ * seeds it from `DEFAULT_DETAILED_OPTIMIZATIONS` (= all
+ * `DetailedOptimizationId`s default-on) instead of throwing.
+ */
+describe('persistence: v11 → v12 migration (§Phase 1)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('seeds detailedOptimizations from defaults when the v11 payload omits the field', () => {
+    // Construct a v11-shaped payload (= everything pre-Phase 1 had)
+    // and write it directly. The migration should fill
+    // `detailedOptimizations` with the defaults so a freshly-bumped
+    // payload keeps the default-on behaviour.
+    const v11Payload = {
+      state: {
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        allowedExtensionUrls: [],
+        enableWasm: true,
+        userExplicitFps: null,
+      },
+      version: 11,
+    };
+    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(v11Payload));
+
+    const settings = readSettings();
+    expect(settings.detailedOptimizations).toEqual(DEFAULT_DETAILED_OPTIMIZATIONS);
+    // Every shipped ID should be on.
+    for (const id of Object.keys(DEFAULT_DETAILED_OPTIMIZATIONS) as Array<
+      keyof typeof DEFAULT_DETAILED_OPTIMIZATIONS
+    >) {
+      expect(settings.detailedOptimizations[id]).toBe(true);
+    }
+  });
+
+  it('preserves explicit v11-persisted detailedOptimizations on read', () => {
+    // A user who has flipped a few toggles under v11 (= Phase 0
+    // in-memory only) does NOT have them persisted yet, but the
+    // migration code path is permissive: any boolean-typed ID
+    // passes through, missing IDs are filled from defaults.
+    const v11Payload = {
+      state: {
+        theme: 'system',
+        volume: 100,
+        lastNonMuteVolume: 100,
+        advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+        allowedExtensionUrls: [],
+        enableWasm: true,
+        userExplicitFps: null,
+        detailedOptimizations: {
+          ...DEFAULT_DETAILED_OPTIMIZATIONS,
+          'comparison.shortCircuit': false,
+        },
+      },
+      version: 11,
+    };
+    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(v11Payload));
+
+    const settings = readSettings();
+    expect(settings.detailedOptimizations['comparison.shortCircuit']).toBe(false);
+    // Other IDs default-on.
+    expect(settings.detailedOptimizations['edgeHat.sentinelElimination']).toBe(true);
+  });
+
+  it('round-trips v12 payload through write/read', () => {
+    writeSettings({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+      enableWasm: true,
+      userExplicitFps: null,
+      detailedOptimizations: {
+        ...DEFAULT_DETAILED_OPTIMIZATIONS,
+        'comparison.shortCircuit': false,
+      },
+    });
+    const settings = readSettings();
+    expect(settings.detailedOptimizations['comparison.shortCircuit']).toBe(false);
+    expect(settings.detailedOptimizations['edgeHat.sentinelElimination']).toBe(true);
   });
 });

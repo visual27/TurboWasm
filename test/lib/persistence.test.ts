@@ -4,6 +4,7 @@ import {
   STORAGE_KEYS,
   STORAGE_VERSION,
   DEFAULT_ADVANCED_SETTINGS,
+  DEFAULT_DETAILED_OPTIMIZATIONS,
   FPS_MAX,
 } from '@/utils/constants';
 
@@ -33,6 +34,7 @@ describe('persistence', () => {
       allowedExtensionUrls: ['https://example.com/a.js'],
       enableWasm: true,
       userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
     });
     const settings = readSettings();
     expect(settings.theme).toBe('dark');
@@ -54,6 +56,7 @@ describe('persistence', () => {
       allowedExtensionUrls: [],
       enableWasm: true,
       userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
     });
     const settings = readSettings();
     expect(settings.theme).toBe('midnight');
@@ -130,6 +133,7 @@ describe('persistence', () => {
       allowedExtensionUrls: [],
       enableWasm: true,
       userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
     });
     const settings = readSettings();
     expect(settings.advanced.extensionSandboxMode).toBe('iframe');
@@ -230,6 +234,7 @@ describe('persistence', () => {
       ],
       enableWasm: true,
       userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
     });
     const settings = readSettings();
     expect(settings.allowedExtensionUrls).toEqual([
@@ -345,6 +350,7 @@ describe('persistence', () => {
         allowedExtensionUrls: [],
         enableWasm: false,
         userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
       });
       const settings = readSettings();
       expect(settings.enableWasm).toBe(false);
@@ -583,6 +589,7 @@ describe('persistence', () => {
         allowedExtensionUrls: [],
         enableWasm: true,
         userExplicitFps: null,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
       });
       const settings = readSettings();
       expect(Object.keys(settings.advanced)).not.toContain('nestedParallelizationEnabled');

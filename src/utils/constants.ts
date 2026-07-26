@@ -91,7 +91,18 @@ export const STORAGE_KEYS = {
 // migration seeds the field with `true` for older payloads so the
 // default-on behaviour carries forward unless the user explicitly
 // disabled inlining at write time.
-export const STORAGE_VERSION = 11;
+// Bumped to 12 in Phase 1 (`patches/vendored/scratch-vm.patch`).
+// Adds the top-level `detailedOptimizations` map (default-on for
+// every shipped ID) so the user's per-toggle settings for
+// `comparison.shortCircuit` (Phase 1-A), `edgeHat.sentinelElimination`
+// (Phase 1-B), and `comparison.infinityBranchRemoval` (Phase 1-C)
+// persist across reloads. Phase 0 only kept the map in-memory; the
+// v11 → v12 migration seeds `detailedOptimizations` with the existing
+// `DEFAULT_DETAILED_OPTIMIZATIONS` defaults so a freshly-bumped payload
+// keeps the default-on behaviour. v12 itself writes the map on every
+// `schedulePersist` / `persistImmediate` via
+// `src/lib/persistence.ts:writeSettings`.
+export const STORAGE_VERSION = 12;
 
 /**
  * §Phase 5 (gpu-kernel-dsl-phase5-spec §5.1) — maximum recursion depth
