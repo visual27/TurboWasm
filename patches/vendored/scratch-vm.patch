@@ -13,12 +13,12 @@ index 1df8dff..5c49ee5 100644
 +         * @type {?Array.<[string, {edgeActivated: boolean, restartExistingThreads: boolean}]>}
 +         */
 +        this._hatsCache = null;
- 
+
          /**
           * Map of opcode to information about whether the block's return value should be interpreted
 @@ -282,10 +289,11 @@ class Runtime extends EventEmitter {
          this._flowing = {};
- 
+
          /**
 -         * A list of script block IDs that were glowing during the previous frame.
 -         * @type {!Array.<!string>}
@@ -28,7 +28,7 @@ index 1df8dff..5c49ee5 100644
           */
 -        this._scriptGlowsPreviousFrame = [];
 +        this._scriptGlowsPreviousFrame = new Set();
- 
+
          /**
           * Number of non-monitor threads running during the previous frame.
 @@ -1005,6 +1013,7 @@ class Runtime extends EventEmitter {
@@ -50,7 +50,7 @@ index 1df8dff..5c49ee5 100644
 @@ -2520,16 +2530,45 @@ class Runtime extends EventEmitter {
              this.profiler.start(stepProfilerId);
          }
- 
+
 -        // Clean up threads that were told to stop during or since the last step
 -        this.threads = this.threads.filter(thread => !thread.isKilled);
 -        this.updateThreadMap();
@@ -80,7 +80,7 @@ index 1df8dff..5c49ee5 100644
 +            }
 +            threads.length = writeIndex;
 +        }
- 
+
          // Find all edge-activated hats, and add them to threads to be evaluated.
 -        for (const hatType in this._hats) {
 -            if (!Object.prototype.hasOwnProperty.call(this._hats, hatType)) continue;
@@ -112,7 +112,7 @@ index 1df8dff..5c49ee5 100644
          this._lastStepDoneThreads = doneThreads;
 @@ -2595,16 +2634,24 @@ class Runtime extends EventEmitter {
      }
- 
+
      /**
 -     * Get the number of threads in the given array that are monitor threads (threads
 +     * Get the number of threads in the given arrays that are monitor threads (threads
@@ -141,7 +141,7 @@ index 1df8dff..5c49ee5 100644
 +        }
          return count;
      }
- 
+
 @@ -2627,7 +2674,7 @@ class Runtime extends EventEmitter {
          const oldEditingTarget = this._editingTarget;
          this._editingTarget = editingTarget;
@@ -149,7 +149,7 @@ index 1df8dff..5c49ee5 100644
 -        this._scriptGlowsPreviousFrame = [];
 +        this._scriptGlowsPreviousFrame = new Set();
          this._updateGlows();
- 
+
          if (oldEditingTarget !== this._editingTarget) {
 @@ -2960,22 +3007,36 @@ class Runtime extends EventEmitter {
       * @param {Array.<Thread>=} optExtraThreads Optional list of inactive threads.
@@ -241,7 +241,7 @@ index 1df8dff..5c49ee5 100644
 -        this._scriptGlowsPreviousFrame = finalScriptGlows;
 +        this._scriptGlowsPreviousFrame = next;
      }
- 
+
      /**
 @@ -3034,10 +3094,7 @@ class Runtime extends EventEmitter {
       * @param {!string} scriptBlockId Id of top-level block in script to quiet.
@@ -253,7 +253,7 @@ index 1df8dff..5c49ee5 100644
 -        }
 +        this._scriptGlowsPreviousFrame.delete(scriptBlockId);
      }
- 
+
      /**
 diff --git a/src/engine/sequencer.js b/src/engine/sequencer.js
 index c374fb6..bf67037 100644
@@ -261,7 +261,7 @@ index c374fb6..bf67037 100644
 +++ b/src/engine/sequencer.js
 @@ -54,6 +54,16 @@ class Sequencer {
          this.runtime = runtime;
- 
+
          this.activeThread = null;
 +
 +        /**
@@ -274,7 +274,7 @@ index c374fb6..bf67037 100644
 +         */
 +        this._doneThreads = [];
      }
- 
+
      /**
 @@ -81,7 +91,10 @@ class Sequencer {
          let numActiveThreads = Infinity;
@@ -307,7 +307,7 @@ index bf2554b..a75a652 100644
 +++ b/src/engine/tw-frame-loop.js
 @@ -10,12 +10,19 @@ const _cancelAnimationFrame = typeof requestAnimationFrame === 'function' ?
      clearTimeout;
- 
+
  const animationFrameWrapper = callback => {
 +    // Allocate the cancel function once. The handle closure is shared across
 +    // every animation frame so we do not allocate a fresh closure per frame.
@@ -349,11 +349,8 @@ index eeb029f..0bebdd2 100644
          return this.renderer.isTouchingDrawables(
              this.drawableID, drawableCandidates);
      }
-diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
-index 61d69cd..3be99a5 100644
---- a/src/compiler/jsexecute.js
-+++ b/src/compiler/jsexecute.js
-@@ -292,7 +292,18 @@ baseRuntime += `const compareEqualSlow = (v1, v2) => {
+ /**
+@@ -292,7 +299,18 @@ baseRuntime += `const compareEqualSlow = (v1, v2) => {
      if (Number.isNaN(n2) || (n2 === 0 && isNotActuallyZero(v2))) return ('' + v1).toLowerCase() === ('' + v2).toLowerCase();
      return n1 === n2;
  };
@@ -372,7 +369,7 @@ index 61d69cd..3be99a5 100644
 +};`;
  
  /**
-  * Determine if one value is greater than another.
+   * Determine if one value is greater than another.
 diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
 index ebbdc6b..01d8643 100644
 --- a/src/compiler/jsgen.js
@@ -416,7 +413,7 @@ index c9f2f11..5051e6f 100644
                  currentBlockId,
                  resolvedValue
              );
- 
+
 -            const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;
 +            const edgeWasActivated = !oldEdgeValue && resolvedValue;
              if (edgeWasActivated) {
@@ -455,5 +452,5 @@ index d78717a..9032581 100644
 +        if (n1 > n2) return 1;
 +        return 0;
      }
- 
+
      /**

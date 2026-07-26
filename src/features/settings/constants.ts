@@ -83,9 +83,9 @@ export const DETAILED_OPTIMIZATION_DESCRIPTIONS: Readonly<
   Record<DetailedOptimizationId, string>
 > = {
   'compatLayer.closureReuse':
-    'Reuse compatibility-layer closure objects across steps instead of allocating per-thread.',
+    '§Phase 2-A — Permanently skipped at MVP. The proposed hoisting of the per-call `finish(returnValue)` closure out of `executeInCompatibilityLayer` produced a marginal heapDelta improvement (≈12% in compiled mode) but **no wall-clock win** against the legacy shape on `compat-layer-loop-fixture.sb3` (200-iteration `motion_movesteps` repeat; n=30, warmup=5, frames=600). Both versions report compiled mode as **slower** than the interpreted baseline (V8 deopts on the new control-flow shape inside the per-call generator). The UI toggle is therefore cosmetic (= no runtime gate), no patch is applied, and the detailed-row description deliberately documents the bench verdict so a future phase can re-evaluate with `--trace-opt` data. Spec: `phase-02-compat-layer.md` §2A-2, §2A-7, §2A-8.',
   'compatLayer.procedureCache':
-    'Cache resolved procedure frames so repeat calls skip the lookup walk.',
+    '§Phase 2-B — Placeholder. The procedural-frame cache prototype was permanently skipped at MVP because the JSON-key-parse cost of `thread.procedures[key]` is amortised below the 1% bench threshold by V8 JIT inside the typical procedure-call frequency. Reserved for a future phase with browser-side / `--trace-opt` validation.',
   'compatLayer.branchInfoReuse':
     'Reuse branch-info snapshots across procedures that share a callee.',
   'compatLayer.procedureCacheThreadCompaction':

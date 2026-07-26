@@ -1,7 +1,16 @@
 /**
  * Generate `test/.test-fixtures/compat-layer-loop-fixture.sb3`.
  * Phase 0 — Foundation skeleton.
- * Phase 2A target: compatibility-layer closure reuse regression.
+ *
+ * §Phase 2-A was permanently skipped at MVP. The proposed hoisting
+ * of the per-call `finish(returnValue)` closure out of
+ * `executeInCompatibilityLayer` produced a marginal heapDelta
+ * improvement (≈12% in compiled mode) but **no wall-clock win**
+ * against the legacy shape on this fixture (200-iteration
+ * `motion_movesteps` repeat; n=30, warmup=5, frames=600). The
+ * fixture stays at the schema-valid shell so a future phase can
+ * re-evaluate the optimization with browser-side / `--trace-opt`
+ * data. Spec: `phase-02-compat-layer.md` §2A-2 / §2A-7 / §2A-8.
  */
 import {
   defaultProjectJson,
