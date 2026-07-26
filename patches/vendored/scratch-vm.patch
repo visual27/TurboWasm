@@ -1,5 +1,207 @@
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+index 61d69cd..7bba767 100644
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -137,31 +137,32 @@ const isPromise = value => (
+     typeof value === 'object' &&
+     typeof value.then === 'function'
+ );
++// TurboWasm: compat-layer-finish-extracted
++const finishCompatibilityCall = (returnValue, branchInfo, blockUtility) => {
++    if (branchInfo) {
++        if (typeof returnValue === 'undefined' && blockUtility._startedBranch) {
++            branchInfo.isLoop = blockUtility._startedBranch[1];
++            return blockUtility._startedBranch[0];
++        }
++        branchInfo.isLoop = branchInfo.defaultIsLoop;
++        return returnValue;
++    }
++    return returnValue;
++};
+ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, useFlags, blockId, branchInfo) {
+     const thread = globalState.thread;
+     const blockUtility = globalState.blockUtility;
+     const stackFrame = branchInfo ? branchInfo.stackFrame : {};
+ 
+-    const finish = (returnValue) => {
+-        if (branchInfo) {
+-            if (typeof returnValue === 'undefined' && blockUtility._startedBranch) {
+-                branchInfo.isLoop = blockUtility._startedBranch[1];
+-                return blockUtility._startedBranch[0];
+-            }
+-            branchInfo.isLoop = branchInfo.defaultIsLoop;
+-            return returnValue;
+-        }
+-        return returnValue;
+-    };
+-
+-    const executeBlock = () => {
+-        blockUtility.init(thread, blockId, stackFrame);
+-        return blockFunction(inputs, blockUtility);
+-    };
++    blockUtility.init(thread, blockId, stackFrame);
++    let returnValue = blockFunction(inputs, blockUtility);
+ 
+-    let returnValue = executeBlock();
+     if (isPromise(returnValue)) {
+-        returnValue = finish(yield* waitPromise(returnValue));
++        returnValue = finishCompatibilityCall(
++            yield* waitPromise(returnValue),
++            branchInfo,
++            blockUtility
++        );
+         if (useFlags) hasResumedFromPromise = true;
+         return returnValue;
+     }
+@@ -170,7 +171,7 @@ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, use
+         // Something external is forcing us to stop
+         yield;
+         // Make up a return value because whatever is forcing us to stop can't specify one
+-        return '';
++        return finishCompatibilityCall('', branchInfo, blockUtility);
+     }
+ 
+     while (thread.status === 2 /* STATUS_YIELD */ || thread.status === 3 /* STATUS_YIELD_TICK */) {
+@@ -186,22 +187,28 @@ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, use
+             yield;
+         }
+ 
+-        returnValue = executeBlock();
++        blockUtility.init(thread, blockId, stackFrame);
++        returnValue = blockFunction(inputs, blockUtility);
++
+         if (isPromise(returnValue)) {
+-            returnValue = finish(yield* waitPromise(returnValue));
++            returnValue = finishCompatibilityCall(
++                yield* waitPromise(returnValue),
++                branchInfo,
++                blockUtility
++            );
+             if (useFlags) hasResumedFromPromise = true;
+             return returnValue;
+         }
+ 
+         if (thread.status === 1 /* STATUS_PROMISE_WAIT */ || thread.status === 4 /* STATUS_DONE */) {
+             yield;
+-            return finish('');
++            return finishCompatibilityCall('', branchInfo, blockUtility);
+         }
+     }
+ 
+     // todo: do we have to do anything extra if status is STATUS_DONE?
+ 
+-    return finish(returnValue);
++    return finishCompatibilityCall(returnValue, branchInfo, blockUtility);
+ }`;
+ 
+ /**
+@@ -292,7 +299,18 @@ baseRuntime += `const compareEqualSlow = (v1, v2) => {
+     if (Number.isNaN(n2) || (n2 === 0 && isNotActuallyZero(v2))) return ('' + v1).toLowerCase() === ('' + v2).toLowerCase();
+     return n1 === n2;
+ };
+-const compareEqual = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);`;
++// TurboWasm: comparison-compare-equal-short-circuit
++const compareEqualLegacy = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);
++const compareEqual = (v1, v2) => {
++    if (v1 === v2) return true;
++    if (
++        typeof v1 === 'number' &&
++        typeof v2 === 'number' &&
++        !Number.isNaN(v1) &&
++        !Number.isNaN(v2)
++    ) return false;
++    return compareEqualSlow(v1, v2);
++};`;
+ 
+ /**
+  * Determine if one value is greater than another.
+diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
+index ebbdc6b..2eb1325 100644
+--- a/src/compiler/jsgen.js
++++ b/src/compiler/jsgen.js
+@@ -405,7 +405,20 @@ class JSGenerator {
+             //  - We need to yield *between* each call in the same command block
+             //  - We need to evaluate arguments *before* that yield happens
+ 
+-            const procedureReference = `thread.procedures["${sanitize(procedureVariant)}"]`;
++            // TurboWasm: procedure-lazy-cache
++            // Hoist the `thread.procedures["<variant>"]` lookup into the
++            // factory-level setup block via evaluateOnce(). The factory
++            // (per `Thread.tryCompile`) is called once per thread when the
++            // compiled script starts, so the variant→function map entry
++            // is resolved once instead of on every procedure-call site.
++            // Subsequent call sites in the same compiled script just
++            // read the captured local (`b0`, `b1`, …), which is faster
++            // than the string-keyed property access and emits zero
++            // per-call work for the cache hit case. Recursion, warp, and
++            // multi-call cases all share the same captured local because
++            // the variant key already disambiguates warp/non-warp and
++            // mutation-shaped variants inside `ir.procedures`.
++            const procedureReference = this.evaluateOnce(`thread.procedures["${sanitize(procedureVariant)}"]`);
+             const args = [];
+             for (const input of node.arguments) {
+                 args.push(this.descendInput(input));
+@@ -556,9 +569,13 @@ class JSGenerator {
+             // Can matter if the input is not instantly evaluated.
+             this.source += `const resolvedValue = ${this.descendInput(node.condition)};\n`;
+             this.source += `const id = "${sanitize(node.id)}";\n`;
+-            this.source += 'const hasOldEdgeValue = target.hasEdgeActivatedValue(id);\n';
++            // TurboWasm: edge-detection-hat-sentinel-eliminated
++            // Drop the explicit `hasEdgeActivatedValue` probe; `updateEdgeActivatedValue`
++            // returns `undefined` on first access (== falsy), making `!undefined && v === v`.
++            // After the first call it returns the previously stored value, so the
++            // expression reduces to the same `!old && v` as the legacy ternary.
+             this.source += `const oldEdgeValue = target.updateEdgeActivatedValue(id, resolvedValue);\n`;
+-            this.source += `const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;\n`;
++            this.source += `const edgeWasActivated = !oldEdgeValue && resolvedValue;\n`;
+             this.source += `if (!edgeWasActivated) {\n`;
+             this.retire();
+             this.source += '}\n';
+@@ -879,7 +896,12 @@ class JSGenerator {
+                     throw new Error('Script uses yielding procedure but is not marked as yielding.');
+                 }
+             }
+-            this.source += `thread.procedures["${sanitize(procedureVariant)}"](`;
++            // TurboWasm: procedure-lazy-cache
++            // Mirror of the reporter-path evaluateOnce() above. The
++            // returned variable name (e.g. `b0`) is substituted into the
++            // emitted source so the per-call site becomes a single
++            // closure-captured identifier read.
++            this.source += `${this.evaluateOnce(`thread.procedures["${sanitize(procedureVariant)}"]`)}(`;
+             const args = [];
+             for (const input of node.arguments) {
+                 args.push(this.descendInput(input));
+diff --git a/src/engine/execute.js b/src/engine/execute.js
+index c9f2f11..5051e6f 100644
+--- a/src/engine/execute.js
++++ b/src/engine/execute.js
+@@ -62,16 +62,21 @@ const handleReport = function (resolvedValue, sequencer, thread, blockCached, la
+         if (thread.stackClick) {
+             thread.status = Thread.STATUS_RUNNING;
+         } else if (sequencer.runtime.getIsEdgeActivatedHat(opcode)) {
++            // TurboWasm: edge-detection-hat-sentinel-eliminated
+             // If this is an edge-activated hat, only proceed if the value is
+             // true and used to be false, or the stack was activated explicitly
+-            // via stack click
+-            const hasOldEdgeValue = thread.target.hasEdgeActivatedValue(currentBlockId);
++            // via stack click. The sentinel elimination is semantically invariant
++            // because `updateEdgeActivatedValue` returns `undefined` on first
++            // access (== falsy) and `!undefined && resolvedValue === resolvedValue`.
++            // Subsequent calls return the previously stored value, so the
++            // expression reduces to the same `!old && resolvedValue` as the
++            // legacy `hasOldEdgeValue ? (!old && new) : new` ternary.
+             const oldEdgeValue = thread.target.updateEdgeActivatedValue(
+                 currentBlockId,
+                 resolvedValue
+             );
+ 
+-            const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;
++            const edgeWasActivated = !oldEdgeValue && resolvedValue;
+             if (edgeWasActivated) {
+                 thread.status = Thread.STATUS_RUNNING;
+             } else {
 diff --git a/src/engine/runtime.js b/src/engine/runtime.js
-index 1df8dff..5c49ee5 100644
+index 1df8dff..925a6a3 100644
 --- a/src/engine/runtime.js
 +++ b/src/engine/runtime.js
 @@ -273,6 +273,13 @@ class Runtime extends EventEmitter {
@@ -13,12 +215,12 @@ index 1df8dff..5c49ee5 100644
 +         * @type {?Array.<[string, {edgeActivated: boolean, restartExistingThreads: boolean}]>}
 +         */
 +        this._hatsCache = null;
-
+ 
          /**
           * Map of opcode to information about whether the block's return value should be interpreted
 @@ -282,10 +289,11 @@ class Runtime extends EventEmitter {
          this._flowing = {};
-
+ 
          /**
 -         * A list of script block IDs that were glowing during the previous frame.
 -         * @type {!Array.<!string>}
@@ -28,7 +230,7 @@ index 1df8dff..5c49ee5 100644
           */
 -        this._scriptGlowsPreviousFrame = [];
 +        this._scriptGlowsPreviousFrame = new Set();
-
+ 
          /**
           * Number of non-monitor threads running during the previous frame.
 @@ -1005,6 +1013,7 @@ class Runtime extends EventEmitter {
@@ -47,10 +249,23 @@ index 1df8dff..5c49ee5 100644
                      } else if (blockInfo.blockType === BlockType.CONDITIONAL) {
                          this._flowing[opcode] = {
                              conditional: true,
-@@ -2520,16 +2530,45 @@ class Runtime extends EventEmitter {
+@@ -2111,7 +2121,11 @@ class Runtime extends EventEmitter {
+         // Remove any existing thread.
+         for (let i = 0; i < this.threads.length; i++) {
+             // Toggling a script that's already running turns it off
+-            if (this.threads[i].topBlock === topBlockId && this.threads[i].status !== Thread.STATUS_DONE) {
++            if (
++                this.threads[i].target === opts.target &&
++                this.threads[i].topBlock === topBlockId &&
++                this.threads[i].status !== Thread.STATUS_DONE
++            ) {
+                 const blockContainer = opts.target.blocks;
+                 const opcode = blockContainer.getOpcode(blockContainer.getBlock(topBlockId));
+ 
+@@ -2520,16 +2534,45 @@ class Runtime extends EventEmitter {
              this.profiler.start(stepProfilerId);
          }
-
+ 
 -        // Clean up threads that were told to stop during or since the last step
 -        this.threads = this.threads.filter(thread => !thread.isKilled);
 -        this.updateThreadMap();
@@ -80,7 +295,7 @@ index 1df8dff..5c49ee5 100644
 +            }
 +            threads.length = writeIndex;
 +        }
-
+ 
          // Find all edge-activated hats, and add them to threads to be evaluated.
 -        for (const hatType in this._hats) {
 -            if (!Object.prototype.hasOwnProperty.call(this._hats, hatType)) continue;
@@ -101,7 +316,7 @@ index 1df8dff..5c49ee5 100644
              }
          }
          this.redrawRequested = false;
-@@ -2551,7 +2590,7 @@ class Runtime extends EventEmitter {
+@@ -2551,7 +2594,7 @@ class Runtime extends EventEmitter {
          // flag will still indicate that a script ran.
          this._emitProjectRunStatus(
              this.threads.length + doneThreads.length -
@@ -110,9 +325,9 @@ index 1df8dff..5c49ee5 100644
          // Store threads that completed this iteration for testing and other
          // internal purposes.
          this._lastStepDoneThreads = doneThreads;
-@@ -2595,16 +2634,24 @@ class Runtime extends EventEmitter {
+@@ -2595,16 +2638,24 @@ class Runtime extends EventEmitter {
      }
-
+ 
      /**
 -     * Get the number of threads in the given array that are monitor threads (threads
 +     * Get the number of threads in the given arrays that are monitor threads (threads
@@ -141,17 +356,17 @@ index 1df8dff..5c49ee5 100644
 +        }
          return count;
      }
-
-@@ -2627,7 +2674,7 @@ class Runtime extends EventEmitter {
+ 
+@@ -2627,7 +2678,7 @@ class Runtime extends EventEmitter {
          const oldEditingTarget = this._editingTarget;
          this._editingTarget = editingTarget;
          // Script glows must be cleared.
 -        this._scriptGlowsPreviousFrame = [];
 +        this._scriptGlowsPreviousFrame = new Set();
          this._updateGlows();
-
+ 
          if (oldEditingTarget !== this._editingTarget) {
-@@ -2960,22 +3007,36 @@ class Runtime extends EventEmitter {
+@@ -2960,22 +3011,36 @@ class Runtime extends EventEmitter {
       * @param {Array.<Thread>=} optExtraThreads Optional list of inactive threads.
       */
      _updateGlows (optExtraThreads) {
@@ -198,7 +413,7 @@ index 1df8dff..5c49ee5 100644
                      let script = target.blocks.getTopLevelScript(blockForThread);
                      if (!script) {
                          // Attempt to find in flyout blocks.
-@@ -2984,31 +3045,30 @@ class Runtime extends EventEmitter {
+@@ -2984,31 +3049,30 @@ class Runtime extends EventEmitter {
                          );
                      }
                      if (script) {
@@ -241,9 +456,9 @@ index 1df8dff..5c49ee5 100644
 -        this._scriptGlowsPreviousFrame = finalScriptGlows;
 +        this._scriptGlowsPreviousFrame = next;
      }
-
+ 
      /**
-@@ -3034,10 +3094,7 @@ class Runtime extends EventEmitter {
+@@ -3034,10 +3098,7 @@ class Runtime extends EventEmitter {
       * @param {!string} scriptBlockId Id of top-level block in script to quiet.
       */
      quietGlow (scriptBlockId) {
@@ -253,15 +468,187 @@ index 1df8dff..5c49ee5 100644
 -        }
 +        this._scriptGlowsPreviousFrame.delete(scriptBlockId);
      }
-
+ 
      /**
+@@ -3493,6 +3554,171 @@ class Runtime extends EventEmitter {
+ 
+         return callback().then(onSuccess, onError);
+     }
++
++    // TurboWasm: list / scalar buffer accessors for the GPU compute kernel
++    // pipeline (see gpu-kernel-spec-summary.md §6.1). These are non-
++    // breaking additions: callers without @compute regions simply never
++    // call them. They return a `{data, length, dtype}` triple where data
++    // is a freshly-allocated Float32Array / Int32Array / Uint8Array view
++    // mirroring the scratch-vm list, so the GPU side can call syncToHost
++    // after the dispatch. The `dtype` matches the @bind directive's dtype.
++
++    /**
++     * Look up a list by name (case-insensitive, lower-cased to match
++     * scratch-vm's storage convention) and return a typed-array-backed
++     * view of its current contents in the requested dtype.
++     * @param {string} name list name.
++     * @param {'f32'|'i32'|'byte'} [dtype='f32'] ABI dtype.
++     * @return {{data: Float32Array|Int32Array|Uint8Array, length: number, dtype: string} | null}
++     */
++    __getListBuffer (name, dtype) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const wantDtype = dtype || 'f32';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
++                    return this.__getListBufferById(varId, wantDtype);
++                }
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Look up a list by id and return a typed-array-backed view in the
++     * requested dtype.
++     * @param {string} id scratch-vm variable id.
++     * @param {'f32'|'i32'|'byte'} [dtype='f32'] ABI dtype.
++     * @return {{data: Float32Array|Int32Array|Uint8Array, length: number, dtype: string} | null}
++     */
++    __getListBufferById (id, dtype) {
++        const wantDtype = dtype || 'f32';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            const v = target.variables[id];
++            if (v && v.type === 'list' && Array.isArray(v.value)) {
++                if (wantDtype === 'i32') {
++                    const data = new Int32Array(v.value.length);
++                    for (let i = 0; i < v.value.length; i++) {
++                        const n = Number(v.value[i]);
++                        data[i] = Number.isFinite(n) ? (n | 0) : 0;
++                    }
++                    return {data, length: v.value.length, dtype: 'i32'};
++                }
++                if (wantDtype === 'byte') {
++                    const data = new Uint8Array(v.value.length);
++                    for (let i = 0; i < v.value.length; i++) {
++                        const n = Number(v.value[i]);
++                        data[i] = Number.isFinite(n) ? (n & 0xff) : 0;
++                    }
++                    return {data, length: v.value.length, dtype: 'byte'};
++                }
++                const data = new Float32Array(v.value.length);
++                for (let i = 0; i < v.value.length; i++) {
++                    const n = Number(v.value[i]);
++                    data[i] = Number.isFinite(n) ? n : 0;
++                }
++                return {data, length: v.value.length, dtype: 'f32'};
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Write back a typed array into the host list identified by name
++     * (case-insensitive, lower-cased to match scratch-vm's storage
++     * convention).
++     * @param {string} name list name.
++     * @param {Float32Array|Int32Array|Uint8Array} value data to write.
++     * @return {boolean}
++     */
++    __setListBuffer (name, value) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const arr = value && value.length !== undefined ? value : null;
++        if (!arr) return false;
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
++                    return this.__setListBufferById(varId, arr);
++                }
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Write back a typed array into the host list identified by id.
++     * Truncates to the existing list length so we don't accidentally
++     * grow a list (scratch-vm list growth goes through `data_addtolist`).
++     * @param {string} id scratch-vm variable id.
++     * @param {Float32Array|Int32Array|Uint8Array} value data to write.
++     * @return {boolean}
++     */
++    __setListBufferById (id, value) {
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            const v = target.variables[id];
++            if (v && v.type === 'list' && Array.isArray(v.value)) {
++                const n = Math.min(v.value.length, value.length);
++                for (let i = 0; i < n; i++) {
++                    v.value[i] = Number(value[i]);
++                }
++                v._monitorUpToDate = false;
++                return true;
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Read a scalar variable by name (case-insensitive via scratch-vm's
++     * lower-cased storage). Returns the numeric value or 0 when missing.
++     * @param {string} name scalar variable name.
++     * @return {number}
++     */
++    __getScalarValue (name) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
++                    const n = Number(v.value);
++                    return Number.isFinite(n) ? n : 0;
++                }
++            }
++        }
++        return 0;
++    }
++
++    /**
++     * Write a scalar variable by name (case-insensitive). Returns true
++     * when the variable was found and updated.
++     * @param {string} name scalar variable name.
++     * @param {number} value numeric value to write.
++     * @return {boolean}
++     */
++    __setScalarValue (name, value) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const n = Number(value);
++        const safe = Number.isFinite(n) ? n : 0;
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
++                    v.value = safe;
++                    v._monitorUpToDate = false;
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
+ }
+ 
+ /**
 diff --git a/src/engine/sequencer.js b/src/engine/sequencer.js
 index c374fb6..bf67037 100644
 --- a/src/engine/sequencer.js
 +++ b/src/engine/sequencer.js
 @@ -54,6 +54,16 @@ class Sequencer {
          this.runtime = runtime;
-
+ 
          this.activeThread = null;
 +
 +        /**
@@ -274,7 +661,7 @@ index c374fb6..bf67037 100644
 +         */
 +        this._doneThreads = [];
      }
-
+ 
      /**
 @@ -81,7 +91,10 @@ class Sequencer {
          let numActiveThreads = Infinity;
@@ -307,7 +694,7 @@ index bf2554b..a75a652 100644
 +++ b/src/engine/tw-frame-loop.js
 @@ -10,12 +10,19 @@ const _cancelAnimationFrame = typeof requestAnimationFrame === 'function' ?
      clearTimeout;
-
+ 
  const animationFrameWrapper = callback => {
 +    // Allocate the cancel function once. The handle closure is shared across
 +    // every animation frame so we do not allocate a fresh closure per frame.
@@ -349,76 +736,6 @@ index eeb029f..0bebdd2 100644
          return this.renderer.isTouchingDrawables(
              this.drawableID, drawableCandidates);
      }
- /**
-@@ -292,7 +299,18 @@ baseRuntime += `const compareEqualSlow = (v1, v2) => {
-     if (Number.isNaN(n2) || (n2 === 0 && isNotActuallyZero(v2))) return ('' + v1).toLowerCase() === ('' + v2).toLowerCase();
-     return n1 === n2;
- };
--const compareEqual = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);`;
-+// TurboWasm: comparison-compare-equal-short-circuit
-+const compareEqualLegacy = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);
-+const compareEqual = (v1, v2) => {
-+    if (v1 === v2) return true;
-+    if (
-+        typeof v1 === 'number' &&
-+        typeof v2 === 'number' &&
-+        !Number.isNaN(v1) &&
-+        !Number.isNaN(v2)
-+    ) return false;
-+    return compareEqualSlow(v1, v2);
-+};`;
- 
- /**
-   * Determine if one value is greater than another.
-diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
-index ebbdc6b..01d8643 100644
---- a/src/compiler/jsgen.js
-+++ b/src/compiler/jsgen.js
-@@ -556,9 +556,13 @@ class JSGenerator {
-             // Can matter if the input is not instantly evaluated.
-             this.source += `const resolvedValue = ${this.descendInput(node.condition)};\n`;
-             this.source += `const id = "${sanitize(node.id)}";\n`;
--            this.source += 'const hasOldEdgeValue = target.hasEdgeActivatedValue(id);\n';
-+            // TurboWasm: edge-detection-hat-sentinel-eliminated
-+            // Drop the explicit `hasEdgeActivatedValue` probe; `updateEdgeActivatedValue`
-+            // returns `undefined` on first access (== falsy), making `!undefined && v === v`.
-+            // After the first call it returns the previously stored value, so the
-+            // expression reduces to the same `!old && v` as the legacy ternary.
-             this.source += `const oldEdgeValue = target.updateEdgeActivatedValue(id, resolvedValue);\n`;
--            this.source += `const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;\n`;
-+            this.source += `const edgeWasActivated = !oldEdgeValue && resolvedValue;\n`;
-             this.source += `if (!edgeWasActivated) {\n`;
-             this.retire();
-             this.source += '}\n';
-diff --git a/src/engine/execute.js b/src/engine/execute.js
-index c9f2f11..5051e6f 100644
---- a/src/engine/execute.js
-+++ b/src/engine/execute.js
-@@ -62,16 +62,21 @@ const handleReport = function (resolvedValue, sequencer, thread, blockCached, la
-         if (thread.stackClick) {
-             thread.status = Thread.STATUS_RUNNING;
-         } else if (sequencer.runtime.getIsEdgeActivatedHat(opcode)) {
-+            // TurboWasm: edge-detection-hat-sentinel-eliminated
-             // If this is an edge-activated hat, only proceed if the value is
-             // true and used to be false, or the stack was activated explicitly
--            // via stack click
--            const hasOldEdgeValue = thread.target.hasEdgeActivatedValue(currentBlockId);
-+            // via stack click. The sentinel elimination is semantically invariant
-+            // because `updateEdgeActivatedValue` returns `undefined` on first
-+            // access (== falsy) and `!undefined && resolvedValue === resolvedValue`.
-+            // Subsequent calls return the previously stored value, so the
-+            // expression reduces to the same `!old && resolvedValue` as the
-+            // legacy `hasOldEdgeValue ? (!old && new) : new` ternary.
-             const oldEdgeValue = thread.target.updateEdgeActivatedValue(
-                 currentBlockId,
-                 resolvedValue
-             );
-
--            const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;
-+            const edgeWasActivated = !oldEdgeValue && resolvedValue;
-             if (edgeWasActivated) {
-                 thread.status = Thread.STATUS_RUNNING;
-             } else {
 diff --git a/src/util/cast.js b/src/util/cast.js
 index d78717a..9032581 100644
 --- a/src/util/cast.js
@@ -452,5 +769,5 @@ index d78717a..9032581 100644
 +        if (n1 > n2) return 1;
 +        return 0;
      }
-
+ 
      /**

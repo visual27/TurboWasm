@@ -32,6 +32,7 @@ const TURBOWASM_MARKERS: readonly string[] = [
   '// TurboWasm: comparison-compare-equal-short-circuit',
   '// TurboWasm: comparison-infinity-branch-removed',
   '// TurboWasm: edge-detection-hat-sentinel-eliminated',
+  '// TurboWasm: procedure-lazy-cache',
 ];
 
 describe('// TurboWasm: marker registry (Phase 1-A/B/C)', () => {

@@ -33,6 +33,7 @@ the table below is the source-of-truth consumed by
 | Comparison (compareEqual short-circuit) | `// TurboWasm: comparison-compare-equal-short-circuit` | 1-A | `vendored/scratch-vm/src/compiler/jsexecute.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-compare-equal.test.ts` |
 | Edge Detection (hat sentinel elimination) | `// TurboWasm: edge-detection-hat-sentinel-eliminated` | 1-B | `vendored/scratch-vm/src/engine/execute.js` + `vendored/scratch-vm/src/compiler/jsgen.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-edge-hat.test.ts` |
 | Comparison (Infinity branch removal) | `// TurboWasm: comparison-infinity-branch-removed` | 1-C | `vendored/scratch-vm/src/util/cast.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-cast-compare.test.ts` |
+| Procedure call (lazy reference cache) | `// TurboWasm: procedure-lazy-cache` | 2-B | `vendored/scratch-vm/src/compiler/jsgen.js` (reporter + command paths) | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-procedure-lazy-cache.test.ts` |
 
 ## Cross-references
 
