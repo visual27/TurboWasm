@@ -1,4 +1,4 @@
-diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+﻿diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
 index 61d69cd..7bba767 100644
 --- a/src/compiler/jsexecute.js
 +++ b/src/compiler/jsexecute.js
@@ -1083,3 +1083,28 @@ index 925a6a3..5ea76d1 100644
          };
  
          this.debug = false;
+
+diff --git a/src/compiler/irgen.js b/src/compiler/irgen.js
+index 08d1701..d8e7f4a 100644
+--- a/src/compiler/irgen.js
++++ b/src/compiler/irgen.js
+@@ -1434,8 +1434,18 @@ class ScriptTreeGenerator {
+             // We don't evaluate the procedures_definition top block as it never does anything
+             // We also don't want it to be treated like a hat block
+             let entryBlock;
+             if (topBlock.opcode === 'procedures_definition') {
+-                entryBlock = topBlock.next;
++                // TurboWasm: procedure-definition-entry-prototype-substack
++                // Walk into the prototype body's SUBSTACK instead of the next
++                // sprite-level top block (= another procedures_definition or
++                // a hat). Without this fix the compiled procedure body is
++                // empty and every `procedures_call` site becomes a no-op,
++                // which breaks projects that use custom blocks in compiled
++                // mode (`add_one` called 200 times leaves `result` at 0).
++                const proto = topBlock.inputs.custom_block
++                    ? this.blocks.getBlock(topBlock.inputs.custom_block.block)
++                    : null;
++                entryBlock = proto ? proto.inputs.SUBSTACK.block : null;
+             } else {
+                 entryBlock = topBlockId;
+             }
