@@ -1095,30 +1095,53 @@ diff --git a/src/compiler/irgen.js b/src/compiler/irgen.js
 index 08d1701..d8e7f4a 100644
 --- a/src/compiler/irgen.js
 +++ b/src/compiler/irgen.js
-@@ -1434,8 +1434,25 @@ class ScriptTreeGenerator {
+@@ -1434,8 +1434,46 @@ class ScriptTreeGenerator {
              // We don't evaluate the procedures_definition top block as it never does anything
              // We also don't want it to be treated like a hat block
              let entryBlock;
              if (topBlock.opcode === 'procedures_definition') {
 -                entryBlock = topBlock.next;
 +                // TurboWasm: procedure-definition-entry-prototype-substack
-+                // Walk into the prototype body's SUBSTACK instead of the next
-+                // sprite-level top block (= another procedures_definition or
-+                // a hat). Without this fix the compiled procedure body is
-+                // empty and every `procedures_call` site becomes a no-op,
-+                // which breaks projects that use custom blocks in compiled
-+                // mode (`add_one` called 200 times leaves `result` at 0).
-+                const proto = topBlock.inputs.custom_block
-+                    ? this.blocks.getBlock(topBlock.inputs.custom_block.block)
-+                    : null;
-+                // SUBSTACK may be absent for malformed procedures_prototype
-+                // blocks (= a custom block that was authored without a body,
-+                // or a partial deserialisation). Fall back to `null` (= an
-+                // empty script) instead of throwing
-+                // "Cannot read properties of undefined (reading 'block')".
-+                entryBlock = proto && proto.inputs && proto.inputs.SUBSTACK
-+                    ? proto.inputs.SUBSTACK.block
-+                    : null;
++                // Resolve the procedure body for compiled mode. Two shapes
++                // exist in real-world projects:
++                //
++                //  1. **Standard Scratch shape** (= `procedures_definition.next`
++                //     carries the body). Every project exported from the
++                //     official scratch-gui / scratch-blocks / scratch3 editor
++                //     uses this. Examples: `test/.test-fixtures/repro.sb3`
++                //     and `C:\files\devs\test\fps.sb3`.
++                //
++                //  2. **SUBSTACK shape** (= `proto.inputs.SUBSTACK.block`
++                //     carries the body). The procedurally-generated test
++                //     fixture `procedure-lazy-cache-fixture.sb3` uses this
++                //     layout; it does NOT match what scratch-gui produces,
++                //     but it does match what some scratch-parser paths and
++                //     partial deserialisations can produce.
++                //
++                // The pre-Phase 2-B code only handled (1) — `entryBlock =
++                // topBlock.next` — which meant the SUBSTACK-shape fixture
++                // compiled to an empty body. The Phase 2-B hunk only
++                // handled (2) — `entryBlock = proto.inputs.SUBSTACK.block`
++                // — which silently regressed every real Scratch project
++                // (= the bug pinned by `test/runtime/scratch-vm-procedure-
++                // body-standard-shape.test.ts`). Both shapes must be
++                // accepted so the compiled runtime stays parity-equivalent
++                // with the interpreter.
++                //
++                // Prefer (1) and fall back to (2). When both are absent
++                // (= a `procedures_definition` whose prototype has no body
++                // and whose `next` is null) emit an empty script rather
++                // than throwing on a missing `.block`.
++                if (topBlock.next) {
++                    entryBlock = topBlock.next;
++                } else {
++                    const proto = topBlock.inputs.custom_block
++                        ? this.blocks.getBlock(topBlock.inputs.custom_block.block)
++                        : null;
++                    entryBlock = proto && proto.inputs && proto.inputs.SUBSTACK
++                        ? proto.inputs.SUBSTACK.block
++                        : null;
++                }
              } else {
                  entryBlock = topBlockId;
              }

@@ -196,24 +196,51 @@ describe('Phase 2-B companion hunk — irgen.js procedure_definition entry fix',
       expect(matches.length, 'expected exactly 1 marker occurrence').toBe(1);
     });
 
-    it('irgen.js resolves entryBlock via prototype SUBSTACK (not topBlock.next)', () => {
-      // The post-patch source reads the prototype block from
-      // `topBlock.inputs.custom_block.block` and walks its
-      // `inputs.SUBSTACK.block`. The pre-patch source had only
-      // `entryBlock = topBlock.next;`. Catching the legacy line shape
-      // catches accidental reintroduction of the bug.
-      expect(text, 'legacy `entryBlock = topBlock.next;` must be removed').not.toMatch(
-        /entryBlock = topBlock\.next/u,
-      );
-      // The proto resolution uses `.block` (deserialized input shape),
-      // matching the rest of irgen.js (`descendSubstack` line 1001,
-      // `getProcedureInfo` line 1078).
-      expect(text, 'entry resolution must use topBlock.inputs.custom_block.block').toMatch(
-        /topBlock\.inputs\.custom_block\.block/u,
-      );
-      expect(text, 'entry resolution must use proto.inputs.SUBSTACK.block').toMatch(
+    it('irgen.js prefers topBlock.next for procedures_definition (real-Scratch shape)', () => {
+      // The post-patch source MUST walk `topBlock.next` (= the standard
+      // Scratch convention used by every project exported from
+      // scratch-gui / scratch-blocks / scratch3 editor). The previous
+      // hunk only walked `proto.inputs.SUBSTACK.block`, which
+      // silently regressed every real Scratch project — see
+      // `test/runtime/scratch-vm-procedure-body-standard-shape.test.ts`
+      // for the regression guard.
+      //
+      // Pin both shapes:
+      //   1. `topBlock.next` IS the preferred entry (= the standard
+      //      Scratch shape).
+      //   2. `proto.inputs.SUBSTACK.block` IS the fallback (= the
+      //      synthetic test fixture `procedure-lazy-cache-fixture.sb3`
+      //      and any partial-deserialisation that leaves `topBlock.next`
+      //      null).
+      // Either path may resolve to `entryBlock = ...` — both must remain
+      // present, and the priority must be `topBlock.next` first.
+      expect(text, 'preferred path must use topBlock.next').toMatch(/topBlock\.next/u);
+      // Both source locations must be reachable: a future regression
+      // that drops the SUBSTACK fallback will break the synthetic
+      // fixture, and a regression that drops the topBlock.next path
+      // will break real Scratch projects.
+      expect(text, 'fallback path must use proto.inputs.SUBSTACK.block').toMatch(
         /proto\.inputs\.SUBSTACK\.block/u,
       );
+      expect(text, 'fallback must use topBlock.inputs.custom_block.block').toMatch(
+        /topBlock\.inputs\.custom_block\.block/u,
+      );
+      // The branch order in the post-patch source is
+      //   if (topBlock.next) { entryBlock = topBlock.next; }
+      //   else if (proto...) { entryBlock = proto && proto.inputs && proto.inputs.SUBSTACK ? proto.inputs.SUBSTACK.block : null; }
+      // Pin the relative position so a future refactor that swaps the
+      // branch order (= regresses real Scratch projects) trips this
+      // assertion. We match the actual `entryBlock = ...` assignment
+      // (= excludes docstring comments) so the relative ordering is
+      // unambiguous.
+      const nextIdx = text.search(/^\s*entryBlock\s*=\s*topBlock\.next/mu);
+      const substackIdx = text.search(
+        /^\s*entryBlock\s*=\s*proto\s*&&/mu,
+      );
+      expect(
+        nextIdx >= 0 && substackIdx > nextIdx,
+        'topBlock.next resolution must precede the proto.inputs.SUBSTACK.block fallback',
+      ).toBe(true);
     });
   });
 
