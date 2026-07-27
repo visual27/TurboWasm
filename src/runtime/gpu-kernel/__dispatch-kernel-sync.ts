@@ -152,7 +152,9 @@ export interface GpuLikeComputePassEncoder {
  * Adapter the runtime bridge installs so the dispatcher can read/write
  * the live scratch-vm state. Production wires these to the vendored
  * runtime's `__getListBuffer` / `__setListBuffer` (added by the
- * gpu-kernel-list-binding patch). Tests inject stubs.
+ * `runtime.js` hunk of `patches/vendored/scratch-vm.patch`, formerly
+ * the standalone `patches/vendored/gpu-kernel-list-binding+0.1.0.patch`
+ * absorbed at commit `263378e`). Tests inject stubs.
  */
 export interface RuntimeAdapter {
   /** Read a host list into a typed array of the requested dtype. */

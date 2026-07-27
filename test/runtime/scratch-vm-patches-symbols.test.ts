@@ -35,6 +35,7 @@ const TURBOWASM_MARKERS: readonly string[] = [
   '// TurboWasm: constant-folding',
   '// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler',
   '// TurboWasm: edge-detection-hat-sentinel-eliminated',
+  '// TurboWasm: list / scalar buffer accessors',
   '// TurboWasm: procedure-lazy-cache',
   '// TurboWasm: procedure-definition-entry-prototype-substack',
 ];

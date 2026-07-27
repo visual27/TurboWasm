@@ -44,14 +44,15 @@ runs its build. It is a no-op once `vendored/scaffolding/dist/scaffolding-min.js
 exists. To re-bootstrap from scratch, run `npm run setup -- --force`.
 
 > **Note:** `scripts/setup-vendored.mjs` pins `SCRATCH_VM_REF` to a specific
-> commit (not `origin/develop`) because the GPU kernel patches under
-> `patches/vendored/` (`gpu-kernel-list-binding+0.1.0.patch` and
-> `gpu-kernel-runtime+0.1.0.patch`) are regenerated against that exact SHA via
+> commit (not `origin/develop`) because the GPU kernel patch series under
+> `patches/vendored/` (`gpu-kernel-runtime+0.1.0.patch` plus the
+> `runtime.js` GPU kernel runtime adapter absorbed into
+> `patches/vendored/scratch-vm.patch`) is regenerated against that exact SHA via
 > `scripts/regen-gpu-kernel-patches.mjs`. A fresh clone (e.g. Cloudflare Pages)
 > therefore bootstraps against a known-compatible scratch-vm snapshot. If the
 > pinned SHA drifts past the patch baseline, the script logs a `WARNING` and
 > continues with the GPU kernel pipeline disabled (runtime falls back to the JS
-> path); regenerate the GPU kernel patches against the current `develop` HEAD
+> path); regenerate the GPU kernel patch against the current `develop` HEAD
 > and update the pin atomically.
 
 ### Vendored scaffolding, scratch-vm & scratch-render patches
@@ -223,17 +224,25 @@ independent modules, all test-covered:
 | `diagnostic-forwarding.ts` (Phase 5) | Single `forwardGpuDiagnostics` entry point with severity-bucketed routing. |
 | `scalar-uniform-binding.ts` (Phase 3) | Extracts `@bind ..., scalar` directives into WGSL `@group(1) @binding(0)` uniform buffer entries with host-side 16-byte stride packing. |
 
-The vendored-side hooks (M2) live in
-`patches/vendored/gpu-kernel-list-binding+0.1.0.patch` and
-`patches/vendored/gpu-kernel-runtime+0.1.0.patch`:
+The vendored-side hooks (M2) split between
+`patches/vendored/scratch-vm.patch` (the `runtime.js` hunk adds
+`runtime.__getListBuffer(name)`,
+`__getListBufferById(id)`,
+`__setListBuffer(name, value)`,
+`__setListBufferById(id, value)`,
+`__getScalarValue(name)`, `__setScalarValue(name, value)`)
+and the standalone `patches/vendored/gpu-kernel-runtime+0.1.0.patch`:
 
-- `list-binding` adds `runtime.__getListBuffer(name)`,
-  `__getListBufferById(id)`, `__getScalarValue(name)`, `__setScalarValue(name, value)`.
 - `runtime` adds a top-of-primitive hook in `repeat` / `repeatUntil` /
   `repeatWhile` that consults `globalThis.__turboWasmGpuKernelDispatch(blockId)`.
   When the lookup returns truthy the JS path is skipped and the loop
   counter is consumed in one frame; when the lookup returns falsy the
   hook is a no-op so projects without `@compute` regions run normally.
+
+The previous standalone `patches/vendored/gpu-kernel-list-binding+0.1.0.patch`
+was absorbed into `patches/vendored/scratch-vm.patch` at commit `263378e`
+and removed (2026-07-28). `scripts/regen-gpu-kernel-patches.mjs` now
+regenerates only the runtime patch.
 
 ### Comment marker
 
@@ -963,7 +972,6 @@ test/e2e/gpu-kernel.test.ts      (RUN_E2E=1 gated Playwright wrapper)
 test/runtime/gpu-kernel-patches.test.ts   (vendored patch regression guard)
 test/runtime/gpu-kernel-player-wiring.test.ts (M6 unit tests)
 
-patches/vendored/gpu-kernel-list-binding+0.1.0.patch
 patches/vendored/gpu-kernel-runtime+0.1.0.patch
 
 scripts/make-expo-fixture.mjs                (legacy / nested / byte-scalar)

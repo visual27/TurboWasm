@@ -1,8 +1,14 @@
 /**
- * Regenerate patches/vendored/gpu-kernel-list-binding+0.1.0.patch
- * and patches/vendored/gpu-kernel-runtime+0.1.0.patch from scratch.
+ * Regenerate patches/vendored/gpu-kernel-runtime+0.1.0.patch from scratch.
  *
- * The regenerated patches are produced against the vendored scratch-vm
+ * The list/scalar buffer accessor APIs (`__getListBuffer`,
+ * `__getListBufferById`, `__setListBuffer`, `__setListBufferById`,
+ * `__getScalarValue`, `__setScalarValue`) on `runtime.js` are part of
+ * `patches/vendored/scratch-vm.patch` itself (absorbed there at commit
+ * `263378e`, see AGENTS.md "SCRATCH_VM_REF の pin"), so they are out of
+ * scope for this regen helper.
+ *
+ * The regenerated patch is produced against the vendored scratch-vm
  * state of (upstream TurboWarp/scratch-vm at SCRATCH_VM_BASE_REF) +
  * (patches/vendored/scratch-vm.patch). The hunk headers and the
  * `index <blob>..<blob>` line are recomputed from the actual file
@@ -11,20 +17,14 @@
  *
  * This script is self-contained: it always clones a fresh scratch-vm
  * at the pinned SHA into a temp directory, applies scratch-vm.patch
- * to obtain the pre-patch state, and uses the *existing* patch files
- * as the source of truth for the post-patch state. The previous
- * regen-gpu-kernel-patches.mjs read the post-patch state from
- * vendored/scratch-vm/, which only happened to be correct when both
- * GPU kernel patches had already been applied — that assumption broke
- * after the list-binding patch began failing on a fresh clone, so the
- * regen produced patches that could not be applied either.
+ * to obtain the pre-patch state, and uses the *existing* patch file
+ * as the source of truth for the post-patch state.
  *
  * Inputs (post-patch state, in order of preference):
- *   1. --runtime-patched <path> / --control-patched <path> flags
- *   2. vendored/scaffolding/node_modules/scratch-vm/src/engine/runtime.js
- *      vendored/scaffolding/node_modules/scratch-vm/src/blocks/scratch3_control.js
- *      (these are the working tree state at the time the GPU kernel
- *      patches last applied cleanly; an authoritative copy lives here)
+ *   1. --control-patched <path> flag
+ *   2. vendored/scaffolding/node_modules/scratch-vm/src/blocks/scratch3_control.js
+ *      (the working tree state at the time the GPU kernel patch last
+ *      applied cleanly; an authoritative copy lives here)
  *   3. If neither is available, fall back to a manual reconstruction
  *      from the existing patch's `+` lines (parses the existing patch,
  *      finds the context anchor in the pre-patch source, and inserts
@@ -32,15 +32,14 @@
  *      last-resort path that lets the script work even when no
  *      previously-built UMD is available.
  *
- * Outputs:
- *   - patches/vendored/gpu-kernel-list-binding+0.1.0.patch
+ * Output:
  *   - patches/vendored/gpu-kernel-runtime+0.1.0.patch
  *
  * Verification (mandatory before exit 0):
- *   - `git apply --check -p1` on each regenerated patch (no --recount).
- *     Any failure aborts with a non-zero status; the patches are NOT
- *     written in that case (writes happen only after both verifications
- *     pass on a fresh temp clone).
+ *   - `git apply --check -p1` on the regenerated patch (no --recount).
+ *     Any failure aborts with a non-zero status; the patch is NOT
+ *     written in that case (writes happen only after verification
+ *     passes on a fresh temp clone).
  */
 
 import { spawnSync } from 'node:child_process';
@@ -60,7 +59,6 @@ const SCRATCH_VM_REPO = 'https://github.com/TurboWarp/scratch-vm.git';
 const SCRATCH_VM_BASE_REF = '925f1134001ada36572eeb35f9d83ba01c98081a';
 
 const SCRATCH_VM_PATCH = resolve(root, 'patches/vendored/scratch-vm.patch');
-const LIST_BINDING_PATCH = resolve(root, 'patches/vendored/gpu-kernel-list-binding+0.1.0.patch');
 const RUNTIME_PATCH = resolve(root, 'patches/vendored/gpu-kernel-runtime+0.1.0.patch');
 
 const SCAFFOLDING_MIRRORED_RUNTIME = resolve(
@@ -678,14 +676,6 @@ function main() {
   applyScratchVmPatch();
 
   processPatch({
-    label: 'gpu-kernel-list-binding',
-    relPath: 'src/engine/runtime.js',
-    mirrorPath: SCAFFOLDING_MIRRORED_RUNTIME,
-    existingPatchPath: LIST_BINDING_PATCH,
-    args,
-  });
-
-  processPatch({
     label: 'gpu-kernel-runtime',
     relPath: 'src/blocks/scratch3_control.js',
     mirrorPath: SCAFFOLDING_MIRRORED_CONTROL,
@@ -695,7 +685,6 @@ function main() {
 
   log('Done. Verifications passed: forward `git apply --check` on a fresh clone.');
   log('Suggested next steps:');
-  log('  - `cd vendored/scratch-vm && git apply --check --recount -p1 -v ../../patches/vendored/gpu-kernel-list-binding+0.1.0.patch`');
   log('  - `cd vendored/scratch-vm && git apply --check --recount -p1 -v ../../patches/vendored/gpu-kernel-runtime+0.1.0.patch`');
   log('  - `npm test` to confirm the gpu-kernel-patches / scratch3-control-hook tests pass.');
 }

@@ -34,10 +34,13 @@
  *   - Re-imports `applyPatches` from apply-vendored-patches.mjs so the
  *     scratch-render `// TurboWasm:` guards are in node_modules before the
  *     UMD is built (otherwise the UMD ships without them).
- *   - The two GPU kernel patches (gpu-kernel-list-binding, gpu-kernel-runtime)
- *     are applied with a soft-fail policy: if either fails to apply, log a
- *     WARNING and continue. The runtime will fall back to the JS path for
- *     `@compute` regions via bootstrapGpuKernels' early-return.
+ *   - The standalone GPU kernel patch (gpu-kernel-runtime, which installs
+ *     the per-primitive dispatch hook on `scratch3_control.js`) is applied
+ *     with a soft-fail policy: if it fails to apply, log a WARNING and
+ *     continue. The runtime will fall back to the JS path for `@compute`
+ *     regions via bootstrapGpuKernels' early-return. The list/scalar
+ *     buffer accessor APIs are part of `patches/vendored/scratch-vm.patch`
+ *     itself, so they always ship independently of this soft-fail loop.
  *   - Runs `npm run build` inside vendored/scaffolding.
  *   - Invalidates Vite's optimizeDeps cache so the next `npm run dev` does
  *     not load a pre-bundle built against a stale UMD.
@@ -289,19 +292,14 @@ const scaffoldingPatch = resolve(
   'scaffolding+0.4.0.patch',
 );
 const scratchVmPatch = resolve(root, 'patches', 'vendored', 'scratch-vm.patch');
-// GPU compute kernel pipeline (M2): two extra patches to vendored/scratch-vm.
-// `gpu-kernel-list-binding+0.1.0.patch` adds the four list/scalar accessor
-// APIs (`__getListBuffer`, `__getListBufferById`, `__getScalarValue`,
-// `__setScalarValue`) on `runtime.js`. `gpu-kernel-runtime+0.1.0.patch`
-// adds the per-primitive GPU hook to `scratch3_control.js`. Both are
-// optional — when missing we skip without aborting so older setups that
-// haven't migrated yet still complete.
-const gpuKernelListBindingPatch = resolve(
-  root,
-  'patches',
-  'vendored',
-  'gpu-kernel-list-binding+0.1.0.patch',
-);
+// GPU compute kernel pipeline (M2): one extra patch to vendored/scratch-vm.
+// The list/scalar buffer accessor APIs (`__getListBuffer`, `__getListBufferById`,
+// `__setListBuffer`, `__setListBufferById`, `__getScalarValue`, `__setScalarValue`)
+// on `runtime.js` are part of `patches/vendored/scratch-vm.patch` itself
+// (absorbed there at commit `263378e`, see AGENTS.md "SCRATCH_VM_REF の pin").
+// Only the per-primitive GPU hook on `scratch3_control.js` lives in its
+// own standalone patch; it is optional — when missing we skip without
+// aborting so older setups that haven't migrated yet still complete.
 const gpuKernelRuntimePatch = resolve(
   root,
   'patches',
@@ -376,20 +374,22 @@ log(`Applying ${scratchVmPatch} to vendored/scratch-vm`);
 // non-whitespace conflict still surfaces.
 run('git', ['apply', '--3way', '--ignore-whitespace', scratchVmPatch], { cwd: scratchVmDir });
 
-// GPU compute kernel pipeline (M2): the two extra patches below are
-// optional. When missing OR failing to apply, the script proceeds with a
+// GPU compute kernel pipeline (M2): the standalone runtime hook patch below
+// is optional. When missing OR failing to apply, the script proceeds with a
 // `WARNING` and the vendored scratch-vm will run without the GPU kernel
 // hooks (the runtime falls back to the JS path via bootstrapGpuKernels'
-// early-return). This keeps `npm run build` succeeding on fresh clones
-// even if upstream scratch-vm moves past the pinned SHA before the pin is
-// updated — the cost is a silent degradation that surfaces via ErrorLogPanel
-// at runtime, not a hard build failure.
+// early-return). The list/scalar buffer accessor APIs are part of
+// `patches/vendored/scratch-vm.patch` itself, so a failure of the loop
+// below only disables the per-primitive dispatch hook on
+// `scratch3_control.js`, not the runtime adapter. This keeps `npm run build`
+// succeeding on fresh clones even if upstream scratch-vm moves past the
+// pinned SHA before the pin is updated — the cost is a silent degradation
+// that surfaces via ErrorLogPanel at runtime, not a hard build failure.
 //
 // We use `spawnSync` directly (rather than the `run()` helper above) so
 // the stderr is captured and surfaced with the warning. `run()` throws on
 // non-zero status, which is the wrong behavior here.
 for (const { file, label } of [
-  { file: gpuKernelListBindingPatch, label: 'GPU list binding APIs' },
   { file: gpuKernelRuntimePatch, label: 'GPU kernel runtime hooks' },
 ]) {
   if (!existsSync(file)) {

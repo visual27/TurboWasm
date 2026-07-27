@@ -1746,7 +1746,10 @@ function tearDownActiveGpuState(): void {
  * Build the RuntimeAdapter that the GPU dispatcher uses to read/write
  * host lists and scalars. Production wires this to the vendored
  * scratch-vm runtime's `__getListBuffer` / `__setListBuffer` etc.
- * helpers added by the gpu-kernel-list-binding patch.
+ * accessors added by the `patches/vendored/scratch-vm.patch`
+ * `runtime.js` hunk (formerly the standalone
+ * `patches/vendored/gpu-kernel-list-binding+0.1.0.patch`,
+ * absorbed at commit `263378e`).
  */
 function buildRuntimeAdapter(
   scaffolding: ScaffoldingInstance | null,
