@@ -38,6 +38,7 @@ the table below is the source-of-truth consumed by
 | Procedure call (lazy reference cache) | `// TurboWasm: procedure-lazy-cache` | 2-B | `vendored/scratch-vm/src/compiler/jsgen.js` (reporter + command paths) | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-procedure-lazy-cache.test.ts` |
 | Procedure definition (entry via prototype SUBSTACK) | `// TurboWasm: procedure-definition-entry-prototype-substack` | 2-B companion | `vendored/scratch-vm/src/compiler/irgen.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/compiler-procedure-body.test.ts` |
 | Compiler (constant folding) | `// TurboWasm: constant-folding` | 3 | `vendored/scratch-vm/src/compiler/iroptimizer.js` + `vendored/scratch-vm/src/compiler/compile.js` + `vendored/scratch-vm/src/engine/runtime.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-constant-folding.test.ts` |
+| Compiler (NaN / -0 constant emit) | `// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler` | 3 follow-up | `vendored/scratch-vm/src/compiler/jsgen.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-constant-folding.test.ts` |
 
 ## Cross-references
 

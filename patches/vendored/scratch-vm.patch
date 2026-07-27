@@ -119,7 +119,30 @@ diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
 index ebbdc6b..2eb1325 100644
 --- a/src/compiler/jsgen.js
 +++ b/src/compiler/jsgen.js
-@@ -405,7 +405,20 @@ class JSGenerator {
+@@ -207,8 +207,22 @@ class JSGenerator {
+         case InputOpcode.CONSTANT:
+             if (block.isAlwaysType(InputType.NUMBER)) {
+                 if (typeof node.value !== 'number') throw new Error(`JS: '${block.type}' type constant had ${typeof node.value} type value. Expected number.`);
+                 if (Object.is(node.value, -0)) return '-0';
+                 return node.value.toString();
++            // TurboWasm: constant-folding-jsgen-nan-neg-zero-handler
++            // Phase 3 fold (`vendored/scratch-vm/src/compiler/iroptimizer.js:tryFoldConstant`)
++            // produces CONSTANT nodes with type NUMBER_NAN (= 0 / 0,
++            // Infinity + (-Infinity), Infinity * 0) or NUMBER_NEG_ZERO
++            // (= -0 - 0, 0 * -0, ...). Neither is a subset of NUMBER
++            // (= 0x0ff) so the `isAlwaysType(NUMBER)` check above fails
++            // and the emit would otherwise fall through to the throw.
++            // Adding explicit cases for both restores the JS-side round-
++            // trip: `NaN` / `-0` literals evaluate identically to the
++            // runtime expression they replaced.
++            } else if (block.isAlwaysType(InputType.NUMBER_NAN)) {
++                return 'NaN';
++            } else if (block.isAlwaysType(InputType.NUMBER_NEG_ZERO)) {
++                return '-0';
+             } else if (block.isAlwaysType(InputType.BOOLEAN)) {
+                 if (typeof node.value !== 'boolean') throw new Error(`JS: '${block.type}' type constant had ${typeof node.value} type value. Expected boolean.`);
+                 return node.value.toString();
+@@ -405,7 +419,20 @@ class JSGenerator {
              //  - We need to yield *between* each call in the same command block
              //  - We need to evaluate arguments *before* that yield happens
  
@@ -141,7 +164,7 @@ index ebbdc6b..2eb1325 100644
              const args = [];
              for (const input of node.arguments) {
                  args.push(this.descendInput(input));
-@@ -556,9 +569,13 @@ class JSGenerator {
+@@ -556,9 +583,13 @@ class JSGenerator {
              // Can matter if the input is not instantly evaluated.
              this.source += `const resolvedValue = ${this.descendInput(node.condition)};\n`;
              this.source += `const id = "${sanitize(node.id)}";\n`;
@@ -157,7 +180,7 @@ index ebbdc6b..2eb1325 100644
              this.source += `if (!edgeWasActivated) {\n`;
              this.retire();
              this.source += '}\n';
-@@ -879,7 +896,12 @@ class JSGenerator {
+@@ -879,7 +910,12 @@ class JSGenerator {
                      throw new Error('Script uses yielding procedure but is not marked as yielding.');
                  }
              }

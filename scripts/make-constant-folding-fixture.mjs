@@ -11,7 +11,14 @@
  *   4. less-than-comparison     OP_LESS / OP_GREATER / OP_EQUALS
  *   5. join-strings             OP_JOIN
  *   6. zero-edge-cases          0 + (-0), -0 * -0, -0 / 1
- *   7. infinity-edge-cases      Infinity + (-Infinity), 1 / 0, etc.
+ *   7. infinity-edge-cases      Infinity + (-Infinity), 1 / 0, 0 / 0, etc.
+ *      The `0 / 0` sub-script is the regression target of the
+ *      `// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler` hunk
+ *      (= the fold produces CONSTANT(NaN, NUMBER_NAN) and the JSGenerator
+ *      needs to emit it). Without the patch the compiled script throws
+ *      "JS: Unknown constant input type '256'" and the project fails to
+ *      run. With the patch the literal `NaN` is emitted and the runtime
+ *      evaluates identically to the original expression.
  *   8. string-vs-number-no-fold OP_ADD with STRING_NUM → fold 対象外
  *   9. random-no-fold           OP_RANDOM → fold 対象外
  *  10. var-get-no-fold          OP_ADD(VAR_GET, ...) → fold 対象外
@@ -480,11 +487,18 @@ function buildProjectJson() {
   // 7. infinity-edge-cases — 1 / 0 = Infinity, 0 / 0 = NaN.
   //    The constant-folding test verifies the IR `type` bitset; the
   //    runtime sees an Infinity / NaN value in `result`, which scratch
-  //    serialises as the string "Infinity" / "NaN".
+  //    serialises as the string "Infinity" / "NaN". Two sub-chains are
+  //    appended so each `setVar → addToList` is independent (= `0 / 0`
+  //    produces NUMBER_NAN which previously broke the JSGenerator CONSTANT
+  //    case and is the regression target of the
+  //    `// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler` hunk).
   makeScript(blocks, idAlloc, flagClickId, ({ varId }) => {
     const div = idAlloc.next();
     const setVarId = idAlloc.next();
     const addId = idAlloc.next();
+    const divNaN = idAlloc.next();
+    const setVarNaN = idAlloc.next();
+    const addNaN = idAlloc.next();
     blocks[div] = {
       opcode: 'operator_divide',
       next: null,
@@ -504,6 +518,35 @@ function buildProjectJson() {
       fields: { VARIABLE: [varId, 'result'] },
     };
     blocks[addId] = {
+      opcode: 'data_addtolist',
+      next: setVarNaN,
+      parent: null,
+      shadow: false,
+      inputs: {
+        ITEM: [INPUT_SAME_BLOCK_SHADOW, [VAR_PRIMITIVE, 'result', varId], null],
+        LIST: [INPUT_SAME_BLOCK_SHADOW, [13, listName, listId]],
+      },
+      fields: { LIST: [listName, listId] },
+    };
+    blocks[divNaN] = {
+      opcode: 'operator_divide',
+      next: null,
+      parent: setVarNaN,
+      shadow: false,
+      inputs: { NUM1: literal(0), NUM2: literal(0) },
+      fields: {},
+    };
+    blocks[setVarNaN] = {
+      opcode: 'data_setvariableto',
+      next: addNaN,
+      parent: null,
+      shadow: false,
+      inputs: {
+        VALUE: [INPUT_SAME_BLOCK_SHADOW, divNaN, null],
+      },
+      fields: { VARIABLE: [varId, 'result'] },
+    };
+    blocks[addNaN] = {
       opcode: 'data_addtolist',
       next: null,
       parent: null,

@@ -397,4 +397,62 @@ describe('Phase 3 — IROptimizer.tryFoldConstant (limited fold)', () => {
     const text = readFileSync(compilePath, 'utf8');
     expect(text).toContain('new IROptimizer(ir, thread.target)');
   });
+
+  // ---- Phase 3 follow-up: NaN / -0 emit guard ----
+  //
+  // Regression target: pre-patch, the JSGenerator CONSTANT case did
+  // not handle NUMBER_NAN (= 0x100) or NUMBER_NEG_ZERO (= 0x010)
+  // types — both fail `isAlwaysType(NUMBER)` because neither bit is
+  // a subset of NUMBER (= 0x0ff). The fold pass produces these types
+  // for `0 / 0 = NaN` and `-0 - 0 = -0`; without the explicit cases
+  // added by the `// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler`
+  // hunk, the compiled script throws "JS: Unknown constant input
+  // type '256'" (or '16') and the project fails to run. The probes
+  // below pin (a) the source marker, (b) the vendored UMD marker,
+  // and (c) the emit-shaped sibling case in the type branch order
+  // (= the NUMBER_NAN branch is checked before BOOLEAN).
+
+  it('vendored jsgen.js carries the NaN / -0 emit marker', () => {
+    const jsgenPath = resolve(
+      process.cwd(),
+      'vendored/scratch-vm/src/compiler/jsgen.js',
+    );
+    if (!existsSync(jsgenPath)) return;
+    const text = readFileSync(jsgenPath, 'utf8');
+    expect(text).toContain(
+      '// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler',
+    );
+  });
+
+  it('vendored UMD carries the NaN / -0 emit marker (post-rebuild)', () => {
+    const umdPath = resolve(
+      process.cwd(),
+      'vendored/scaffolding/dist/scaffolding-min.js',
+    );
+    if (!existsSync(umdPath)) return;
+    const text = readFileSync(umdPath, 'utf8');
+    expect(text).toContain(
+      '// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler',
+    );
+  });
+
+  it('jsgen.js CONSTANT case handles NUMBER_NAN and NUMBER_NEG_ZERO branches', () => {
+    // Source-level probe: the patched jsgen.js must contain the
+    // `isAlwaysType(InputType.NUMBER_NAN)` and `isAlwaysType(InputType.NUMBER_NEG_ZERO)`
+    // branches in the CONSTANT case. Without these the fold would
+    // produce a constant the JSGenerator cannot emit.
+    const jsgenPath = resolve(
+      process.cwd(),
+      'vendored/scratch-vm/src/compiler/jsgen.js',
+    );
+    if (!existsSync(jsgenPath)) return;
+    const text = readFileSync(jsgenPath, 'utf8');
+    expect(text).toMatch(/isAlwaysType\(InputType\.NUMBER_NAN\)/u);
+    expect(text).toMatch(/isAlwaysType\(InputType\.NUMBER_NEG_ZERO\)/u);
+    // The literal emit strings must be `'NaN'` and `'-0'`. The existing
+    // NUMBER branch already handles `-0` via `Object.is(value, -0)`,
+    // but the new branches are required for the type-bit-set path.
+    expect(text).toMatch(/return\s+'NaN'/u);
+    expect(text).toMatch(/return\s+'-0'/u);
+  });
 });

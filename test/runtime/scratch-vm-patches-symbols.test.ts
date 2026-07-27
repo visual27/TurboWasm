@@ -33,6 +33,7 @@ const TURBOWASM_MARKERS: readonly string[] = [
   '// TurboWasm: comparison-compare-equal-short-circuit',
   '// TurboWasm: comparison-infinity-branch-removed',
   '// TurboWasm: constant-folding',
+  '// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler',
   '// TurboWasm: edge-detection-hat-sentinel-eliminated',
   '// TurboWasm: procedure-lazy-cache',
   '// TurboWasm: procedure-definition-entry-prototype-substack',
