@@ -99,7 +99,7 @@ export const DETAILED_OPTIMIZATION_DESCRIPTIONS: Readonly<
   'data.mapConversionEvaluation':
     'Evaluate map conversions at compile time when all keys are literals.',
   'data.constantFolding':
-    'Fold boolean / arithmetic / string constants emitted by the compiler.',
+    '§Phase 3 — adopted. Fold compile-time-constant boolean / numeric / string operators (`OP_NOT` / `OP_AND` / `OP_OR` / `OP_ADD/SUB/MUL/DIV` / `OP_EQUALS` / `OP_LESS` / `OP_GREATER` / `OP_JOIN`). Both operands must be `CONSTANT` and the result\'s type bitset is preserved via `IntermediateInput.getNumberInputType` (= NaN / Infinity / -0). Toggling off calls `setCompilerOptions({ constantFoldingEnabled: false })` and clears the compile cache; subsequent compiles go through the original IR without fold. Defaults to ON.',
   'compiler.generatorGranularityResearch':
     'Research row for upcoming generator-granularity experiments. Off by default.',
   'semantics.truncatedModulo':

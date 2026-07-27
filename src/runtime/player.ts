@@ -755,7 +755,11 @@ export function initPlayer(
     readyPromise = (async () => {
       try {
         const sc = await initScaffolding(container, currentAdvanced ?? defaultAdvanced());
-        applyAdvancedSettings(sc, currentAdvanced ?? defaultAdvanced());
+        applyAdvancedSettings(
+          sc,
+          currentAdvanced ?? defaultAdvanced(),
+          useSettingsStore.getState().detailedOptimizations,
+        );
         // Apply the current persisted volume immediately so the first frame
         // uses the user's setting rather than the default 100.
         try {
@@ -810,7 +814,11 @@ export function applySettings(
     `[tw-stage-size] applySettings in: prev=${previous.stageWidth}x${previous.stageHeight} next=${advanced.stageWidth}x${advanced.stageHeight}`,
   );
   currentAdvanced = { ...advanced };
-  applyAdvancedSettings(attachedScaffolding, currentAdvanced);
+  applyAdvancedSettings(
+    attachedScaffolding,
+    currentAdvanced,
+    useSettingsStore.getState().detailedOptimizations,
+  );
   const vm = asVm(attachedScaffolding.vm);
   if (vm.setStageSize) {
     const runtimeBefore = vm.runtime as unknown as { stageWidth?: number; stageHeight?: number };
@@ -1283,7 +1291,11 @@ export async function loadProjectFromArrayBuffer(
   // Always apply the resolved settings so Scaffolding's internal width/height
   // and the React-side settings are in sync — even when there are no twconfig
   // overrides and the user is loading with default dimensions.
-  applyAdvancedSettings(attachedScaffolding, currentAdvanced);
+  applyAdvancedSettings(
+    attachedScaffolding,
+    currentAdvanced,
+    useSettingsStore.getState().detailedOptimizations,
+  );
   const vm = asVm(attachedScaffolding.vm);
   if (vm.setStageSize) {
     const runtimeBefore = vm.runtime as unknown as { stageWidth?: number; stageHeight?: number };
@@ -1353,7 +1365,11 @@ export async function loadProjectFromArrayBuffer(
       // picks it up on its next call.
       applyExtensionPermissionDecision(decision);
       if (attachedScaffolding && currentAdvanced) {
-        applyAdvancedSettings(attachedScaffolding, currentAdvanced);
+        applyAdvancedSettings(
+          attachedScaffolding,
+          currentAdvanced,
+          useSettingsStore.getState().detailedOptimizations,
+        );
       }
       // Disabled mode: rewrite the buffer so the VM never sees the
       // extension references. Falling back to the original buffer on

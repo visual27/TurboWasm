@@ -29,6 +29,25 @@ export interface VendoredScratchVm {
     toBoolean(v: unknown): boolean;
     toString(v: unknown): string;
   };
+  // §Phase 3 — exposed so the constant-folding tap bridge can drive
+  // `IROptimizer.tryFoldConstant` against hand-built IR inputs.
+  // `IROptimizer` is a CommonJS class exported from
+  // `vendored/scratch-vm/src/compiler/iroptimizer.js`; the optimizer
+  // constructor takes `(ir, target?)` where `target` is optional
+  // (= callers pre-dating Phase 3) and is needed only to read the
+  // runtime fold gate. The bridge tests use `null` for `target` and
+  // expect `tryFoldConstant` to fall through (the gate is ON when
+  // target is null per the constructor's `this.target ?? null`).
+  iroptimizer: {
+    IROptimizer: new (
+      ir: unknown,
+      target?: unknown,
+    ) => {
+      shouldFoldConstant(input: unknown): boolean;
+      tryFoldConstant(input: unknown): unknown;
+      optimizeInput(input: unknown, state: unknown): unknown;
+    };
+  };
 }
 
 export function loadVendoredScratchVm(): VendoredScratchVm | null {
@@ -40,7 +59,9 @@ export function loadVendoredScratchVm(): VendoredScratchVm | null {
   const jsexecute = require(resolve(VENDORED_VM_DIR, 'src/compiler/jsexecute.js'));
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const cast = require(resolve(VENDORED_VM_DIR, 'src/util/cast.js'));
-  return { jsexecute, cast };
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const iroptimizer = require(resolve(VENDORED_VM_DIR, 'src/compiler/iroptimizer.js'));
+  return { jsexecute, cast, iroptimizer };
 }
 
 /**

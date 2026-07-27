@@ -32,8 +32,10 @@ const TURBOWASM_MARKERS: readonly string[] = [
   '// TurboWasm: compat-layer-finish-extracted',
   '// TurboWasm: comparison-compare-equal-short-circuit',
   '// TurboWasm: comparison-infinity-branch-removed',
+  '// TurboWasm: constant-folding',
   '// TurboWasm: edge-detection-hat-sentinel-eliminated',
   '// TurboWasm: procedure-lazy-cache',
+  '// TurboWasm: procedure-definition-entry-prototype-substack',
 ];
 
 describe('// TurboWasm: marker registry (Phase 1-A/B/C)', () => {

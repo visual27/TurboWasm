@@ -36,6 +36,8 @@ the table below is the source-of-truth consumed by
 | Comparison (Infinity branch removal) | `// TurboWasm: comparison-infinity-branch-removed` | 1-C | `vendored/scratch-vm/src/util/cast.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-cast-compare.test.ts` |
 | Compatibility layer (closure finish extraction) | `// TurboWasm: compat-layer-finish-extracted` | 2-A | `vendored/scratch-vm/src/compiler/jsexecute.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-compat-layer-finish-extracted.test.ts` |
 | Procedure call (lazy reference cache) | `// TurboWasm: procedure-lazy-cache` | 2-B | `vendored/scratch-vm/src/compiler/jsgen.js` (reporter + command paths) | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-procedure-lazy-cache.test.ts` |
+| Procedure definition (entry via prototype SUBSTACK) | `// TurboWasm: procedure-definition-entry-prototype-substack` | 2-B companion | `vendored/scratch-vm/src/compiler/irgen.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/compiler-procedure-body.test.ts` |
+| Compiler (constant folding) | `// TurboWasm: constant-folding` | 3 | `vendored/scratch-vm/src/compiler/iroptimizer.js` + `vendored/scratch-vm/src/compiler/compile.js` + `vendored/scratch-vm/src/engine/runtime.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-constant-folding.test.ts` |
 
 ## Cross-references
 

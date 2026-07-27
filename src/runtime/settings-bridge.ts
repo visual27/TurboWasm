@@ -1,5 +1,6 @@
 import type { ScaffoldingInstance } from '@/runtime/scaffolding-types';
 import type { AdvancedSettings } from '@/types/settings';
+import type { DetailedOptimizationMap } from '@/features/settings/types';
 
 interface VmFrameLoop {
   setFramerate(value: number): void;
@@ -11,7 +12,15 @@ interface VmRendererLike {
 }
 
 interface VmRuntimeLike {
-  setCompilerOptions(opts: { enabled?: boolean; warpTimer?: boolean }): void;
+  setCompilerOptions(opts: {
+    enabled?: boolean;
+    warpTimer?: boolean;
+    // §Phase 3 — vendored scratch-vm's `IROptimizer.shouldFoldConstant`
+    // reads `runtime.compilerOptions.constantFoldingEnabled` to decide
+    // whether `tryFoldConstant` runs. Wired from the detailed toggle
+    // `data.constantFolding` (see `applyAdvancedSettings` below).
+    constantFoldingEnabled?: boolean;
+  }): void;
   setRuntimeOptions(
     opts: Partial<{ miscLimits: boolean; fencing: boolean; maxClones: number }>,
   ): void;
@@ -51,6 +60,13 @@ export function asRenderer(renderer: unknown): VmRendererLike {
 export function applyAdvancedSettings(
   scaffolding: ScaffoldingInstance,
   next: AdvancedSettings,
+  // §Phase 3 — `data.constantFolding` is the runtime gate for the
+  // vendored IROptimizer's `tryFoldConstant` pass. We accept the map
+  // explicitly so the bridge stays free of `useSettingsStore` (no
+  // circular-import risk) and the test fixtures can drive the bridge
+  // with arbitrary ID combinations. `DEFAULT_DETAILED_OPTIMIZATIONS` is
+  // not auto-seeded here — callers must pass a fully-populated map.
+  detailed: DetailedOptimizationMap,
 ): void {
   const vm = asVm(scaffolding.vm);
   const renderer = scaffolding.renderer ? asRenderer(scaffolding.renderer) : undefined;
@@ -88,10 +104,18 @@ export function applyAdvancedSettings(
   // Turbo mode is still applied because it has visible UX side
   // effects (no framerate cap) that the user might have toggled
   // independently of TurboWasm acceleration.
+  //
+  // §Phase 3 — `constantFoldingEnabled` is forwarded here from the
+  // detailed toggle `data.constantFolding` (default-on). It is wired
+  // through `setCompilerOptions` so the vendored
+  // `IROptimizer.shouldFoldConstant` sees the change on the next
+  // compile. The patch is idempotent across reloads (the value is
+  // persisted in `localStorage` via `detailedOptimizations`).
   if (next.turboWasmAccelerationEnabled) {
     vm.runtime.setCompilerOptions({
       enabled: !next.disableCompiler,
       warpTimer: next.warpTimer,
+      constantFoldingEnabled: detailed['data.constantFolding'],
     });
 
     vm.runtime.setRuntimeOptions({

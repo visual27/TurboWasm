@@ -771,3 +771,292 @@ index d78717a..9032581 100644
      }
  
      /**
+diff --git a/src/compiler/compile.js b/src/compiler/compile.js
+index 3b5125f..c05cd9b 100644
+--- a/src/compiler/compile.js
++++ b/src/compiler/compile.js
+@@ -8,7 +8,12 @@ const compile = (/** @type {import("../engine/thread")} */ thread) => {
+     const irGenerator = new IRGenerator(thread);
+     const ir = irGenerator.generate();
+ 
+-    const irOptimizer = new IROptimizer(ir);
++    // TurboWasm: constant-folding 窶・pass `thread.target` so the
++    // optimizer can read `runtime.compilerOptions.constantFoldingEnabled`
++    // for the fold gate. The optimizer is backward-compatible (target
++    // is optional in the constructor) so callers that pre-date Phase 3
++    // still work.
++    const irOptimizer = new IROptimizer(ir, thread.target);
+     irOptimizer.optimize();
+ 
+     const procedures = {};
+diff --git a/src/compiler/iroptimizer.js b/src/compiler/iroptimizer.js
+index b454ed5..9ca1156 100644
+--- a/src/compiler/iroptimizer.js
++++ b/src/compiler/iroptimizer.js
+@@ -1,6 +1,7 @@
+ // @ts-check
+ 
+ const {StackOpcode, InputOpcode, InputType} = require('./enums.js');
++const Cast = require('../util/cast');
+ const log = require('../util/log');
+ 
+ // These imports are used by jsdoc comments but eslint doesn't know that
+@@ -128,12 +129,29 @@ class TypeState {
+     }
+ }
+ 
++// TurboWasm: constant-folding
++// Phase 3 窶・limited compiler-time constant folding. When the runtime's
++// `compilerOptions.constantFoldingEnabled` is truthy (= default-on),
++// `optimizeInput` consults `tryFoldConstant` for every input block and,
++// where both operands are compile-time `CONSTANT`s with a safe type
++// bitset, replaces the operator with its precomputed value. The fold
++// candidate is constrained to 11 opcodes (`OP_NOT` / `OP_AND` / `OP_OR` /
++// `OP_ADD` / `OP_SUB` / `OP_MUL` / `OP_DIV` / `OP_EQUALS` / `OP_LESS` /
++// `OP_GREATER` / `OP_JOIN`) to keep the patch semantically invariant:
++// NaN / Infinity / -0 are preserved via `IntermediateInput.getNumberInputType`,
++// string compares route through `Cast.compare`, and STRING_NUM / VAR_GET /
++// OP_RANDOM operands short-circuit the fold path.
++
+ class IROptimizer {
+ 
+     /**
+      * @param {IntermediateRepresentation} ir
++     * @param {import("../sprites/rendered-target")} [target] Optional reference to the
++     *   owning target so the fold pass can consult `target.runtime.compilerOptions`.
++     *   Backward-compatible: when omitted (= callers that pre-date Phase 3), fold
++     *   is disabled and the optimizer falls through to the existing CAST_* switch.
+      */
+-    constructor (ir) {
++    constructor (ir, target) {
+         /** @type {IntermediateRepresentation} */
+         this.ir = ir;
+         /** @type {boolean} Used for testing */
+@@ -141,6 +159,9 @@ class IROptimizer {
+ 
+         /** @private @type {TypeState | null} The state the analyzed script could exit in */
+         this.exitState = null;
++
++        /** @private @type {import("../sprites/rendered-target") | null} */
++        this.target = target ?? null;
+     }
+ 
+     /**
+@@ -715,6 +736,20 @@ class IROptimizer {
+      * @private
+      */
+     optimizeInput (input, state) {
++        // TurboWasm: constant-folding 窶・try to precompute the value of
++        // `input` at compile time before the recursive walk. Folding
++        // replaces the operator node with a CONSTANT node carrying the
++        // result, so the downstream JSGenerator emit collapses to a
++        // single literal. `tryFoldConstant` returns `null` when the
++        // candidate is unsafe; we then fall through to the regular
++        // recursive pass below.
++        if (this.shouldFoldConstant(input)) {
++            const folded = this.tryFoldConstant(input);
++            if (folded !== null) {
++                return folded;
++            }
++        }
++
+         for (const inputKey in input.inputs) {
+             const inputInput = input.inputs[inputKey];
+             if (inputInput instanceof IntermediateInput) {
+@@ -820,6 +855,174 @@ class IROptimizer {
+     optimize () {
+         this.optimizeScript(this.ir.entry, new Set());
+     }
++
++    /**
++     * Should the fold pass run for `input`? Returns `false` when the
++     * runtime gate is off (= `compilerOptions.constantFoldingEnabled ===
++     * false`) or when the optimizer was constructed without a target
++     * reference (= callers that pre-date Phase 3). Defaults to ON when
++     * the gate is missing (= `undefined` / `true`) so the patch is
++     * always-on by default.
++     * @param {IntermediateInput} input
++     * @returns {boolean}
++     * @private
++     */
++    shouldFoldConstant (input) {
++        if (!this.target) return false;
++        const enabled = this.target.runtime && this.target.runtime.compilerOptions
++            ? this.target.runtime.compilerOptions.constantFoldingEnabled
++            : true;
++        return enabled !== false;
++    }
++
++    /**
++     * Try to fold a single operator input into a CONSTANT. Returns the
++     * new constant node when both operands are compile-time CONSTANT
++     * and the operator is in the Phase 3 fold set; returns `null` for
++     * every other input (= the caller falls through to the regular
++     * optimizeInput recursion + CAST_* switch).
++     * @param {IntermediateInput} input
++     * @returns {IntermediateInput | null}
++     * @private
++     */
++    tryFoldConstant (input) {
++        const left = input.inputs.left;
++        const right = input.inputs.right;
++        const operand = input.inputs.operand;
++        const string = input.inputs.string;
++
++        switch (input.opcode) {
++        case InputOpcode.OP_NOT: {
++            if (!operand || operand.opcode !== InputOpcode.CONSTANT) return null;
++            const folded = !Cast.toBoolean(operand.inputs.value);
++            return this.createConstantInput(folded, InputType.BOOLEAN);
++        }
++
++        case InputOpcode.OP_AND:
++        case InputOpcode.OP_OR: {
++            if (!left || !right) return null;
++            if (left.opcode !== InputOpcode.CONSTANT || right.opcode !== InputOpcode.CONSTANT) {
++                return null;
++            }
++            const a = Cast.toBoolean(left.inputs.value);
++            const b = Cast.toBoolean(right.inputs.value);
++            const result = input.opcode === InputOpcode.OP_AND ? (a && b) : (a || b);
++            return this.createConstantInput(result, InputType.BOOLEAN);
++        }
++
++        case InputOpcode.OP_ADD:
++        case InputOpcode.OP_SUBTRACT:
++        case InputOpcode.OP_MULTIPLY:
++        case InputOpcode.OP_DIVIDE: {
++            if (!left || !right) return null;
++            // Reject STRING_NUM operands explicitly: scratch preserves
++            // the `+` string-concat rule when either operand is a string,
++            // even if its `isAlwaysType(NUMBER)` holds. `isSometimesType`
++            // is a safe guard.
++            if (!this.bothPurelyNumeric(left, right)) return null;
++            return this.foldNumericOp(input, left, right);
++        }
++
++        case InputOpcode.OP_EQUALS:
++        case InputOpcode.OP_LESS:
++        case InputOpcode.OP_GREATER: {
++            if (!left || !right) return null;
++            if (left.opcode !== InputOpcode.CONSTANT || right.opcode !== InputOpcode.CONSTANT) {
++                return null;
++            }
++            return this.foldCompare(input, left, right);
++        }
++
++        case InputOpcode.OP_JOIN: {
++            if (!left || !right) return null;
++            if (left.opcode !== InputOpcode.CONSTANT || right.opcode !== InputOpcode.CONSTANT) {
++                return null;
++            }
++            const joined = String(left.inputs.value) + String(right.inputs.value);
++            return this.createConstantInput(joined, InputType.STRING);
++        }
++        }
++
++        return null;
++    }
++
++    /**
++     * Both operands are pure NUMBER (not STRING_NUM) constants. STRING_NUM
++     * can be a numeric string like `'5'` whose `isAlwaysType(NUMBER)` is
++     * true via the `NUMBER_INTERPRETABLE` mask, but scratch keeps the
++     * `+` concat rule when one operand is a string. `isSometimesType(STRING)`
++     * rejects any constant whose runtime type could be a string.
++     * @param {IntermediateInput} a
++     * @param {IntermediateInput} b
++     * @returns {boolean}
++     * @private
++     */
++    bothPurelyNumeric (a, b) {
++        return a.opcode === InputOpcode.CONSTANT &&
++               b.opcode === InputOpcode.CONSTANT &&
++               a.isAlwaysType(InputType.NUMBER) &&
++               b.isAlwaysType(InputType.NUMBER) &&
++               !a.isSometimesType(InputType.STRING) &&
++               !b.isSometimesType(InputType.STRING);
++    }
++
++    /**
++     * Fold a numeric operator. `getNumberInputType` rebuilds the
++     * `type` bitset from the JS result so NaN / Infinity / -0 are
++     * preserved (= `Object.is(result, -0) === true` survives the
++     * fold path).
++     * @param {IntermediateInput} input
++     * @param {IntermediateInput} left
++     * @param {IntermediateInput} right
++     * @returns {IntermediateInput}
++     * @private
++     */
++    foldNumericOp (input, left, right) {
++        const a = Number(left.inputs.value);
++        const b = Number(right.inputs.value);
++        let result;
++        switch (input.opcode) {
++        case InputOpcode.OP_ADD: result = a + b; break;
++        case InputOpcode.OP_SUBTRACT: result = a - b; break;
++        case InputOpcode.OP_MULTIPLY: result = a * b; break;
++        case InputOpcode.OP_DIVIDE: result = a / b; break;
++        }
++        const type = IntermediateInput.getNumberInputType(result);
++        return this.createConstantInput(result, type);
++    }
++
++    /**
++     * Fold a comparison operator through `Cast.compare` so the
++     * scratch equality semantics (`'5' = 5` 竊・true) survive.
++     * @param {IntermediateInput} input
++     * @param {IntermediateInput} left
++     * @param {IntermediateInput} right
++     * @returns {IntermediateInput}
++     * @private
++     */
++    foldCompare (input, left, right) {
++        const cmp = Cast.compare(left.inputs.value, right.inputs.value);
++        let result;
++        switch (input.opcode) {
++        case InputOpcode.OP_EQUALS: result = cmp === 0; break;
++        case InputOpcode.OP_LESS: result = cmp < 0; break;
++        case InputOpcode.OP_GREATER: result = cmp > 0; break;
++        }
++        return this.createConstantInput(result, InputType.BOOLEAN);
++    }
++
++    /**
++     * Build an `IntermediateInput` constant node. Mirrors
++     * `ScriptTreeGenerator.createConstantInput` but is local to the
++     * fold path so we don't need a `target` reference for IR building.
++     * @param {*} value
++     * @param {number} type
++     * @returns {IntermediateInput}
++     * @private
++     */
++    createConstantInput (value, type) {
++        return new IntermediateInput(InputOpcode.CONSTANT, type, {value});
++    }
+ }
+ 
+ 
+diff --git a/src/engine/runtime.js b/src/engine/runtime.js
+index 925a6a3..5ea76d1 100644
+--- a/src/engine/runtime.js
++++ b/src/engine/runtime.js
+@@ -469,7 +469,16 @@ class Runtime extends EventEmitter {
+ 
+         this.compilerOptions = {
+             enabled: true,
+-            warpTimer: false
++            warpTimer: false,
++            // TurboWasm: constant-folding 窶・Phase 3 compiler-side fold
++            // gate. Read by `IROptimizer.shouldFoldConstant` (= vendored
++            // scratch-vm/src/compiler/iroptimizer.js) to decide whether
++            // `tryFoldConstant` should run for each operator input.
++            // Default-on so the optimization is live out of the box;
++            // `setCompilerOptions({ constantFoldingEnabled: false })`
++            // (wired from the Viewer's detailed toggle
++            // `data.constantFolding`) disables it for power-users.
++            constantFoldingEnabled: true
+         };
+ 
+         this.debug = false;
