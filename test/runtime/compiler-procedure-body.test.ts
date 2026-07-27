@@ -150,18 +150,19 @@ describe('Phase 2-B companion hunk — irgen.js procedure_definition entry fix',
     });
 
     it('factorial recursive call site resolves to the prototype body', async () => {
-      // This pins that the compiled factorial body is non-empty (= the
-      // patch worked: ScriptTreeGenerator now walks the prototype's
-      // SUBSTACK instead of `topBlock.next`). The actual recursive
-      // call inside that body currently fails because of a separate
-      // self-recursion ordering issue in vendored scratch-vm's
-      // Thread.tryCompile (= `b0 = thread.procedures["Zfactorial %n"]`
-      // captures `undefined` because the factory runs before
-      // `thread.procedures` is populated). That bug is out of scope
-      // for the irgen.js:1438 fix; we only verify that the body
-      // IS reached (not that it returns 120).
+      // This pins the procedure-lazy-cache thunk fix: the recursive
+      // `factorial` call must reach the prototype body (and return
+      // 120 = 5!) instead of throwing `undefined is not a function`
+      // or `yield* (intermediate value) is not iterable`. Pre-fix
+      // (= eager `b0 = thread.procedures["Zfactorial %n"]` capture
+      // at factory time), the factory for `factorial` ran before
+      // `thread.procedures` was populated, so the captured const was
+      // `undefined` and the recursive call threw at runtime. The
+      // thunk-wrapped evaluateOnce (`(...args) => thread.procedures["…"](...args)`)
+      // defers the lookup until call time, by which point
+      // `thread.procedures` is fully populated.
       const { fact } = await runFixtureOnce(true, VirtualMachine);
-      expect(fact, 'fact must be set (= body reached) even if value differs from 120').toBeDefined();
+      expect(fact, 'fact must equal 120 (5! from recursive `factorial` reporter)').toBe(120);
     });
   });
 

@@ -142,7 +142,7 @@ index ebbdc6b..2eb1325 100644
              } else if (block.isAlwaysType(InputType.BOOLEAN)) {
                  if (typeof node.value !== 'boolean') throw new Error(`JS: '${block.type}' type constant had ${typeof node.value} type value. Expected boolean.`);
                  return node.value.toString();
-@@ -405,7 +419,20 @@ class JSGenerator {
+@@ -405,7 +419,24 @@ class JSGenerator {
              //  - We need to yield *between* each call in the same command block
              //  - We need to evaluate arguments *before* that yield happens
  
@@ -152,15 +152,18 @@ index ebbdc6b..2eb1325 100644
 +            // factory-level setup block via evaluateOnce(). The factory
 +            // (per `Thread.tryCompile`) is called once per thread when the
 +            // compiled script starts, so the variant→function map entry
-+            // is resolved once instead of on every procedure-call site.
-+            // Subsequent call sites in the same compiled script just
-+            // read the captured local (`b0`, `b1`, …), which is faster
-+            // than the string-keyed property access and emits zero
-+            // per-call work for the cache hit case. Recursion, warp, and
-+            // multi-call cases all share the same captured local because
-+            // the variant key already disambiguates warp/non-warp and
-+            // mutation-shaped variants inside `ir.procedures`.
-+            const procedureReference = this.evaluateOnce(`thread.procedures["${sanitize(procedureVariant)}"]`);
++            // is resolved lazily inside a closure — NOT eagerly at
++            // factory time. Eager evaluation captured `undefined` for
++            // any call site whose target procedure had not yet been
++            // populated (= nested or recursive procedure calls),
++            // which then threw at runtime and aborted `stepThreads`
++            // mid-frame. The closure variant resolves the function at
++            // call time, by which point `thread.procedures` is fully
++            // populated. Subsequent call sites in the same compiled
++            // script share the same captured `bN` (= the dedup key is
++            // the source string including the variant) and pay only
++            // one extra function-call frame per invocation.
++            const procedureReference = this.evaluateOnce(`(...args) => thread.procedures["${sanitize(procedureVariant)}"](...args)`);
              const args = [];
              for (const input of node.arguments) {
                  args.push(this.descendInput(input));
@@ -180,7 +183,7 @@ index ebbdc6b..2eb1325 100644
              this.source += `if (!edgeWasActivated) {\n`;
              this.retire();
              this.source += '}\n';
-@@ -879,7 +910,12 @@ class JSGenerator {
+@@ -879,7 +914,16 @@ class JSGenerator {
                      throw new Error('Script uses yielding procedure but is not marked as yielding.');
                  }
              }
@@ -189,8 +192,12 @@ index ebbdc6b..2eb1325 100644
 +            // Mirror of the reporter-path evaluateOnce() above. The
 +            // returned variable name (e.g. `b0`) is substituted into the
 +            // emitted source so the per-call site becomes a single
-+            // closure-captured identifier read.
-+            this.source += `${this.evaluateOnce(`thread.procedures["${sanitize(procedureVariant)}"]`)}(`;
++            // closure-captured identifier read. The captured value is a
++            // thunk that resolves `thread.procedures["<variant>"]` at
++            // call time (= AFTER all procedure factories have run), so
++            // nested / recursive procedure calls reach the right
++            // function instead of `undefined`.
++            this.source += `${this.evaluateOnce(`(...args) => thread.procedures["${sanitize(procedureVariant)}"](...args)`)}(`;
              const args = [];
              for (const input of node.arguments) {
                  args.push(this.descendInput(input));
@@ -1088,7 +1095,7 @@ diff --git a/src/compiler/irgen.js b/src/compiler/irgen.js
 index 08d1701..d8e7f4a 100644
 --- a/src/compiler/irgen.js
 +++ b/src/compiler/irgen.js
-@@ -1434,8 +1434,18 @@ class ScriptTreeGenerator {
+@@ -1434,8 +1434,24 @@ class ScriptTreeGenerator {
              // We don't evaluate the procedures_definition top block as it never does anything
              // We also don't want it to be treated like a hat block
              let entryBlock;
@@ -1104,7 +1111,14 @@ index 08d1701..d8e7f4a 100644
 +                const proto = topBlock.inputs.custom_block
 +                    ? this.blocks.getBlock(topBlock.inputs.custom_block.block)
 +                    : null;
-+                entryBlock = proto ? proto.inputs.SUBSTACK.block : null;
++                // SUBSTACK may be absent for malformed procedures_prototype
++                // blocks (= a custom block that was authored without a body,
++                // or a partial deserialisation). Fall back to `null` (= an
++                // empty script) instead of throwing
++                // "Cannot read properties of undefined (reading 'block')".
++                entryBlock = proto && proto.inputs && proto.inputs.SUBSTACK
++                    ? proto.inputs.SUBSTACK.block
++                    : null;
              } else {
                  entryBlock = topBlockId;
              }

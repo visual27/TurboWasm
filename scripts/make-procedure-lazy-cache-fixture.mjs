@@ -243,7 +243,17 @@ function controlRepeat(timesBlockId, substackFirstChildId, parent = null) {
 function procedureCall(procCode, argBlockIds, parent = null) {
   const inputs = {};
   for (let i = 0; i < argBlockIds.length; i += 1) {
-    inputs[`arg${i}`] = [INPUT_BLOCK_NO_SHADOW, argBlockIds[i]];
+    // `getProcedureParamNamesIdsAndDefaults` returns the prototype's
+    // `argumentids` (= `arg-<procCode>-<index>`), not bare `argN`.
+    // The call site MUST use the same key for `descendInputOfBlock`
+    // to descend the argument expression; otherwise the procedure
+    // compiles with empty defaults (= STRING_NAN '') and the
+    // argument value is lost. The pre-fix compiled mode hid this
+    // because procedure bodies were empty (= `factorial("")` returned
+    // `undefined`); with the irgen.js:1438 fix the body actually
+    // executes and a missing argument causes infinite recursion +
+    // stack overflow.
+    inputs[`arg-${procCode}-${i}`] = [INPUT_BLOCK_NO_SHADOW, argBlockIds[i]];
   }
   const { id, block } = makeBlock({
     // Official scratch opcode for invoking a custom block.

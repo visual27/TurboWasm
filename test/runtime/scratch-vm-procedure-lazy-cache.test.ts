@@ -77,7 +77,10 @@ describe('Phase 2-B — procedure lazy cache (source-level markers)', () => {
     // The InputOpcode.PROCEDURE_CALL case is the only place the
     // reporter lookup `procedureReference = ...` is assigned inside
     // `descendInput`. The post-patch source wraps the right-hand
-    // side in `this.evaluateOnce(\`thread.procedures[...]\`)`.
+    // side in `this.evaluateOnce(\`(...args) => thread.procedures[...]\`)`
+    // (= a closure thunk that defers the lookup to call time so
+    // nested / recursive procedure calls reach the right function
+    // instead of `undefined`).
     const reporterAssignment = text.match(
       /case InputOpcode\.PROCEDURE_CALL: \{[\s\S]*?const procedureReference = ([^;]+);/u,
     );
@@ -85,6 +88,7 @@ describe('Phase 2-B — procedure lazy cache (source-level markers)', () => {
     const rhs = reporterAssignment![1];
     expect(rhs, 'reporter path must use this.evaluateOnce').toMatch(/this\.evaluateOnce\(/u);
     expect(rhs, 'reporter path must wrap thread.procedures lookup').toMatch(/thread\.procedures\[/u);
+    expect(rhs, 'reporter path must defer lookup via thunk').toMatch(/\(\.\.\.args\) => thread\.procedures\[/u);
   });
 
   it('jsgen.js command path uses evaluateOnce to hoist the procedure lookup', () => {
@@ -92,13 +96,15 @@ describe('Phase 2-B — procedure lazy cache (source-level markers)', () => {
     // The pre-patch line was
     //   `this.source += \`thread.procedures["${sanitize(procedureVariant)}"](\`;`
     // The post-patch line wraps the lookup in
-    // `this.evaluateOnce(\`thread.procedures[...]\`)` and uses
-    // template-string interpolation so the captured const name is
-    // substituted into the emitted source.
+    // `this.evaluateOnce(\`(...args) => thread.procedures[...]\`)` (= a
+    // closure thunk that resolves the function at call time so nested
+    // / recursive procedure calls reach the right function instead
+    // of `undefined`) and uses template-string interpolation so the
+    // captured const name is substituted into the emitted source.
     const commandSourceAppend = text.match(
-      /case StackOpcode\.PROCEDURE_CALL: \{[\s\S]*?this\.source \+= `\$\{this\.evaluateOnce\(`thread\.procedures\[/u,
+      /case StackOpcode\.PROCEDURE_CALL: \{[\s\S]*?this\.source \+= `\$\{this\.evaluateOnce\(`\(\.\.\.args\) => thread\.procedures\[/u,
     );
-    expect(commandSourceAppend, 'StackOpcode.PROCEDURE_CALL did not wrap with evaluateOnce').not.toBeNull();
+    expect(commandSourceAppend, 'StackOpcode.PROCEDURE_CALL did not wrap with evaluateOnce (closure thunk)').not.toBeNull();
   });
 });
 
