@@ -149,6 +149,16 @@ export const FIXTURE_GENERATORS = {
     import('./make-compat-layer-branch-info-fixture.mjs').then((m) =>
       m.makeCompatLayerBranchInfoFixture(),
     ),
+  // §Phase 5 (scheduler research) — high-frequency thread churn
+  // fixture. 1 sprite × 50 clones × 5 broadcasts/frame × 1 tick thread
+  // per (broadcast, clone) pair = ~250 thread starts + ~150 thread
+  // ends per frame at steady state. Drives the Sequencer in-place
+  // compaction loop and the Runtime._step pre-step `isKilled`
+  // compaction at every step. Loaded by
+  // `scripts/bench-scheduler-eval.mjs` and
+  // `test/runtime/scratch-vm-scheduler-eval-{a,b}.test.ts`.
+  'clone-storm-fixture.sb3': () =>
+    import('./make-clone-storm-fixture.mjs').then((m) => m.makeCloneStormFixture()),
 };
 
 /**

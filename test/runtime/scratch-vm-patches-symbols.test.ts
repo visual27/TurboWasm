@@ -20,15 +20,29 @@ import { describe, expect, it } from 'vitest';
  * Phase 1-A / 1-B / 1-C ship the first three markers. Future Phases
  * append their markers here AND to the markdown registry in the
  * same commit.
+ *
+ * §Phase 5 introduced a new category: `REFERENCE_ONLY_MARKERS`.
+ * Those live in `patches/vendored/scratch-vm-eval-scheduler-*.patch`
+ * but are NOT applied to the vendored scratch-vm source by
+ * `npm run setup`. The benchmark harness `scripts/bench-scheduler-
+ * eval.mjs` evaluates each variant via runtime monkey-patching, so
+ * the patches serve as reference documentation and the marker drift
+ * detection only checks the patch-file probe for them — the UMD
+ * and source probes would otherwise false-fail. See
+ * `scripts/patches/scratch-vm-symbols.md` for the registry and
+ * `C:/files/memo/scratch-vm-optimization/phase-05-scheduler-analysis.md`
+ * for the verdict.
  */
 const UMD_PATH = resolve(
   process.cwd(),
   'vendored/scaffolding/dist/scaffolding-min.js',
 );
 
-// Mirror of `scripts/patches/scratch-vm-symbols.md`. Append new
-// markers in alphabetical order of the namespace for diff hygiene.
-const TURBOWASM_MARKERS: readonly string[] = [
+// Applied markers — checked in UMD AND vendored source. Mirrors the
+// rows of `scripts/patches/scratch-vm-symbols.md` whose Phase is not
+// "research-only / reference". Append in alphabetical order of the
+// namespace for diff hygiene.
+const APPLIED_MARKERS: readonly string[] = [
   '// TurboWasm: blocks-cache-map',
   '// TurboWasm: branch-info-pool',
   '// TurboWasm: compat-layer-finish-extracted',
@@ -40,6 +54,22 @@ const TURBOWASM_MARKERS: readonly string[] = [
   '// TurboWasm: list / scalar buffer accessors',
   '// TurboWasm: procedure-lazy-cache',
   '// TurboWasm: procedure-definition-entry-prototype-substack',
+];
+
+// Reference-only markers — checked in `patches/vendored/*.patch` ONLY.
+// These markers document alternative compaction strategies that are
+// not currently applied. The benchmark harness monkey-patches the
+// vendored scratch-vm at runtime to evaluate them.
+const REFERENCE_ONLY_MARKERS: readonly string[] = [
+  '// TurboWasm: scheduler-eval-A',
+  '// TurboWasm: scheduler-eval-B',
+];
+
+// Union for the patch-file probe (= every marker must land in
+// either UMD/source or the patch file).
+const TURBOWASM_MARKERS: readonly string[] = [
+  ...APPLIED_MARKERS,
+  ...REFERENCE_ONLY_MARKERS,
 ];
 
 describe('// TurboWasm: marker registry (Phase 1+ / Phase 4)', () => {
@@ -55,10 +85,12 @@ describe('// TurboWasm: marker registry (Phase 1+ / Phase 4)', () => {
     expect(existsSync(UMD_PATH)).toBe(true);
   });
 
-  // Each marker must appear verbatim in the UMD. A patch that was
-  // reverted (or whose context drifted and was silently dropped
-  // during `--3way`) trips these assertions and fails CI.
-  it.each(TURBOWASM_MARKERS)('UMD contains marker %s', (marker) => {
+  // Applied markers must appear verbatim in the UMD. A patch that
+  // was reverted (or whose context drifted and was silently dropped
+  // during `--3way`) trips these assertions and fails CI. Reference-
+  // only markers are explicitly skipped here because they live in
+  // `patches/vendored/*.patch` only.
+  it.each(APPLIED_MARKERS)('UMD contains applied marker %s', (marker) => {
     if (!existsSync(UMD_PATH)) return;
     const text = readFileSync(UMD_PATH, 'utf8');
     expect(text, `UMD missing marker "${marker}"`).toContain(marker);
@@ -67,8 +99,8 @@ describe('// TurboWasm: marker registry (Phase 1+ / Phase 4)', () => {
   // Source-level probe (more robust than UMD-only for green-field
   // repos that haven't rebuilt the UMD yet). Tests run on the
   // vendored scratch-vm if present, otherwise skip.
-  it.each(TURBOWASM_MARKERS)(
-    'vendored source contains marker %s',
+  it.each(APPLIED_MARKERS)(
+    'vendored source contains applied marker %s',
     (marker) => {
       const srcDir = resolve(process.cwd(), 'vendored/scratch-vm/src');
       if (!existsSync(srcDir)) return;
@@ -89,6 +121,31 @@ describe('// TurboWasm: marker registry (Phase 1+ / Phase 4)', () => {
         if (found) break;
       }
       expect(found, `vendored source missing marker "${marker}"`).toBe(true);
+    },
+  );
+
+  // Patch-file probe — covers both applied and reference-only
+  // markers. The `+` lines in `patches/vendored/*.patch` are
+  // already extracted at apply time by `apply-vendored-patches.mjs:
+  // extractUniqueMarkers`, so this probe matches that pattern.
+  it.each(TURBOWASM_MARKERS)(
+    'patches/vendored/*.patch contains marker %s',
+    (marker) => {
+      const patchesDir = resolve(process.cwd(), 'patches/vendored');
+      if (!existsSync(patchesDir)) return;
+      let found = false;
+      for (const entry of readdirSync(patchesDir)) {
+        if (!entry.endsWith('.patch')) continue;
+        const p = resolve(patchesDir, entry);
+        if (readFileSync(p, 'utf8').includes(marker)) {
+          found = true;
+          break;
+        }
+      }
+      expect(
+        found,
+        `patches/vendored/*.patch missing marker "${marker}"`,
+      ).toBe(true);
     },
   );
 });

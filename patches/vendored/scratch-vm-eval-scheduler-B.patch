@@ -1,0 +1,73 @@
+diff --git a/src/engine/sequencer.js b/src/engine/sequencer.js
+--- a/src/engine/sequencer.js
++++ b/src/engine/sequencer.js
+@@ -161,21 +161,25 @@
+             if (this.runtime.profiler !== null) {
+                 this.runtime.profiler.stop();
+             }
+
+-            // Filter inactive threads from `this.runtime.threads`.
++            // TurboWasm: scheduler-eval-B — extend the in-place compaction
++            // to also cover isKilled threads. Runtime._step no longer
++            // walks the threads array at the top of its step, so the
++            // Sequencer is the single owner of compaction.
+             if (stoppedThread) {
+                 let nextActiveThread = 0;
+                 for (let i = 0; i < this.runtime.threads.length; i++) {
+                     const thread = this.runtime.threads[i];
+-                    if (thread.stack.length !== 0 &&
+-                        thread.status !== Thread.STATUS_DONE) {
+-                        this.runtime.threads[nextActiveThread] = thread;
+-                        nextActiveThread++;
+-                    } else {
++                    if (thread.stack.length !== 0 &&
++                        thread.status !== Thread.STATUS_DONE &&
++                        !thread.isKilled) {
++                        this.runtime.threads[nextActiveThread] = thread;
++                        nextActiveThread++;
++                    } else {
+                         this.runtime.threadMap.delete(thread.getId());
+                         doneThreads.push(thread);
+                     }
+                 }
+                 this.runtime.threads.length = nextActiveThread;
+             }
+         }
+
+diff --git a/src/engine/runtime.js b/src/engine/runtime.js
+--- a/src/engine/runtime.js
++++ b/src/engine/runtime.js
+@@ -2582,28 +2582,9 @@
+         // Clean up threads that were told to stop during or since the last step.
+-        // In-place compaction: only walk the array if at least one thread is killed.
+-        // The threadMap is maintained incrementally by _pushThread / _restartThread /
+-        // Sequencer.stepThreads, so no full rebuild is needed here.
+-        const threads = this.threads;
+-        let needsCompaction = false;
+-        for (let i = 0; i < threads.length; i++) {
+-            if (threads[i].isKilled) {
+-                needsCompaction = true;
+-                break;
+-            }
+-        }
+-        if (needsCompaction) {
+-            let writeIndex = 0;
+-            for (let readIndex = 0; readIndex < threads.length; readIndex++) {
+-                const thread = threads[readIndex];
+-                if (thread.isKilled) {
+-                    if (!thread.stackClick && !thread.updateMonitor) {
+-                        this.threadMap.delete(thread.getId());
+-                    }
+-                } else {
+-                    threads[writeIndex++] = thread;
+-                }
+-            }
+-            threads.length = writeIndex;
+-        }
++        // TurboWasm: scheduler-eval-B — pre-step compaction removed.
++        // Sequencer.stepThreads now compacts both STATUS_DONE and isKilled
++        // threads in its inner loop; Runtime._step does not walk the
++        // threads array at the top of the step.
+
+         // Find all edge-activated hats, and add them to threads to be evaluated.
+         // Iterate the cached [key, value] array to avoid per-frame property walks
