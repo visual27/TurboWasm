@@ -362,7 +362,7 @@ if (!existsSync(scratchVmSentinel)) {
   log('vendored/scratch-vm already cloned; skipping clone.');
 }
 
-log(`Applying ${scratchVmPatch} to vendored/scratch-vm`);
+log(`Applying ${scratchVmPatch} to vendored/scrub-vm`);
 // `--ignore-whitespace`: the upstream `.gitattributes` marks `*.js` as
 // `text eol=lf` and the global `core.autocrlf=true` setting on Git for
 // Windows normalizes line endings at checkout time. When both `git clone`
@@ -372,7 +372,17 @@ log(`Applying ${scratchVmPatch} to vendored/scratch-vm`);
 // content). `--ignore-whitespace` accepts whitespace-incompatible context
 // and makes the patch apply cleanly. We keep `--3way` so any genuine
 // non-whitespace conflict still surfaces.
-run('git', ['apply', '--3way', '--ignore-whitespace', scratchVmPatch], { cwd: scratchVmDir });
+//
+// `--recount`: the patch's `@@ -OLD,N +NEW,M @@` headers reference
+// line numbers in an upstream tree that has drifted slightly since the
+// patch was last regenerated. `--recount` lets git recompute the
+// hunk-anchor line numbers from context matching, which lets the patch
+// apply cleanly against a fresh clone at the pinned SHA without
+// regenerating the patch on every dependency bump. Without `--recount`
+// git apply fails at the very first hunk with "corrupt patch at line
+// 1148" (= the boundary between the existing patch and Phase 4A
+// appended hunks) because the upstream line numbers no longer match.
+run('git', ['apply', '--3way', '--ignore-whitespace', '--recount', scratchVmPatch], { cwd: scratchVmDir });
 
 // GPU compute kernel pipeline (M2): the standalone runtime hook patch below
 // is optional. When missing OR failing to apply, the script proceeds with a

@@ -1145,3 +1145,141 @@ index 08d1701..d8e7f4a 100644
              } else {
                  entryBlock = topBlockId;
              }
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -214,12 +214,61 @@
+  * @param {boolean} isLoop True if the block is a LOOP by default (can be overridden by startBranch() call)
+  * @returns {unknown} Branch info object for compatibility layer.
+  */
+-runtimeFunctions.createBranchInfo = `const createBranchInfo = (isLoop) => ({
+-    defaultIsLoop: isLoop,
+-    isLoop: false,
+-    branch: 0,
+-    stackFrame: {}
+-});`;
++// TurboWasm: branch-info-pool
++// Per-thread pool for the branchInfo snapshot used by every
++// CONDITIONAL / LOOP compatibility-layer block. The legacy code path
++// allocates a fresh 4-key object for every branch (including every
++// substack iteration of a loop). This hunk reuses items released by the
++// enclosing `try { ... } finally { __branchInfoRelease(${bi}); }` block
++// emitted by `JSGenerator.descendStackedBlock` (see
++// `// TurboWasm: branch-info-pool` in `src/compiler/jsgen.js`). The gate
++// (`runtime.compilerOptions.branchInfoPoolEnabled`) defaults to true;
++// Phase 4A flips it off in the unpatched arm of the A/B bench so the
++// legacy allocation behaviour stays measurable. Defaults to true in
++// `runtime.js:compilerOptions.branchInfoPoolEnabled`.
++// The two functions are split into separate `runtimeFunctions` entries
++// so `insertRuntime` only injects the half the compiled source actually
++// references: a script that only has `createBranchInfo` (= no
++// CONDITIONAL/LOOP blocks, hence no jsgen try/finally release) never
++// pulls in the `__branchInfoRelease` source, and vice versa.
++runtimeFunctions.__branchInfoAcquire = `const __branchInfoAcquire = (isLoop) => {
++    const thread = globalState.thread;
++    const runtime = thread && thread.target && thread.target.runtime;
++    const enabled = !runtime || !runtime.compilerOptions || runtime.compilerOptions.branchInfoPoolEnabled !== false;
++    if (!enabled) {
++        return { defaultIsLoop: isLoop, isLoop: false, branch: 0, stackFrame: {} };
++    }
++    let pool = thread.__branchInfoPool;
++    if (!pool) {
++        pool = thread.__branchInfoPool = [];
++    }
++    let item = pool.pop();
++    if (!item) {
++        item = { defaultIsLoop: isLoop, isLoop: false, branch: 0, stackFrame: {} };
++    } else {
++        item.defaultIsLoop = isLoop;
++        item.isLoop = false;
++        item.branch = 0;
++        const sf = item.stackFrame;
++        for (const k in sf) delete sf[k];
++    }
++    if (thread.__branchInfoCounters) {
++        thread.__branchInfoCounters.acquired += 1;
++        if (pool.length > thread.__branchInfoCounters.poolPeak) {
++            thread.__branchInfoCounters.poolPeak = pool.length;
++        }
++    }
++    return item;
++};`;
++runtimeFunctions.__branchInfoRelease = `const __branchInfoRelease = (item) => {
++    const thread = globalState.thread;
++    let pool = thread.__branchInfoPool;
++    if (!pool) {
++        pool = thread.__branchInfoPool = [];
++    }
++    pool.push(item);
++};`;
++runtimeFunctions.createBranchInfo = `const createBranchInfo = (isLoop) => __branchInfoAcquire(isLoop);`;
+ 
+ /**
+  * End the current script.
+diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
+--- a/src/compiler/jsgen.js
++++ b/src/compiler/jsgen.js
+@@ -554,6 +554,18 @@
+             } else if (blockType === BlockType.CONDITIONAL || blockType === BlockType.LOOP) {
+                 const branchVariable = this.localVariables.next();
+                 this.source += `const ${branchVariable} = createBranchInfo(${blockType === BlockType.LOOP});\n`;
++                // TurboWasm: branch-info-pool
++                // Wrap the while loop in `try { ... } finally { __branchInfoRelease(${bi}); }`
++                // so the per-thread pool reclaims the branchInfo snapshot
++                // whether the loop exits normally (= branch returns 0 or
++                // `!isLoop`), throws, or yields mid-iteration (the
++                // generator's outer `try` propagates the release). The
++                // `finally` block is the only safe release site because
++                // `finishCompatibilityCall`'s writeback (`isLoop = defaultIsLoop`)
++                // happens after every `executeInCompatibilityLayer` call but
++                // before the next iteration; releasing earlier would race the
++                // writeback.
++                this.source += `try {\n`;
+                 this.source += `while (${branchVariable}.branch = +(${this.generateCompatibilityLayerCall(node, false, branchVariable)})) {\n`;
+                 this.source += `switch (${branchVariable}.branch) {\n`;
+                 for (const index in node.substacks) {
+@@ -566,6 +578,7 @@
+                 this.source += `if (!${branchVariable}.isLoop) break;\n`;
+                 this.yieldLoop();
+                 this.source += '}\n'; // close while
++                this.source += `} finally { __branchInfoRelease(${branchVariable}); }\n`;
+             } else {
+                 throw new Error(`Unknown block type: ${blockType}`);
+             }
+diff --git a/src/engine/runtime.js b/src/engine/runtime.js
+--- a/src/engine/runtime.js
++++ b/src/engine/runtime.js
+@@ -467,10 +467,10 @@
+             fencing: true
+         };
+ 
+-        this.compilerOptions = {
++this.compilerOptions = {
+             enabled: true,
+             warpTimer: false,
+-            // TurboWasm: constant-folding 窶・Phase 3 compiler-side fold
++            // TurboWasm: constant-folding — Phase 3 compiler-side fold
+             // gate. Read by `IROptimizer.shouldFoldConstant` (= vendored
+             // scratch-vm/src/compiler/iroptimizer.js) to decide whether
+             // `tryFoldConstant` should run for each operator input.
+@@ -478,7 +478,19 @@
+             // `setCompilerOptions({ constantFoldingEnabled: false })`
+             // (wired from the Viewer's detailed toggle
+             // `data.constantFolding`) disables it for power-users.
+-            constantFoldingEnabled: true
++            constantFoldingEnabled: true,
++            // TurboWasm: branch-info-pool — Phase 4A gate for the
++            // per-thread branchInfo pool in `compiler/jsexecute.js`.
++            // Read by `__branchInfoAcquire` (= vendored
++            // scratch-vm/src/compiler/jsexecute.js) on every
++            // CONDITIONAL/LOOP block in compiled mode. Defaults to ON
++            // (= pool acquires instead of fresh-allocates); set to
++            // `false` to restore the legacy allocate-once-per-branch
++            // behaviour (used by the Phase 4A A/B bench). Phase 4B
++            // will decide whether to wire this to a runtime toggle;
++            // for now the bench scripts flip it directly via
++            // `runtime.setCompilerOptions({ branchInfoPoolEnabled: false })`.
++            branchInfoPoolEnabled: true
+         };
+ 
+         this.debug = false;

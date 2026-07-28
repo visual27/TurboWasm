@@ -29,6 +29,7 @@ const UMD_PATH = resolve(
 // Mirror of `scripts/patches/scratch-vm-symbols.md`. Append new
 // markers in alphabetical order of the namespace for diff hygiene.
 const TURBOWASM_MARKERS: readonly string[] = [
+  '// TurboWasm: branch-info-pool',
   '// TurboWasm: compat-layer-finish-extracted',
   '// TurboWasm: comparison-compare-equal-short-circuit',
   '// TurboWasm: comparison-infinity-branch-removed',
