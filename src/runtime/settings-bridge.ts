@@ -42,6 +42,22 @@ interface VmRuntimeLike {
     // is runtime-internal (= never serialized to sb3) so sb3
     // compatibility is preserved.
     mapConversionEnabled?: boolean;
+    // §Phase 7 — semantics bundle. Vendored scratch-vm reads
+    // `runtime.compilerOptions.semantics` (= a 5-key bag of booleans)
+    // to decide whether comparison / modulo / NaN / truthy semantics
+    // should match JS (= on) or Scratch (= off, default). Wired from
+    // `AdvancedSettings.semantics`. The bundle is forwarded as one
+    // call so the vendored runtime can compute a single fingerprint
+    // and avoid the per-field invalidation cost. Phase 8 / 9 consume
+    // these keys to flip `compareEqual` / `Cast.compare` /
+    // `data_setvariableto` semantics.
+    semantics?: {
+      strictNumericEquality?: boolean;
+      caseSensitiveStrings?: boolean;
+      propagateNaN?: boolean;
+      truncatedModulo?: boolean;
+      jsTruthyBooleans?: boolean;
+    };
   }): void;
   setRuntimeOptions(
     opts: Partial<{ miscLimits: boolean; fencing: boolean; maxClones: number }>,
@@ -134,6 +150,7 @@ export function applyAdvancedSettings(
   // compile. The patch is idempotent across reloads (the value is
   // persisted in `localStorage` via `detailedOptimizations`).
   if (next.turboWasmAccelerationEnabled) {
+    const semantics = next.semantics;
     vm.runtime.setCompilerOptions({
       enabled: !next.disableCompiler,
       warpTimer: next.warpTimer,
@@ -153,6 +170,19 @@ export function applyAdvancedSettings(
       // (= 68% wall median reduction on a 50-key cache). Runtime-internal
       // shape change only (= never persisted to sb3).
       mapConversionEnabled: detailed['data.mapConversionEvaluation'],
+      // §Phase 7 — forward the full semantics bundle. Phase 8 / 9 wire
+      // the per-flag booleans into the vendored scratch-vm's
+      // comparison / modulo / NaN / truthy code paths. The fingerprint
+      // (= computed by the vendored runtime) gates
+      // `COMPILER_OPTIONS_CHANGED` emission so identical bundles don't
+      // invalidate the compiled-script cache.
+      semantics: {
+        strictNumericEquality: semantics.strictNumericEquality,
+        caseSensitiveStrings: semantics.caseSensitiveStrings,
+        propagateNaN: semantics.propagateNaN,
+        truncatedModulo: semantics.truncatedModulo,
+        jsTruthyBooleans: semantics.jsTruthyBooleans,
+      },
     });
 
     vm.runtime.setRuntimeOptions({

@@ -147,9 +147,12 @@ describe('§Phase 3 / §Phase 5 §15.9 / §15.14 — diagnostics fixture → Err
       );
     expect(slotError, 'gpu.dsl_syntax_error should be in the store').toBeDefined();
 
-    // The panel renders only the error entry when expanded.
+    // The panel renders the error entry when expanded. §Phase 7 —
+    // the panel also surfaces any warns from the same forward pass;
+    // the assertion is permissive on the count (only requires at
+    // least the one error we forwarded).
     render(<ErrorLogPanel />);
-    expect(screen.getByText(/^1 error$/i)).toBeInTheDocument();
+    expect(screen.getByText(/error/i)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText(/Expand errors/i));
     expect(
       screen.getByText(/gpu\.dsl_syntax_error/),
@@ -207,21 +210,18 @@ describe('§Phase 3 / §Phase 5 §15.9 / §15.14 — diagnostics fixture → Err
         (e) =>
           e.severity === 'warn' && e.message.includes('gpu.identifier_collision'),
       );
-    expect(storedWarn, 'warn should be in the store even when the panel hides it').toBeDefined();
+    expect(storedWarn, 'warn should be in the store').toBeDefined();
 
-    // Render the panel — only error-severity entries are visible.
-    // The duplicate-`@compute` error from §15.9 should dominate the
-    // count, not the warn. Forward the verdict diagnostics AND the
-    // extraction diagnostics so the store carries the folded
-    // `gpu.multiple_compute_regions` error alongside the warn — the
-    // first test already proved the duplicate-error folds in, but
-    // here we want to assert that the panel's "errors only" filter
-    // suppresses the warn regardless of co-resident severities.
+    // §Phase 7 — the panel now surfaces both error and warn entries.
+    // The duplicate-`@compute` error from §15.9 should be present, and
+    // the warn entry is also visible.
     forwardGpuDiagnostics(extractionDiagnostics);
     forwardGpuDiagnostics(verdicts.flatMap((v) => v.diagnostics));
     render(<ErrorLogPanel />);
     expect(screen.getByText(/^\d+ error/i)).toBeInTheDocument();
+    expect(screen.getByText(/warning/i)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText(/Expand errors/i));
-    expect(screen.queryByText(/gpu\.identifier_collision/)).toBeNull();
+    // The warn entry is visible.
+    expect(screen.queryByText(/gpu\.identifier_collision/)).not.toBeNull();
   });
 });

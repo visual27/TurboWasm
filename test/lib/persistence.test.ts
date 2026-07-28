@@ -211,6 +211,7 @@ describe('persistence', () => {
         'interpolation',
         'removeFencing',
         'removeMiscLimits',
+        'semantics',
         'stageHeight',
         'stageWidth',
         'turboMode',

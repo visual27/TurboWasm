@@ -1,4 +1,19 @@
-import type { AdvancedSettings, ExtensionSandboxMode } from '@/types/settings';
+import type { AdvancedSettings, ExtensionSandboxMode, SemanticOptions, SemanticPreset } from '@/types/settings';
+import { DEFAULT_SEMANTIC_OPTIONS, SEMANTIC_PRESETS } from '@/utils/constants';
+
+/**
+ * §Phase 7 — list of the five per-flag fields on `SemanticOptions`,
+ * in the same order the Settings dialog renders them. Used by
+ * `buildProjectAdvanced` to detect when an override flips per-flag
+ * fields without a preset (= flip the bundle to `'custom'`).
+ */
+const SEMANTIC_FLAG_KEYS: readonly (keyof SemanticOptions)[] = [
+  'truncatedModulo',
+  'caseSensitiveStrings',
+  'strictNumericEquality',
+  'jsTruthyBooleans',
+  'propagateNaN',
+] as const;
 
 interface RawProjectJson {
   targets?: Array<{
@@ -40,7 +55,29 @@ const SUPPORTED_KEYS: ReadonlyArray<keyof AdvancedSettings> = [
   'stageWidth',
   'stageHeight',
   'extensionSandboxMode',
+  'semantics',
 ];
+
+/**
+ * §Phase 7 — apply a named semantic preset on top of a baseline. When
+ * the preset is `'custom'` the baseline values are preserved (the
+ * user owns the per-flag fields). For the other three presets the
+ * preset's flag bundle wins, replacing the per-flag fields wholesale
+ * (= the user explicitly asked for that bundle).
+ */
+export function applySemanticPreset(
+  preset: SemanticPreset,
+  baseline: SemanticOptions,
+): SemanticOptions {
+  if (preset === 'custom') {
+    return { ...baseline, preset: 'custom' };
+  }
+  const bundle = SEMANTIC_PRESETS[preset];
+  if (bundle) {
+    return { ...bundle, preset };
+  }
+  return { ...DEFAULT_SEMANTIC_OPTIONS, preset };
+}
 
 /**
  * Compose the per-project runtime AdvancedSettings from a saved
@@ -55,6 +92,11 @@ const SUPPORTED_KEYS: ReadonlyArray<keyof AdvancedSettings> = [
  *  - `turboWasmAccelerationEnabled` is taken from the baseline (so a
  *    user who disabled the WASM hook in the Settings dialog does not
  *    have it re-enabled by loading a project).
+ *  - §Phase 7 — `semantics` is deep-merged: the override's per-flag
+ *    fields win over the baseline's per-flag fields, but an explicit
+ *    `preset` in the override applies the preset bundle (= the preset
+ *    wins over the per-flag fields, the same priority order used in
+ *    the Settings dialog).
  *
  * Used by both `useSettingsStore.applyRuntimeOverrides` (Settings dialog
  * mirror) and `player.loadProjectFromArrayBuffer` (module-local VM
@@ -65,12 +107,51 @@ export function buildProjectAdvanced(
   baseline: AdvancedSettings,
   overrides: Partial<AdvancedSettings>,
 ): AdvancedSettings {
+  const baseSemantics: SemanticOptions = baseline.semantics ?? DEFAULT_SEMANTIC_OPTIONS;
+  const overrideSemantics = overrides.semantics;
+  let mergedSemantics: SemanticOptions;
+  if (overrideSemantics) {
+    // Three cases to disambiguate:
+    //   1. The override carries a `preset` field different from the
+    //      baseline preset → the override's preset wins; the preset's
+    //      bundle replaces the per-flag fields wholesale.
+    //   2. The override carries a `preset` field equal to the baseline
+    //      preset → merge per-flag fields on top of the baseline
+    //      (= the override is explicitly keeping the preset and
+    //      flipping specific flags).
+    //   3. The override has no `preset` field but flips at least one
+    //      per-flag → auto-flip the bundle to `'custom'` so the
+    //      resulting semantics is internally consistent (the user
+    //      owns the per-flag combination).
+    const baselinePreset = baseSemantics.preset;
+    if (overrideSemantics.preset && overrideSemantics.preset !== baselinePreset) {
+      mergedSemantics = applySemanticPreset(overrideSemantics.preset, {
+        ...baseSemantics,
+        ...overrideSemantics,
+        preset: overrideSemantics.preset,
+      });
+    } else {
+      const merged = { ...baseSemantics, ...overrideSemantics };
+      const hasFlagChange = SEMANTIC_FLAG_KEYS.some((k) => k in overrideSemantics);
+      // When the override flips a per-flag field without specifying a
+      // preset, the user is making a custom tweak. Always flip the
+      // resulting bundle to `'custom'` regardless of the baseline
+      // preset (= the user explicitly owns the per-flag combination).
+      if (hasFlagChange && !overrideSemantics.preset) {
+        merged.preset = 'custom';
+      }
+      mergedSemantics = merged;
+    }
+  } else {
+    mergedSemantics = baseSemantics;
+  }
   return {
     ...baseline,
     ...overrides,
     disableCompiler: false,
     turboWasmAccelerationEnabled:
       baseline.turboWasmAccelerationEnabled ?? true,
+    semantics: mergedSemantics,
   };
 }
 
@@ -159,6 +240,44 @@ function coerceSandboxMode(v: unknown): ExtensionSandboxMode | null {
   return null;
 }
 
+function isSemanticFlagKey(key: string): key is keyof SemanticOptions {
+  return (
+    key === 'strictNumericEquality' ||
+    key === 'caseSensitiveStrings' ||
+    key === 'propagateNaN' ||
+    key === 'truncatedModulo' ||
+    key === 'jsTruthyBooleans'
+  );
+}
+
+function isSemanticPresetKey(key: string): boolean {
+  return key === 'semanticsPreset';
+}
+
+function coerceSemanticPreset(v: unknown): SemanticPreset | null {
+  return v === 'scratch' || v === 'low-risk-js' || v === 'full-js' || v === 'custom'
+    ? v
+    : null;
+}
+
+function coerceSemanticPatch(value: unknown): Partial<SemanticOptions> | null {
+  if (!value || typeof value !== 'object') return null;
+  const r = value as Record<string, unknown>;
+  const out: Partial<SemanticOptions> = {};
+  const preset = coerceSemanticPreset(r.preset);
+  if (preset) out.preset = preset;
+  for (const flag of [
+    'strictNumericEquality',
+    'caseSensitiveStrings',
+    'propagateNaN',
+    'truncatedModulo',
+    'jsTruthyBooleans',
+  ] as const) {
+    if (typeof r[flag] === 'boolean') out[flag] = r[flag] as boolean;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 function mapKeyToAdvanced(key: string, value: unknown): Partial<AdvancedSettings> | null {
   if (!SUPPORTED_KEYS.includes(key as keyof AdvancedSettings)) return null;
   switch (key) {
@@ -186,6 +305,10 @@ function mapKeyToAdvanced(key: string, value: unknown): Partial<AdvancedSettings
     case 'extensionSandboxMode': {
       const mode = coerceSandboxMode(value);
       return mode !== null ? { extensionSandboxMode: mode } : null;
+    }
+    case 'semantics': {
+      const patch = coerceSemanticPatch(value);
+      return patch ? ({ semantics: patch } as unknown as Partial<AdvancedSettings>) : null;
     }
     default:
       return null;
@@ -272,6 +395,19 @@ function parseTwconfigJson(text: string): Partial<AdvancedSettings> {
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
   const result: Partial<AdvancedSettings> = {};
+  // §Phase 7 — `semantics: { ... }` and the flat semantic-flag /
+  // `semanticsPreset` keys all flow through a single accumulator so
+  // a `// _twconfig_` payload can mix and match without losing
+  // fields. We always route through `semantics: { ... }` (= the typed
+  // field on `AdvancedSettings`) so the merge in `buildProjectAdvanced`
+  // stays a single `semantics` deep-merge. The accumulator uses a
+  // partial-with-required-preset shape (= each per-flag field is
+  // boolean-or-undefined; preset is optional) so the deep-merge in
+  // `buildProjectAdvanced` accepts it without further casts.
+  type SemanticPatch = {
+    [K in Exclude<keyof SemanticOptions, 'preset'>]?: boolean;
+  } & { preset?: SemanticPreset };
+  const semanticAcc: SemanticPatch = {};
   const obj = parsed as Record<string, unknown>;
   // First pass: top-level keys, skipping the nested `runtimeOptions`
   // bag. We try the wire-format name first, then fall back to the
@@ -279,6 +415,21 @@ function parseTwconfigJson(text: string): Partial<AdvancedSettings> {
   // formats that used the viewer's own vocabulary).
   for (const [k, v] of Object.entries(obj)) {
     if (k === 'runtimeOptions') continue;
+    if (isSemanticFlagKey(k)) {
+      const b = coerceBoolean(v);
+      if (b !== null) {
+        // `k` is a known per-flag key. The cast through `keyof
+        // SemanticOptions` is safe because `isSemanticFlagKey`
+        // narrows it.
+        (semanticAcc as Record<string, boolean>)[k] = b;
+      }
+      continue;
+    }
+    if (isSemanticPresetKey(k)) {
+      const preset = coerceSemanticPreset(v);
+      if (preset) semanticAcc.preset = preset;
+      continue;
+    }
     const wireTransform = WIRE_FLAT_KEY_MAP[k];
     if (wireTransform) {
       const mapped = applyWireTransform(wireTransform, v);
@@ -305,6 +456,14 @@ function parseTwconfigJson(text: string): Partial<AdvancedSettings> {
       const mapped = applyWireTransform(transform, v);
       if (mapped) Object.assign(result, mapped);
     }
+  }
+  // Emit the accumulated semantic patch as a single `semantics` override
+  // so the downstream merge sees it as one field. Empty accumulator
+  // (= no semantic keys) leaves `result.semantics` untouched. The
+  // partial type is fine here — `buildProjectAdvanced` accepts a
+  // `Partial<AdvancedSettings>` and deep-merges the semantics field.
+  if (Object.keys(semanticAcc).length > 0) {
+    result.semantics = semanticAcc as unknown as Partial<AdvancedSettings>['semantics'];
   }
   return result;
 }

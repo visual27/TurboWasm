@@ -26,12 +26,12 @@ describe('persistence: v10 → v11 migration (§Phase 5)', () => {
     localStorage.clear();
   });
 
-  it('STORAGE_VERSION is 12 (Phase 1 bumped from 11)', () => {
-    // Phase 1 (`patches/vendored/scratch-vm.patch`) added the
-    // `detailedOptimizations` map to `SettingsStoreShape`. The
-    // `STORAGE_VERSION` constant moved from 11 to 12 so future
+  it('STORAGE_VERSION is 13 (Phase 7 bumped from 12)', () => {
+    // Phase 7 (`patches/vendored/scratch-vm.patch`) added the
+    // `advanced.semantics: SemanticOptions` field. The
+    // `STORAGE_VERSION` constant moved from 12 to 13 so future
     // `readSettings` knows it has to read the new field.
-    expect(STORAGE_VERSION).toBe(12);
+    expect(STORAGE_VERSION).toBe(13);
   });
 
   it('seeds customBlockInliningEnabled = true when missing from v10 payload', () => {

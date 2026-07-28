@@ -844,7 +844,30 @@ index 1df8dff..baee962 100644
 +            // (serialization compatibility / 4-key workload are not worth
 +            // the Map migration cost) and remain plain `{}` regardless of
 +            // this flag.
-+            mapConversionEnabled: false
++            mapConversionEnabled: false,
++            // TurboWasm: semantics-compiler-options — §Phase 7
++            // bag of five booleans that govern comparison / modulo /
++            // NaN / truthy semantics. Phase 8/9 read these fields from
++            // `runtime.compilerOptions.semantics` to flip the
++            // respective vendor-runtime code paths (`compareEqual`,
++            // `Cast.compare`, `data_setvariableto`, ...). Default
++            // values match upstream scratch-vm so existing projects
++            // stay byte-identical until the user explicitly opts in
++            // via the Settings dialog or a project's `// _twconfig_`
++            // payload (= wired from
++            // `settings-bridge.applyAdvancedSettings`). The fingerprint
++            // computed by `Runtime.setCompilerOptions` (= below) keys
++            // on this bag so a flip from `false` → `false` does not
++            // invalidate the compiled-script cache (= only the fields
++            // that affect compile output are tracked; see
++            // `// TurboWasm: compiler-options-fingerprint` hunk).
++            semantics: {
++                strictNumericEquality: false,
++                caseSensitiveStrings: false,
++                propagateNaN: false,
++                truncatedModulo: false,
++                jsTruthyBooleans: false
++            }
          };
  
          this.debug = false;

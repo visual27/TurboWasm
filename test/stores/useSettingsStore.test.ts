@@ -52,9 +52,10 @@ describe('useSettingsStore — basic', () => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
     expect(raw).toBeTruthy();
     expect(JSON.parse(raw as string).state.theme).toBe('dark');
-    // The persisted payload is tagged with the v10 schema so future
-    // schema bumps can read it back correctly.
-    expect(JSON.parse(raw as string).version).toBe(12);
+    // The persisted payload is tagged with the v13 schema (= Phase 7
+    // semantics bump) so future schema bumps can read it back
+    // correctly.
+    expect(JSON.parse(raw as string).version).toBe(13);
   });
 
   it('clamps volume on setVolume', () => {
@@ -212,9 +213,10 @@ describe('useSettingsStore — enableWasm', () => {
       version: number;
     };
     expect(parsed.state.enableWasm).toBe(false);
-    // The persisted payload is tagged with the v11 schema so future
-    // schema bumps can read it back correctly.
-    expect(parsed.version).toBe(12);
+    // The persisted payload is tagged with the v13 schema (= Phase 7
+    // semantics bump) so future schema bumps can read it back
+    // correctly.
+    expect(parsed.version).toBe(13);
   });
 
   it('setEnableWasm toggles both directions', () => {
@@ -574,7 +576,7 @@ describe('useSettingsStore.cycleFpsShortcut', () => {
       version: number;
     };
     expect(parsed.state.userExplicitFps).toBe(60);
-    expect(parsed.version).toBe(12);
+    expect(parsed.version).toBe(13);
   });
 
 it('patchAdvanced with a non-30 fps updates the latch even when advanced.fps matches defaultAdvanced.fps', () => {
@@ -615,11 +617,11 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
   });
 
   it('setDetailedOptimization updates a single ID and leaves the rest untouched', () => {
-    useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', false);
+    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
     const map = useSettingsStore.getState().detailedOptimizations;
-    expect(map['semantics.truncatedModulo']).toBe(false);
+    expect(map['comparison.shortCircuit']).toBe(false);
     // Neighbouring ID stays default-on.
-    expect(map['semantics.caseSensitiveStrings']).toBe(true);
+    expect(map['comparison.infinityBranchRemoval']).toBe(true);
   });
 
   it('setDetailedOptimization is a no-op when the value already matches', () => {
@@ -662,7 +664,7 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
   });
 
   it('toggleTurboWasmMaster(true) restores from the snapshot and clears it', () => {
-    useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', false);
+    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
     useSettingsStore.getState().patchAdvanced({ enableWebgpu: false });
     useSettingsStore.getState().toggleTurboWasmMaster(false);
     // We are now in the "all-off" state with a snapshot.
@@ -675,21 +677,21 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
     expect(after.advanced.enableWebgpu).toBe(false); // restored from snapshot
     expect(after.advanced.customBlockInliningEnabled).toBe(true);
     expect(after.enableWasm).toBe(true);
-    expect(after.detailedOptimizations['semantics.truncatedModulo']).toBe(false); // restored
+    expect(after.detailedOptimizations['comparison.shortCircuit']).toBe(false); // restored
     expect(after.beforeTurboWasmMasterOffSnapshot).toBeNull();
   });
 
   it('toggleTurboWasmMaster(true) without a snapshot is a no-op (idempotent)', () => {
     // No prior off-flip in this test. Flipping to true must leave the
     // runtime state intact.
-    useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', false);
+    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
     const before = useSettingsStore.getState().advanced;
 
     useSettingsStore.getState().toggleTurboWasmMaster(true);
 
     const after = useSettingsStore.getState();
     expect(after.advanced).toBe(before);
-    expect(after.detailedOptimizations['semantics.truncatedModulo']).toBe(false);
+    expect(after.detailedOptimizations['comparison.shortCircuit']).toBe(false);
     expect(after.beforeTurboWasmMasterOffSnapshot).toBeNull();
   });
 
@@ -766,7 +768,7 @@ describe('useSettingsStore — [tw-optimization] log prefix (Phase 0)', () => {
   it('setDetailedOptimization(false) emits a [tw-optimization] log line', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
-      useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', false);
+      useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
       const calls = spy.mock.calls.map((c) => String(c[0]));
       const matched = calls.some((msg) => msg.startsWith('[tw-optimization]'));
       expect(matched, `expected [tw-optimization] log, got ${JSON.stringify(calls)}`).toBe(true);
@@ -779,12 +781,96 @@ describe('useSettingsStore — [tw-optimization] log prefix (Phase 0)', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       // Default is true; setting it to true again is the no-op short-circuit.
-      useSettingsStore.getState().setDetailedOptimization('semantics.truncatedModulo', true);
+      useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', true);
       const calls = spy.mock.calls.map((c) => String(c[0]));
       const matched = calls.some((msg) => msg.startsWith('[tw-optimization]'));
       expect(matched, 'no-op should not emit any log').toBe(false);
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('useSettingsStore — semantics (§Phase 7)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetStore();
+  });
+
+  it('patchSemantic flips a per-flag field and auto-flips preset to "custom"', () => {
+    useSettingsStore.getState().patchSemantic({ truncatedModulo: true });
+    const s = useSettingsStore.getState().advanced.semantics;
+    expect(s.preset).toBe('custom');
+    expect(s.truncatedModulo).toBe(true);
+  });
+
+  it('patchSemantic with a preset name applies the preset bundle', () => {
+    useSettingsStore.getState().patchSemantic({ preset: 'low-risk-js' });
+    const s = useSettingsStore.getState().advanced.semantics;
+    expect(s.preset).toBe('low-risk-js');
+    expect(s.caseSensitiveStrings).toBe(true);
+    expect(s.truncatedModulo).toBe(true);
+    // preset bundle is exhaustive — every field reflects the preset.
+    expect(s.strictNumericEquality).toBe(false);
+    expect(s.propagateNaN).toBe(false);
+    expect(s.jsTruthyBooleans).toBe(false);
+  });
+
+  it('applySemanticPreset replaces per-flag fields for low-risk-js', () => {
+    useSettingsStore.getState().applySemanticPreset('low-risk-js');
+    const s = useSettingsStore.getState().advanced.semantics;
+    expect(s.preset).toBe('low-risk-js');
+    expect(s.caseSensitiveStrings).toBe(true);
+    expect(s.truncatedModulo).toBe(true);
+  });
+
+  it('applySemanticPreset replaces per-flag fields for full-js', () => {
+    useSettingsStore.getState().applySemanticPreset('full-js');
+    const s = useSettingsStore.getState().advanced.semantics;
+    expect(s.preset).toBe('full-js');
+    expect(s.strictNumericEquality).toBe(true);
+    expect(s.propagateNaN).toBe(true);
+    expect(s.jsTruthyBooleans).toBe(true);
+  });
+
+  it('applySemanticPreset("custom") preserves the current per-flag fields', () => {
+    useSettingsStore.getState().patchSemantic({ truncatedModulo: true });
+    useSettingsStore.getState().applySemanticPreset('custom');
+    const s = useSettingsStore.getState().advanced.semantics;
+    expect(s.preset).toBe('custom');
+    expect(s.truncatedModulo).toBe(true);
+  });
+
+  it('saveAdvancedAsDefault preserves the current semantics bundle', () => {
+    useSettingsStore.getState().applySemanticPreset('full-js');
+    useSettingsStore.getState().saveAdvancedAsDefault();
+    const s = useSettingsStore.getState().defaultAdvanced.semantics;
+    expect(s.preset).toBe('full-js');
+    expect(s.strictNumericEquality).toBe(true);
+  });
+
+  it('resetAdvanced restores the saved semantics default (= preset + flags)', () => {
+    // Save a non-default semantics preset (= `low-risk-js`), then apply
+    // a different preset (= `full-js`) in memory. `resetAdvanced`
+    // restores the runtime advanced to the saved defaults (= the
+    // `low-risk-js` we just persisted via "Set as default").
+    useSettingsStore.getState().applySemanticPreset('low-risk-js');
+    useSettingsStore.getState().saveAdvancedAsDefault();
+    useSettingsStore.getState().applySemanticPreset('full-js');
+    useSettingsStore.getState().resetAdvanced();
+    const s = useSettingsStore.getState().advanced.semantics;
+    expect(s.preset).toBe('low-risk-js');
+    expect(s.caseSensitiveStrings).toBe(true);
+    expect(s.truncatedModulo).toBe(true);
+  });
+
+  it('resetAdvanced restores semantics to scratch when no preset was saved', () => {
+    // When the user has never pressed "Set as default" (= defaultAdvanced
+    // still carries the scratch preset), resetAdvanced lands on scratch.
+    useSettingsStore.getState().applySemanticPreset('full-js');
+    useSettingsStore.getState().resetAdvanced();
+    const s = useSettingsStore.getState().advanced.semantics;
+    expect(s.preset).toBe('scratch');
+    expect(s.caseSensitiveStrings).toBe(false);
   });
 });

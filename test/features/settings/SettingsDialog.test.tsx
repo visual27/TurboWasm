@@ -682,12 +682,25 @@ describe('SettingsDialog — Detailed Settings screen (§Phase 0)', () => {
     const user = userEvent.setup();
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     await user.click(screen.getByTestId('settings-detailed-row'));
-    await user.click(screen.getByTestId('detailed-category-row-semantics'));
-    const toggle = screen.getByLabelText('Truncated Modulo toggle') as HTMLButtonElement;
+    await user.click(screen.getByTestId('detailed-category-row-comparison'));
+    const toggle = screen.getByLabelText('Comparison Short-Circuit toggle') as HTMLButtonElement;
     await user.click(toggle);
-    expect(useSettingsStore.getState().detailedOptimizations['semantics.truncatedModulo']).toBe(
+    expect(useSettingsStore.getState().detailedOptimizations['comparison.shortCircuit']).toBe(
       false,
     );
+  });
+
+  it('§Phase 7 — opens the Semantics screen and flips a flag through patchSemantic', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-semantics-row'));
+    expect(screen.getByTestId('semantics-screen')).toBeInTheDocument();
+    // Selecting the 'custom' preset un-locks the per-flag toggles.
+    await user.click(screen.getByTestId('semantics-preset-custom'));
+    const toggle = screen.getByLabelText('Truncated Modulo toggle') as HTMLButtonElement;
+    await user.click(toggle);
+    expect(useSettingsStore.getState().advanced.semantics.truncatedModulo).toBe(true);
+    expect(useSettingsStore.getState().advanced.semantics.preset).toBe('custom');
   });
 
   it('disables every toggle when the master is off', () => {

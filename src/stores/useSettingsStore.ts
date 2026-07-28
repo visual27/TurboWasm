@@ -1,14 +1,22 @@
 import { create } from 'zustand';
-import type { AdvancedSettings, ExtensionSandboxMode, Theme } from '@/types/settings';
+import type {
+  AdvancedSettings,
+  ExtensionSandboxMode,
+  SemanticOptions,
+  SemanticPreset,
+  Theme,
+} from '@/types/settings';
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
 import {
   DEFAULT_ALLOWED_EXTENSION_URLS,
   DEFAULT_DETAILED_OPTIMIZATIONS,
   DEFAULT_ENABLE_WASM,
+  DEFAULT_SEMANTIC_OPTIONS,
   OPTIMIZATION_TOGGLE_LOG_PREFIX,
   VOLUME_MAX,
   VOLUME_MIN,
 } from '@/utils/constants';
+import { applySemanticPreset } from '@/runtime/twconfig';
 import { clampFps, clampVolume } from '@/utils/format';
 import { readSettings, writeSettings } from '@/lib/persistence';
 import { buildProjectAdvanced } from '@/runtime/twconfig';
@@ -226,6 +234,26 @@ export interface SettingsState {
    * bump; the surface here is stable.
    */
   setDetailedOptimization: (id: DetailedOptimizationId, enabled: boolean) => void;
+  /**
+   * §Phase 7 — patch one or more fields of `advanced.semantics`.
+   * Any per-flag field set via the patch forces `preset: 'custom'`
+   * (= the user owns the per-flag combination) unless the patch
+   * itself specifies a preset. Passing an empty patch (= `{}`) is a
+   * no-op. The runtime `semantics.preset` is updated alongside the
+   * per-flag fields so the Settings dialog reflects a consistent
+   * bundle. In-memory only — "Set as default" promotes the patched
+   * bundle to `defaultAdvanced.semantics`.
+   */
+  patchSemantic: (options: Partial<SemanticOptions>) => void;
+  /**
+   * §Phase 7 — select a named preset (= `'scratch'` / `'low-risk-js'`
+   * / `'full-js'` / `'custom'`). The preset's per-flag bundle replaces
+   * the current per-flag fields wholesale. Selecting `'custom'`
+   * preserves the current per-flag fields (= the user owns them) and
+   * only flips the `preset` label so the Settings dialog stops
+   * overriding the per-flag fields on every render. In-memory only.
+   */
+  applySemanticPreset: (preset: SemanticPreset) => void;
 }
 
 const initial = readSettings();
@@ -265,6 +293,21 @@ export const FPS_SHORTCUT_DEFAULT = 30;
  * the priority order documented on {@link SettingsState.cycleFpsShortcut}.
  */
 export const FPS_SHORTCUT_FALLBACK = 60;
+
+/**
+ * §Phase 7 — list of the five per-flag fields on `SemanticOptions`,
+ * in the order the Settings dialog renders them. Used by
+ * `patchSemantic` to detect whether the patch flipped a per-flag
+ * field (= flip the bundle to `'custom'`) without forcing the user to
+ * specify a preset.
+ */
+const SEMANTIC_FLAG_KEYS: readonly (keyof SemanticOptions)[] = [
+  'truncatedModulo',
+  'caseSensitiveStrings',
+  'strictNumericEquality',
+  'jsTruthyBooleans',
+  'propagateNaN',
+] as const;
 
 /**
  * Compute the "preferred FPS" the Alt+Flag shortcut should switch to
@@ -518,6 +561,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // snapshot around after a "Set as default" press would let the
     // user accidentally restore an off-state they have already
     // accepted as the new default.
+    //
+    // §Phase 7 — the `semantics` bundle is preserved verbatim (= a
+    // power-user escape hatch; selecting `low-risk-js` / `full-js`
+    // keeps the bundle across "Set as default" so a reload picks up
+    // the same non-Scratch semantics).
     const { advanced } = get();
     const snapshot: AdvancedSettings = {
       ...advanced,
@@ -712,6 +760,46 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     console.log(
       `${OPTIMIZATION_TOGGLE_LOG_PREFIX} setDetailedOptimization ${id}=${enabled}`,
     );
+  },
+  patchSemantic: (options) => {
+    // §Phase 7 — patch the runtime `semantics` bundle in place. The
+    // patched bundle is forwarded to the VM via
+    // `settings-bridge.applyAdvancedSettings` (= subscribed by
+    // `StageView`), so the next render re-applies setCompilerOptions
+    // with the new fingerprint. We do NOT persist here — "Set as
+    // default" promotes the bundle to `defaultAdvanced.semantics`.
+    //
+    // Preset resolution: when the patch specifies a preset (= not
+    // `'custom'`), apply that preset's flag bundle on top of the
+    // current semantics so the per-flag fields stay consistent with
+    // the preset. When the patch only flips per-flag fields without
+    // a preset, default `preset` to `'custom'` so the Settings dialog
+    // stops overriding the user's per-flag edits on the next render.
+    const current = get().advanced.semantics ?? DEFAULT_SEMANTIC_OPTIONS;
+    let merged: SemanticOptions;
+    if (options.preset) {
+      merged = applySemanticPreset(options.preset, { ...current, ...options });
+    } else {
+      const hasFlagChange = SEMANTIC_FLAG_KEYS.some((k) => k in options);
+      merged = hasFlagChange
+        ? { ...current, ...options, preset: 'custom' }
+        : { ...current, ...options };
+    }
+    set({ advanced: { ...get().advanced, semantics: merged } });
+    // eslint-disable-next-line no-console
+    console.log(`${OPTIMIZATION_TOGGLE_LOG_PREFIX} patchSemantic preset=${merged.preset}`);
+  },
+  applySemanticPreset: (preset) => {
+    // §Phase 7 — select a named preset. The preset's bundle
+    // wholesale-replaces the current per-flag fields. Selecting
+    // `'custom'` keeps the current per-flag fields and only flips the
+    // `preset` label so the Settings dialog stops overriding the
+    // user's per-flag edits on the next render.
+    const current = get().advanced.semantics ?? DEFAULT_SEMANTIC_OPTIONS;
+    const merged = applySemanticPreset(preset, current);
+    set({ advanced: { ...get().advanced, semantics: merged } });
+    // eslint-disable-next-line no-console
+    console.log(`${OPTIMIZATION_TOGGLE_LOG_PREFIX} applySemanticPreset preset=${preset}`);
   },
 }));
 

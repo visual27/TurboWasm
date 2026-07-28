@@ -3,6 +3,7 @@ import {
   DETAILED_CATEGORY_DESCRIPTIONS,
   DETAILED_CATEGORY_LABELS,
   DETAILED_CATEGORY_ORDER,
+  DETAILED_OPTIMIZATIONS_BY_CATEGORY,
 } from './constants';
 import { ClickableFieldRow } from './SettingsDialog';
 import type { DetailedCategoryId, DetailedOptimizationMap } from './types';
@@ -38,27 +39,10 @@ export function DetailedSettingsScreen({
   const summaryByCategory = React.useMemo(() => {
     const map = new Map<DetailedCategoryId, { off: number; total: number }>();
     for (const categoryId of DETAILED_CATEGORY_ORDER) {
-      // Defer the import-shape guard to the leaf screen via prop
-      // rather than reaching into constants — keeps this file
-      // focused on the picker UI.
-      const total = (() => {
-        switch (categoryId) {
-          case 'compat-layer':
-            return 4;
-          case 'edge-detection':
-            return 1;
-          case 'comparison':
-            return 2;
-          case 'data-structures':
-            return 2;
-          case 'compiler':
-            return 1;
-          case 'semantics':
-            return 5;
-          default:
-            return 0;
-        }
-      })();
+      // §Phase 7 — DRY: derive the row count from the constants map
+      // rather than a hand-written switch. Adding a new optimization
+      // ID no longer requires updating this switch in lockstep.
+      const total = DETAILED_OPTIMIZATIONS_BY_CATEGORY[categoryId].length;
       map.set(categoryId, { off: 0, total });
     }
     // Count off-by-master rows: master OFF flips every leaf to false.

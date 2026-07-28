@@ -18,8 +18,7 @@ export type DetailedCategoryId =
   | 'edge-detection'
   | 'comparison'
   | 'data-structures'
-  | 'compiler'
-  | 'semantics';
+  | 'compiler';
 
 export type DetailedOptimizationId =
   // Compatibility Layer
@@ -36,13 +35,7 @@ export type DetailedOptimizationId =
   | 'data.mapConversionEvaluation'
   | 'data.constantFolding'
   // Compiler
-  | 'compiler.generatorGranularityResearch'
-  // Semantics
-  | 'semantics.truncatedModulo'
-  | 'semantics.caseSensitiveStrings'
-  | 'semantics.strictNumericEquality'
-  | 'semantics.jsTruthyBooleans'
-  | 'semantics.propagateNaN';
+  | 'compiler.generatorGranularityResearch';
 
 /**
  * Per-toggle UI state. `availableInMaster` distinguishes shipped
@@ -72,7 +65,8 @@ export type DetailedOptimizationMap = Readonly<Record<DetailedOptimizationId, bo
 export type SettingsViewEntry =
   | { kind: 'section'; section: 'turboWasm' }
   | { kind: 'detailed' }
-  | { kind: 'detailed-category'; categoryId: DetailedCategoryId };
+  | { kind: 'detailed-category'; categoryId: DetailedCategoryId }
+  | { kind: 'semantics' };
 
 export type SettingsViewStack = readonly SettingsViewEntry[];
 

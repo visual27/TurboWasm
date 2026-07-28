@@ -57,8 +57,8 @@ describe('DetailedSettingsScreen (Phase 0)', () => {
         }}
       />,
     );
-    await user.click(screen.getByTestId('detailed-category-row-semantics'));
-    expect(captured).toBe('semantics');
+    await user.click(screen.getByTestId('detailed-category-row-comparison'));
+    expect(captured).toBe('comparison');
   });
 
   it('reports the master-off summary as "off = total" for every category', () => {
@@ -69,8 +69,8 @@ describe('DetailedSettingsScreen (Phase 0)', () => {
         onOpenCategory={() => undefined}
       />,
     );
-    // The semantics row has 5 toggles, all marked off by master.
-    const semanticsRow = screen.getByTestId('detailed-category-row-semantics');
-    expect(semanticsRow.textContent).toMatch(/5\/5/);
+    // The comparison row has 2 toggles, all marked off by master.
+    const comparisonRow = screen.getByTestId('detailed-category-row-comparison');
+    expect(comparisonRow.textContent).toMatch(/2\/2/);
   });
 });

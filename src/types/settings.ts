@@ -3,6 +3,66 @@ export type Theme = 'system' | 'dark' | 'light' | 'midnight';
 export type ScaffoldingResizeMode = 'preserve-ratio' | 'dynamic-resize' | 'stretch';
 
 /**
+ * §Phase 7 — semantics preset. A named bundle of the five semantic flags
+ * below. The "scratch" preset is byte-identical to the upstream
+ * scratch-vm defaults (= all flags off). The "low-risk-js" / "full-js"
+ * presets trade Scratch compatibility for closer alignment with JS /
+ * web standards. "custom" is the user-edited escape hatch: the named
+ * preset field is preserved but the per-flag values are owned by the
+ * user. The `semantics.preset` runtime key is forwarded to
+ * `vm.runtime.setCompilerOptions({ semantics: { ... } })` so the
+ * vendored scratch-vm can switch on it.
+ */
+export type SemanticPreset = 'scratch' | 'low-risk-js' | 'full-js' | 'custom';
+
+/**
+ * §Phase 7 — observably-different semantic flags. Each flag changes how
+ * the runtime evaluates a comparison / arithmetic / coercion that
+ * otherwise differs between Scratch and JS. Default values are
+ * Scratch-compatible (= all `false`).
+ */
+export interface SemanticOptions {
+  /**
+   * Named preset that bundles the five flags below. When the user
+   * explicitly selects a preset, the preset's flag values win over the
+   * individual flags; when the user edits an individual flag the
+   * preset flips to `'custom'`. Persisted across reloads.
+   */
+  preset: SemanticPreset;
+  /**
+   * When `true`, `=` (operator_equals) uses `===` directly: a
+   * type-mixed comparison (`1 === "1"`) returns `false` instead of
+   * `true`. Scratch normalises both sides via `Cast.toNumber` first,
+   * which makes `"1" === 1` true.
+   */
+  strictNumericEquality: boolean;
+  /**
+   * When `true`, string `contains` / `indexOf` / `=` is case-sensitive
+   * (matches JS). Scratch default is case-insensitive.
+   */
+  caseSensitiveStrings: boolean;
+  /**
+   * When `true`, arithmetic on `NaN` propagates the `NaN` through the
+   * chain instead of short-circuiting to `0`. Scratch converts `NaN`
+   * to `0` for any arithmetic input, which makes `0 / 0` evaluate to
+   * `0` rather than `NaN`.
+   */
+  propagateNaN: boolean;
+  /**
+   * When `true`, `mod` uses JS truncated modulo (sign matches the
+   * dividend: `(-7) % 3 === -1`). Scratch uses floored modulo
+   * (`(-7) % 3 === 2`).
+   */
+  truncatedModulo: boolean;
+  /**
+   * When `true`, boolean coercion uses JS truthy / falsy semantics:
+   * the empty string and `"0"` become truthy, `"false"` becomes
+   * truthy. Scratch treats both as falsy.
+   */
+  jsTruthyBooleans: boolean;
+}
+
+/**
  * Sandbox mode for custom extensions loaded from a project.
  *
  *  - 'worker':      run inside a Web Worker. Most isolated; same as
@@ -109,6 +169,14 @@ export interface AdvancedSettings {
    * explicitly opt out.
    */
   customBlockInliningEnabled: boolean;
+  /**
+   * §Phase 7 — semantic preset + per-flag toggle bundle. Forwarded to
+   * `vm.runtime.setCompilerOptions({ semantics: ... })` so the vendored
+   * scratch-vm can opt into JS-aligned comparison / modulo / NaN
+   * semantics. Default preset is `'scratch'` (= all flags off =
+   * byte-identical to upstream scratch-vm).
+   */
+  semantics: SemanticOptions;
 }
 
 /**

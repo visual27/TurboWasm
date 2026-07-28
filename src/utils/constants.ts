@@ -1,4 +1,4 @@
-import type { AdvancedSettings } from '@/types/settings';
+import type { AdvancedSettings, SemanticOptions } from '@/types/settings';
 import {
   DETAILED_OPTIMIZATIONS_BY_CATEGORY,
 } from '@/features/settings/constants';
@@ -8,6 +8,48 @@ import type {
 } from '@/features/settings/types';
 
 export const APP_NAME = 'TurboWasm Viewer';
+
+/**
+ * §Phase 7 — Scratch-compatible default for the semantics bundle. All
+ * five flags off so a freshly-installed viewer behaves byte-identical
+ * to upstream scratch-vm (= the existing user projects do not silently
+ * shift to JS semantics after the v12 → v13 bump).
+ */
+export const DEFAULT_SEMANTIC_OPTIONS: SemanticOptions = {
+  preset: 'scratch',
+  strictNumericEquality: false,
+  caseSensitiveStrings: false,
+  propagateNaN: false,
+  truncatedModulo: false,
+  jsTruthyBooleans: false,
+};
+
+/**
+ * §Phase 7 — bundle the five semantic flags behind the named presets.
+ * The scratch preset (= DEFAULT_SEMANTIC_OPTIONS) is the default; the
+ * two JS-aligned presets are opt-in for power-users. The "custom"
+ * preset is intentionally absent — it never appears as a default; it
+ * is only assigned when the user edits one of the individual flags.
+ */
+export const SEMANTIC_PRESETS: Readonly<Record<string, SemanticOptions>> = {
+  scratch: { ...DEFAULT_SEMANTIC_OPTIONS, preset: 'scratch' },
+  'low-risk-js': {
+    preset: 'low-risk-js',
+    strictNumericEquality: false,
+    caseSensitiveStrings: true,
+    propagateNaN: false,
+    truncatedModulo: true,
+    jsTruthyBooleans: false,
+  },
+  'full-js': {
+    preset: 'full-js',
+    strictNumericEquality: true,
+    caseSensitiveStrings: true,
+    propagateNaN: true,
+    truncatedModulo: true,
+    jsTruthyBooleans: true,
+  },
+};
 
 export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   fps: 30,
@@ -25,6 +67,7 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   turboWasmAccelerationEnabled: true,
   enableWebgpu: true,
   customBlockInliningEnabled: true,
+  semantics: { ...DEFAULT_SEMANTIC_OPTIONS },
 };
 
 export const DEFAULT_ALLOWED_EXTENSION_URLS: readonly string[] = [];
@@ -102,7 +145,19 @@ export const STORAGE_KEYS = {
 // keeps the default-on behaviour. v12 itself writes the map on every
 // `schedulePersist` / `persistImmediate` via
 // `src/lib/persistence.ts:writeSettings`.
-export const STORAGE_VERSION = 12;
+// Bumped to 13 in Phase 7. Adds `advanced.semantics: SemanticOptions`
+// (= `preset` + 5 per-flag booleans) so the user's semantic-preset /
+// per-flag choices persist across reloads. v12 payloads are missing
+// the field; `sanitizeAdvanced` seeds it from
+// `DEFAULT_SEMANTIC_OPTIONS` (= `'scratch'` preset = all flags off =
+// byte-identical to upstream scratch-vm). v13 itself writes the
+// semantics field on every `persistImmediate` / `schedulePersist` via
+// `src/lib/persistence.ts:writeSettings`. Phase 7 also removes the
+// five `semantics.*` rows from `DETAILED_OPTIMIZATIONS_BY_CATEGORY`
+// (= those were cosmetic UI-only toggles with no runtime gate) so the
+// `detailedOptimizations` map's keys map 1:1 to compiler-options
+// toggles with a vendored runtime gate.
+export const STORAGE_VERSION = 13;
 
 /**
  * §Phase 5 (gpu-kernel-dsl-phase5-spec §5.1) — maximum recursion depth

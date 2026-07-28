@@ -2,6 +2,8 @@ import { DEFAULT_ENABLE_WASM, STORAGE_KEYS, STORAGE_VERSION } from '@/utils/cons
 import type {
   AdvancedSettings,
   ExtensionSandboxMode,
+  SemanticOptions,
+  SemanticPreset,
   SettingsStoreSerialized,
   SettingsStoreShape,
   Theme,
@@ -11,6 +13,7 @@ import {
   DEFAULT_ADVANCED_SETTINGS,
   DEFAULT_ALLOWED_EXTENSION_URLS,
   DEFAULT_DETAILED_OPTIMIZATIONS,
+  DEFAULT_SEMANTIC_OPTIONS,
 } from '@/utils/constants';
 import type { DetailedOptimizationId, DetailedOptimizationMap } from '@/features/settings/types';
 import { clampFps, clampStageHeight, clampStageWidth, clampVolume } from '@/utils/format';
@@ -64,6 +67,42 @@ function isTheme(v: unknown): v is Theme {
 
 function isExtensionSandboxMode(v: unknown): v is ExtensionSandboxMode {
   return v === 'worker' || v === 'iframe' || v === 'unsandboxed';
+}
+
+function isSemanticPreset(v: unknown): v is SemanticPreset {
+  return v === 'scratch' || v === 'low-risk-js' || v === 'full-js' || v === 'custom';
+}
+
+/**
+ * §Phase 7 — sanitize the nested `advanced.semantics: SemanticOptions`.
+ * The same permissive `typeof` style as `sanitizeAdvanced`: missing or
+ * malformed fields fall back to `DEFAULT_SEMANTIC_OPTIONS` (= scratch
+ * preset + all flags off). v12 payloads (= pre-Phase 7) are missing the
+ * `semantics` field entirely; `sanitizeAdvanced` calls this helper with
+ * `r.semantics === undefined` so the silent seed produces the scratch
+ * preset (= byte-identical to upstream scratch-vm).
+ */
+function sanitizeSemanticOptions(input: unknown): SemanticOptions {
+  const base = DEFAULT_SEMANTIC_OPTIONS;
+  if (!input || typeof input !== 'object') return { ...base };
+  const r = input as Record<string, unknown>;
+  return {
+    preset: isSemanticPreset(r.preset) ? r.preset : base.preset,
+    strictNumericEquality:
+      typeof r.strictNumericEquality === 'boolean'
+        ? r.strictNumericEquality
+        : base.strictNumericEquality,
+    caseSensitiveStrings:
+      typeof r.caseSensitiveStrings === 'boolean'
+        ? r.caseSensitiveStrings
+        : base.caseSensitiveStrings,
+    propagateNaN:
+      typeof r.propagateNaN === 'boolean' ? r.propagateNaN : base.propagateNaN,
+    truncatedModulo:
+      typeof r.truncatedModulo === 'boolean' ? r.truncatedModulo : base.truncatedModulo,
+    jsTruthyBooleans:
+      typeof r.jsTruthyBooleans === 'boolean' ? r.jsTruthyBooleans : base.jsTruthyBooleans,
+  };
 }
 
 /**
@@ -125,6 +164,13 @@ function sanitizeAdvanced(input: unknown, forceDisableCompilerOff: boolean): Adv
       typeof r.customBlockInliningEnabled === 'boolean'
         ? r.customBlockInliningEnabled
         : base.customBlockInliningEnabled,
+    // §Phase 7 — v12 → v13 migration silently seeds `semantics` from
+    // `DEFAULT_SEMANTIC_OPTIONS` (= `'scratch'` preset, all flags off)
+    // when the field is missing. v12 payloads that pre-date Phase 7
+    // land here byte-identical to upstream scratch-vm; the runtime
+    // continues to behave as before until the user explicitly opts
+    // into a non-Scratch preset via the Semantics settings panel.
+    semantics: sanitizeSemanticOptions(r.semantics),
     // v8 → v9 → v10 migration: `nestedParallelizationEnabled` was
     // retired in Phase 4 (BREAKING). The field is silently dropped on
     // read — a saved `true` value from a v9 payload does not leak

@@ -54,6 +54,7 @@ const APPLIED_MARKERS: readonly string[] = [
   '// TurboWasm: list / scalar buffer accessors',
   '// TurboWasm: procedure-lazy-cache',
   '// TurboWasm: procedure-definition-entry-prototype-substack',
+  '// TurboWasm: semantics-compiler-options',
 ];
 
 // Reference-only markers — checked in `patches/vendored/*.patch` ONLY.

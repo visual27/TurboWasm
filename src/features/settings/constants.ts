@@ -6,6 +6,15 @@ import type { DetailedCategoryId, DetailedOptimizationId } from './types';
  * updating the matching `DetailedOptimizationId` union in `types.ts`,
  * this map, and the master default map in `utils/constants.ts` —
  * missing entries surface as `enabled: false` until patched.
+ *
+ * §Phase 7 — the `semantics` category was removed from the detailed
+ * screen. The five semantic flags (= `semantics.truncatedModulo` etc.)
+ * moved to the dedicated Semantics settings panel (= under the root
+ * settings list, not the Detailed Settings sub-screen) so they share
+ * one `AdvancedSettings.semantics: SemanticOptions` field instead of
+ * five independent rows on the detailed-optimization map. The
+ * detailed-optimization map now exclusively carries compiler-option
+ * toggles (= one per vendored scratch-vm runtime gate).
  */
 export const DETAILED_CATEGORY_LABELS: Readonly<Record<DetailedCategoryId, string>> = {
   'compat-layer': 'Compatibility Layer',
@@ -13,7 +22,6 @@ export const DETAILED_CATEGORY_LABELS: Readonly<Record<DetailedCategoryId, strin
   comparison: 'Comparison',
   'data-structures': 'Data Structures',
   compiler: 'Compiler',
-  semantics: 'Semantics',
 } as const;
 
 export const DETAILED_CATEGORY_DESCRIPTIONS: Readonly<Record<DetailedCategoryId, string>> = {
@@ -26,8 +34,6 @@ export const DETAILED_CATEGORY_DESCRIPTIONS: Readonly<Record<DetailedCategoryId,
   'data-structures':
     'Evaluate maps and constants eagerly when the inputs are compile-time-known.',
   compiler: 'Research rows for upcoming compiler-side experiments.',
-  semantics:
-    'Adjust equality / modulo / NaN semantics. These change observable project output.',
 } as const;
 
 export const DETAILED_CATEGORY_ORDER: readonly DetailedCategoryId[] = [
@@ -36,7 +42,6 @@ export const DETAILED_CATEGORY_ORDER: readonly DetailedCategoryId[] = [
   'comparison',
   'data-structures',
   'compiler',
-  'semantics',
 ] as const;
 
 export const DETAILED_OPTIMIZATIONS_BY_CATEGORY: Readonly<
@@ -52,13 +57,6 @@ export const DETAILED_OPTIMIZATIONS_BY_CATEGORY: Readonly<
   comparison: ['comparison.shortCircuit', 'comparison.infinityBranchRemoval'],
   'data-structures': ['data.mapConversionEvaluation', 'data.constantFolding'],
   compiler: ['compiler.generatorGranularityResearch'],
-  semantics: [
-    'semantics.truncatedModulo',
-    'semantics.caseSensitiveStrings',
-    'semantics.strictNumericEquality',
-    'semantics.jsTruthyBooleans',
-    'semantics.propagateNaN',
-  ],
 };
 
 export const DETAILED_OPTIMIZATION_LABELS: Readonly<Record<DetailedOptimizationId, string>> = {
@@ -72,11 +70,6 @@ export const DETAILED_OPTIMIZATION_LABELS: Readonly<Record<DetailedOptimizationI
   'data.mapConversionEvaluation': 'Map Conversion Evaluation',
   'data.constantFolding': 'Constant Folding',
   'compiler.generatorGranularityResearch': 'Generator Granularity (Research)',
-  'semantics.truncatedModulo': 'Truncated Modulo',
-  'semantics.caseSensitiveStrings': 'Case-Sensitive Strings',
-  'semantics.strictNumericEquality': 'Strict Numeric Equality',
-  'semantics.jsTruthyBooleans': 'JS-Truthy Booleans',
-  'semantics.propagateNaN': 'Propagate NaN',
 };
 
 export const DETAILED_OPTIMIZATION_DESCRIPTIONS: Readonly<
@@ -102,14 +95,60 @@ export const DETAILED_OPTIMIZATION_DESCRIPTIONS: Readonly<
     '§Phase 3 — adopted. Fold compile-time-constant boolean / numeric / string operators (`OP_NOT` / `OP_AND` / `OP_OR` / `OP_ADD/SUB/MUL/DIV` / `OP_EQUALS` / `OP_LESS` / `OP_GREATER` / `OP_JOIN`). Both operands must be `CONSTANT` and the result\'s type bitset is preserved via `IntermediateInput.getNumberInputType` (= NaN / Infinity / -0). Toggling off calls `setCompilerOptions({ constantFoldingEnabled: false })` and clears the compile cache; subsequent compiles go through the original IR without fold. Defaults to ON.',
   'compiler.generatorGranularityResearch':
     'Research row for upcoming generator-granularity experiments. Off by default.',
-  'semantics.truncatedModulo':
-    'Apply truncated modulo semantics to `%` (changes sign of result for negative inputs).',
-  'semantics.caseSensitiveStrings':
-    'Make string contains / index-of / equals case-sensitive.',
-  'semantics.strictNumericEquality':
-    'Reject type coercion in `=` when one operand is a numeric string.',
-  'semantics.jsTruthyBooleans':
-    'Treat "0" / "false" / empty strings as JS-truthy (matches upstream).',
-  'semantics.propagateNaN':
-    'Propagate NaN through chained operators without short-circuiting.',
+};
+
+/**
+ * §Phase 7 — display labels for the five semantic flags + the four
+ * presets that drive `AdvancedSettings.semantics`. The runtime key
+ * (`semantics.truncatedModulo` etc.) was previously listed under the
+ * `semantics.*` namespace on `DetailedOptimizationId`; the runtime
+ * key has moved to `SemanticOptions[flag]` (= a nested field on
+ * `advanced.semantics`) so this map is the single source of truth
+ * for the Semantics settings panel's labels.
+ */
+export const SEMANTIC_FLAG_LABELS: Readonly<Record<string, string>> = {
+  strictNumericEquality: 'Strict Numeric Equality',
+  caseSensitiveStrings: 'Case-sensitive Strings',
+  propagateNaN: 'Propagate NaN',
+  truncatedModulo: 'Truncated Modulo',
+  jsTruthyBooleans: 'JS Truthy Booleans',
+};
+
+export const SEMANTIC_FLAG_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  strictNumericEquality:
+    'Use `===` directly. Type-mixed comparisons return false instead of coercing.',
+  caseSensitiveStrings:
+    'String comparisons treat case as distinct. Most user-visible change.',
+  propagateNaN:
+    'Do not convert NaN to 0. Errors propagate silently through arithmetic.',
+  truncatedModulo:
+    'Use JS `%` (truncated) instead of Scratch floored modulo.',
+  jsTruthyBooleans:
+    'Use JS truthy / falsy. Empty strings and "0" become true.',
+};
+
+export const SEMANTIC_FLAG_ORDER: readonly (keyof import('@/types/settings').SemanticOptions)[] = [
+  'truncatedModulo',
+  'caseSensitiveStrings',
+  'strictNumericEquality',
+  'jsTruthyBooleans',
+  'propagateNaN',
+] as const;
+
+export const SEMANTIC_PRESET_LABELS: Readonly<Record<string, string>> = {
+  scratch: 'Scratch (default)',
+  'low-risk-js': 'Low-risk JS',
+  'full-js': 'Full JS',
+  custom: 'Custom',
+};
+
+export const SEMANTIC_PRESET_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  scratch:
+    'All flags off. Byte-identical to upstream scratch-vm. Default for new projects.',
+  'low-risk-js':
+    'Closest alignment with JS that keeps Scratch-compatible behaviour on arithmetic. Sets caseSensitiveStrings and truncatedModulo only.',
+  'full-js':
+    'Full JS alignment: strictNumericEquality, caseSensitiveStrings, propagateNaN, truncatedModulo, jsTruthyBooleans all on.',
+  custom:
+    'User-edited bundle. Edit individual flags below to lock in your own combination.',
 };

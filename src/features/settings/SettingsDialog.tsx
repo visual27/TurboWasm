@@ -32,6 +32,7 @@ import type {
 } from '@/features/settings/types';
 import { DetailedSettingsScreen } from '@/features/settings/DetailedSettingsScreen';
 import { DetailedCategoryScreen } from '@/features/settings/DetailedCategoryScreen';
+import { SemanticsScreen } from '@/features/settings/SemanticsScreen';
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -431,7 +432,8 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
   advanced,
   patch,
   onOpenDetailed,
-}: RuntimeSectionProps & { onOpenDetailed?: () => void }): React.JSX.Element {
+  onOpenSemantics,
+}: RuntimeSectionProps & { onOpenDetailed?: () => void; onOpenSemantics?: () => void }): React.JSX.Element {
   const enableWasm = useSettingsStore((s) => s.enableWasm);
   const setEnableWasm = useSettingsStore((s) => s.setEnableWasm);
   // §Phase 1 — the master switch drives `toggleTurboWasmMaster(value)`
@@ -501,6 +503,27 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
           ariaLabel="Custom Block Inlining toggle"
         />
       </FieldRow>
+      {/* §Phase 7 — entry point to the Semantics settings panel. The
+          row shows the current preset so the user knows the active
+          semantics at a glance without having to navigate. Disabled
+          when the master toggle is off (= runtime gate is skipped,
+          so toggling presets would be a UI lie). */}
+      <ClickableFieldRow
+        id="semantics-settings"
+        label="Semantics"
+        description={`Comparison / modulo / NaN / truthy semantics. Active preset: ${advanced.semantics.preset}. Disabled when TurboWasm Acceleration is OFF.`}
+        onClick={() => onOpenSemantics?.()}
+        disabled={!advanced.turboWasmAccelerationEnabled}
+        ariaLabel="Open semantics settings"
+        testId="settings-semantics-row"
+      >
+        <span
+          aria-hidden="true"
+          className="text-xs uppercase tracking-[0.2em] text-muted-foreground"
+        >
+          {advanced.semantics.preset}
+        </span>
+      </ClickableFieldRow>
       {/* §Phase 4 BREAKING — the `Nested @compute (Experimental)` toggle
           was retired alongside the v9 nested-parallelization feature.
           The new loose-position DSL (`@compute` on `control_repeat`
@@ -673,6 +696,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
                   advanced={advanced}
                   patch={patch}
                   onOpenDetailed={() => push({ kind: 'detailed' })}
+                  onOpenSemantics={() => push({ kind: 'semantics' })}
                 />
                 <OthersSection advanced={advanced} patch={patch} />
               </>
@@ -692,6 +716,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
                 masterOn={advanced.turboWasmAccelerationEnabled}
                 detailed={detailedOptimizations}
                 onToggle={setDetailedOptimization}
+              />
+            )}
+            {view.kind === 'semantics' && (
+              <SemanticsScreen
+                masterOn={advanced.turboWasmAccelerationEnabled}
+                semantics={advanced.semantics}
+                onPatch={useSettingsStore.getState().patchSemantic}
+                onApplyPreset={useSettingsStore.getState().applySemanticPreset}
               />
             )}
           </div>

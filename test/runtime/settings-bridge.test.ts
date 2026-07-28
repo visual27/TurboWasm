@@ -117,6 +117,14 @@ describe('applyAdvancedSettings: VM API mapping', () => {
       // §Phase 4A / 4B opt-in — defaults are OFF.
       branchInfoPoolEnabled: false,
       mapConversionEnabled: false,
+      // §Phase 7 — semantics bundle (default = scratch preset, all flags off).
+      semantics: {
+        strictNumericEquality: false,
+        caseSensitiveStrings: false,
+        propagateNaN: false,
+        truncatedModulo: false,
+        jsTruthyBooleans: false,
+      },
     });
   });
 
@@ -289,6 +297,14 @@ describe('applyAdvancedSettings — master TurboWasm Acceleration gate (Phase 0)
       // §Phase 4A / 4B opt-in — defaults are OFF (= legacy byte-identical).
       branchInfoPoolEnabled: false,
       mapConversionEnabled: false,
+      // §Phase 7 — semantics bundle.
+      semantics: {
+        strictNumericEquality: false,
+        caseSensitiveStrings: false,
+        propagateNaN: false,
+        truncatedModulo: false,
+        jsTruthyBooleans: false,
+      },
     });
   });
 });
@@ -308,6 +324,14 @@ describe('applyAdvancedSettings — constantFoldingEnabled gate (Phase 3)', () =
       // §Phase 4A / 4B opt-in — defaults are OFF.
       branchInfoPoolEnabled: false,
       mapConversionEnabled: false,
+      // §Phase 7 — semantics bundle.
+      semantics: {
+        strictNumericEquality: false,
+        caseSensitiveStrings: false,
+        propagateNaN: false,
+        truncatedModulo: false,
+        jsTruthyBooleans: false,
+      },
     });
   });
 
@@ -329,10 +353,79 @@ describe('applyAdvancedSettings — constantFoldingEnabled gate (Phase 3)', () =
       // §Phase 4A / 4B opt-in — defaults are OFF.
       branchInfoPoolEnabled: false,
       mapConversionEnabled: false,
+      // §Phase 7 — semantics bundle.
+      semantics: {
+        strictNumericEquality: false,
+        caseSensitiveStrings: false,
+        propagateNaN: false,
+        truncatedModulo: false,
+        jsTruthyBooleans: false,
+      },
     });
   });
 
   it('omits the constantFoldingEnabled call when the master toggle is OFF', () => {
+    const { vm, setCompilerOptions } = makeVm();
+    applyAdvancedSettings(
+      makeScaffolding(vm),
+      { ...DEFAULT_ADVANCED_SETTINGS, turboWasmAccelerationEnabled: false },
+      DEFAULT_DETAILED_OPTIMIZATIONS,
+    );
+    expect(setCompilerOptions).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyAdvancedSettings — semantics bundle (§Phase 7)', () => {
+  it('forwards the full semantics bag to setCompilerOptions (default scratch)', () => {
+    const { vm, setCompilerOptions } = makeVm();
+    applyAdvancedSettings(
+      makeScaffolding(vm),
+      DEFAULT_ADVANCED_SETTINGS,
+      DEFAULT_DETAILED_OPTIMIZATIONS,
+    );
+    expect(setCompilerOptions).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        semantics: {
+          strictNumericEquality: false,
+          caseSensitiveStrings: false,
+          propagateNaN: false,
+          truncatedModulo: false,
+          jsTruthyBooleans: false,
+        },
+      }),
+    );
+  });
+
+  it('forwards the full semantics bag with the active preset (= low-risk-js)', () => {
+    const { vm, setCompilerOptions } = makeVm();
+    applyAdvancedSettings(
+      makeScaffolding(vm),
+      {
+        ...DEFAULT_ADVANCED_SETTINGS,
+        semantics: {
+          preset: 'low-risk-js',
+          strictNumericEquality: false,
+          caseSensitiveStrings: true,
+          propagateNaN: false,
+          truncatedModulo: true,
+          jsTruthyBooleans: false,
+        },
+      },
+      DEFAULT_DETAILED_OPTIMIZATIONS,
+    );
+    expect(setCompilerOptions).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        semantics: expect.objectContaining({
+          caseSensitiveStrings: true,
+          truncatedModulo: true,
+        }),
+      }),
+    );
+  });
+
+  it('omits the semantics payload when the master toggle is OFF', () => {
+    // Master OFF means `setCompilerOptions` is not called at all
+    // (= the runtime gate in `applyAdvancedSettings` skips the call).
     const { vm, setCompilerOptions } = makeVm();
     applyAdvancedSettings(
       makeScaffolding(vm),

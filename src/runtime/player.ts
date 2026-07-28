@@ -11,12 +11,14 @@ import {
 } from '@/runtime/extension-urls';
 import { setupScratchAssetStore } from '@/runtime/asset-store';
 import { relayoutScaffolding } from '@/lib/scaffolding';
+import { useErrorLogStore } from '@/stores/useErrorLogStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlayerStore } from '@/stores/usePlayerStore';
 import type { ScaffoldingInstance } from '@/runtime/scaffolding-types';
 import { applyPreSetupConfig, ensureSetup, getScaffolding } from '@/lib/scaffolding';
 import { readTwconfigFromArrayBuffer, buildProjectAdvanced } from '@/runtime/twconfig';
 import type { AdvancedSettings, ExtensionSandboxMode } from '@/types/settings';
+import { DEFAULT_SEMANTIC_OPTIONS } from '@/utils/constants';
 import { buildPreSetupConfig } from '@/runtime/pre-setup';
 import { isValidProjectFile } from '@/lib/validation';
 import { setCloudProvider, getCloudProvider } from '@/runtime/cloud-provider';
@@ -717,6 +719,7 @@ function getCurrentAdvanced(): AdvancedSettings {
     turboWasmAccelerationEnabled: true,
     enableWebgpu: true,
     customBlockInliningEnabled: true,
+    semantics: { ...DEFAULT_SEMANTIC_OPTIONS },
   };
 }
 
@@ -737,6 +740,7 @@ function defaultAdvanced(): AdvancedSettings {
     turboWasmAccelerationEnabled: true,
     enableWebgpu: true,
     customBlockInliningEnabled: true,
+    semantics: { ...DEFAULT_SEMANTIC_OPTIONS },
   };
 }
 
@@ -819,6 +823,21 @@ export function applySettings(
     currentAdvanced,
     useSettingsStore.getState().detailedOptimizations,
   );
+  // §Phase 7 — surface a one-shot warning when the resolved semantics
+  // preset (= from baseline + twconfig merge) is anything other than
+  // `'scratch'`. This is the only user-facing channel for the project
+  // twconfig setting a non-Scratch preset; the dialog and the runtime
+  // do not surface the preset on their own. We push via the dedup
+  // bucket keyed on the preset name so reloading the same project
+  // doesn't spam the log.
+  const semantics = advanced.semantics;
+  if (semantics && semantics.preset !== 'scratch') {
+    useErrorLogStore.getState().pushOnce(
+      'warn',
+      `[semantics] Active preset is '${semantics.preset}'. Scratch compatibility may be reduced.`,
+      `semantics.preset.${semantics.preset}`,
+    );
+  }
   const vm = asVm(attachedScaffolding.vm);
   if (vm.setStageSize) {
     const runtimeBefore = vm.runtime as unknown as { stageWidth?: number; stageHeight?: number };
@@ -1287,6 +1306,23 @@ export async function loadProjectFromArrayBuffer(
       // `applyRuntimeOverrides({})` is a fast `buildProjectAdvanced(defaultAdvanced, {})`
       // call, so the cost is one extra Zustand notification per load.
       useSettingsStore.getState().applyRuntimeOverrides(overrides);
+      // §Phase 7 — surface a one-shot warning when the project's
+      // twconfig (= baseline + overrides) flipped the semantics preset
+      // to anything other than `'scratch'`. Uses the dedup bucket
+      // keyed on the preset name so reloading the same project doesn't
+      // spam the log; the user can reset the bucket via the error
+      // panel's clear / dismiss path (= the log entry's dedup key is
+      // independent of the entry lifecycle so the same preset can be
+      // re-warned after the user picks `'scratch'` and then flips
+      // back via twconfig).
+      const mergedSemantics = currentAdvanced.semantics;
+      if (mergedSemantics.preset !== 'scratch') {
+        useErrorLogStore.getState().pushOnce(
+          'warn',
+          `[semantics] Active preset is '${mergedSemantics.preset}'. Scratch compatibility may be reduced.`,
+          `semantics.preset.${mergedSemantics.preset}`,
+        );
+      }
   }
   // Always apply the resolved settings so Scaffolding's internal width/height
   // and the React-side settings are in sync — even when there are no twconfig

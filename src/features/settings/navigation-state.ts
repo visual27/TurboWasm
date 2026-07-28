@@ -60,6 +60,12 @@ function labelFor(entry: SettingsViewEntry): string | null {
       return 'Detailed Settings';
     case 'detailed-category':
       return categoryLabel(entry.categoryId);
+    case 'semantics':
+      // §Phase 7 — the Semantics settings panel. Lives at the same
+      // level as the Detailed Settings sub-tree (one click from the
+      // root) so the user can flip semantic presets without dropping
+      // into the compiler-options Detailed Settings.
+      return 'Semantics';
     default:
       return null;
   }
@@ -77,8 +83,6 @@ function categoryLabel(categoryId: DetailedCategoryId): string {
       return 'Data Structures';
     case 'compiler':
       return 'Compiler';
-    case 'semantics':
-      return 'Semantics';
     default:
       return categoryId;
   }
