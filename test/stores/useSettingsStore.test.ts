@@ -13,6 +13,7 @@ import {
   VOLUME_MAX,
 } from '@/utils/constants';
 import { ALLOWED_EXTENSION_URLS_MAX } from '@/types/settings';
+import type { DetailedOptimizationId } from '@/features/settings/types';
 
 function resetStore(): void {
   // Drain any debounced persist scheduled by the previous test before
@@ -594,11 +595,22 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
     resetStore();
   });
 
-  it('seeds every detailed-optimization ID with default-on true', () => {
+  it('seeds every detailed-optimization ID with default-on true except the §Phase 4A / 4B opt-ins', () => {
     const map = useSettingsStore.getState().detailedOptimizations;
     expect(map).toEqual(DEFAULT_DETAILED_OPTIMIZATIONS);
-    for (const value of Object.values(map)) {
-      expect(value).toBe(true);
+    // §Phase 4A / 4B opt-in — defaults are OFF (= legacy byte-identical)
+    // so existing user projects are unaffected until the user explicitly
+    // enables the toggle via the detailed Settings screen.
+    const optInIds = new Set<DetailedOptimizationId>([
+      'compatLayer.branchInfoReuse',
+      'data.mapConversionEvaluation',
+    ]);
+    for (const [id, value] of Object.entries(map)) {
+      if (optInIds.has(id as DetailedOptimizationId)) {
+        expect(value, `${id} must default to false (§Phase 4A/4B opt-in)`).toBe(false);
+      } else {
+        expect(value, `${id} must default to true`).toBe(true);
+      }
     }
   });
 

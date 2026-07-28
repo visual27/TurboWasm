@@ -213,11 +213,23 @@ describe('persistence: v11 → v12 migration (§Phase 1)', () => {
 
     const settings = readSettings();
     expect(settings.detailedOptimizations).toEqual(DEFAULT_DETAILED_OPTIMIZATIONS);
-    // Every shipped ID should be on.
+    // Every shipped ID should be on, except the §Phase 4A / 4B opt-ins
+    // which default to `false` (= legacy byte-identical). The migration
+    // seeds the new v11 payload by reading `DEFAULT_DETAILED_OPTIMIZATIONS`
+    // (= the only source of truth for the per-ID default), so the
+    // opt-in defaults propagate without code duplication here.
+    const optInIds = new Set([
+      'compatLayer.branchInfoReuse',
+      'data.mapConversionEvaluation',
+    ]);
     for (const id of Object.keys(DEFAULT_DETAILED_OPTIMIZATIONS) as Array<
       keyof typeof DEFAULT_DETAILED_OPTIMIZATIONS
     >) {
-      expect(settings.detailedOptimizations[id]).toBe(true);
+      const expected = optInIds.has(id) ? false : true;
+      expect(
+        settings.detailedOptimizations[id],
+        `${id} must default to ${expected} (§Phase 4A/4B opt-in seed)`,
+      ).toBe(expected);
     }
   });
 

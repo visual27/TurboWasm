@@ -134,6 +134,14 @@ export const DEFAULT_ENABLE_WASM = true;
  * `availableInMaster`). All IDs default-on so the Settings UI matches
  * the upstream behaviour until the user explicitly opts out.
  *
+ * §Phase 4A opt-in exception: `compatLayer.branchInfoReuse` defaults to
+ * `false` (= legacy allocate-once-per-branch, behaviour identical to
+ * upstream scratch-vm). The user opts in via the detailed Settings screen
+ * when they want the per-thread branchInfo pool (= 97% heapDelta reduction
+ * in microbench). Defaulting to false means existing user projects are
+ * byte-identical (= no risk) until the user explicitly enables the
+ * feature.
+ *
  * Stored in `Record<DetailedOptimizationId, boolean>` rather than
  * `Map` so deep-equal assertions (`toEqual`) work and JSON serialise
  * stays trivial when Phase 1+ introduces persistence.
@@ -142,9 +150,18 @@ export const DEFAULT_DETAILED_OPTIMIZATIONS: DetailedOptimizationMap = (() => {
   const ids: DetailedOptimizationId[] = Object.values(
     DETAILED_OPTIMIZATIONS_BY_CATEGORY,
   ).flat();
+  // §Phase 4A / 4B opt-in — see comment above. All other IDs default to
+  // `true` (= shipped behaviour). These IDs default to `false` (= legacy,
+  // identical to upstream):
+  //   - `compatLayer.branchInfoReuse` (§Phase 4A) → branchInfo pool
+  //   - `data.mapConversionEvaluation` (§Phase 4B) → Blocks._cache Map
+  const optInIds = new Set<DetailedOptimizationId>([
+    'compatLayer.branchInfoReuse',
+    'data.mapConversionEvaluation',
+  ]);
   return Object.freeze(
     ids.reduce<Record<DetailedOptimizationId, boolean>>((acc, id) => {
-      acc[id] = true;
+      acc[id] = !optInIds.has(id);
       return acc;
     }, {} as Record<DetailedOptimizationId, boolean>),
   );

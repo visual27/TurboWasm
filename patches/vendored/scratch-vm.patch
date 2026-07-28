@@ -1,808 +1,5 @@
-﻿diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
-index 61d69cd..7bba767 100644
---- a/src/compiler/jsexecute.js
-+++ b/src/compiler/jsexecute.js
-@@ -137,31 +137,31 @@ const isPromise = value => (
-     typeof value === 'object' &&
-     typeof value.then === 'function'
- );
-+// TurboWasm: compat-layer-finish-extracted
-+const finishCompatibilityCall = (returnValue, branchInfo, blockUtility) => {
-+    if (branchInfo) {
-+        if (typeof returnValue === 'undefined' && blockUtility._startedBranch) {
-+            branchInfo.isLoop = blockUtility._startedBranch[1];
-+            return blockUtility._startedBranch[0];
-+        }
-+        branchInfo.isLoop = branchInfo.defaultIsLoop;
-+        return returnValue;
-+    }
-+    return returnValue;
-+};
- const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, useFlags, blockId, branchInfo) {
-     const thread = globalState.thread;
-     const blockUtility = globalState.blockUtility;
-     const stackFrame = branchInfo ? branchInfo.stackFrame : {};
- 
--    const finish = (returnValue) => {
--        if (branchInfo) {
--            if (typeof returnValue === 'undefined' && blockUtility._startedBranch) {
--                branchInfo.isLoop = blockUtility._startedBranch[1];
--                return blockUtility._startedBranch[0];
--            }
--            branchInfo.isLoop = branchInfo.defaultIsLoop;
--            return returnValue;
--        }
--        return returnValue;
--    };
--
--    const executeBlock = () => {
--        blockUtility.init(thread, blockId, stackFrame);
--        return blockFunction(inputs, blockUtility);
--    };
--
-+    blockUtility.init(thread, blockId, stackFrame);
-+    let returnValue = blockFunction(inputs, blockUtility);
--    let returnValue = executeBlock();
-     if (isPromise(returnValue)) {
--        returnValue = finish(yield* waitPromise(returnValue));
-+        returnValue = finishCompatibilityCall(
-+            yield* waitPromise(returnValue),
-+            branchInfo,
-+            blockUtility
-+        );
-         if (useFlags) hasResumedFromPromise = true;
-         return returnValue;
-     }
-@@ -170,7 +171,7 @@ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, use
-         // Something external is forcing us to stop
-         yield;
-         // Make up a return value because whatever is forcing us to stop can't specify one
--        return '';
-+        return finishCompatibilityCall('', branchInfo, blockUtility);
-     }
- 
-     while (thread.status === 2 /* STATUS_YIELD */ || thread.status === 3 /* STATUS_YIELD_TICK */) {
-@@ -186,22 +187,28 @@ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, use
-             yield;
-         }
- 
--        returnValue = executeBlock();
-+        blockUtility.init(thread, blockId, stackFrame);
-+        returnValue = blockFunction(inputs, blockUtility);
-+
-         if (isPromise(returnValue)) {
--            returnValue = finish(yield* waitPromise(returnValue));
-+            returnValue = finishCompatibilityCall(
-+                yield* waitPromise(returnValue),
-+                branchInfo,
-+                blockUtility
-+            );
-             if (useFlags) hasResumedFromPromise = true;
-             return returnValue;
-         }
- 
-         if (thread.status === 1 /* STATUS_PROMISE_WAIT */ || thread.status === 4 /* STATUS_DONE */) {
-             yield;
--            return finish('');
-+            return finishCompatibilityCall('', branchInfo, blockUtility);
-         }
-     }
- 
-     // todo: do we have to do anything extra if status is STATUS_DONE?
- 
--    return finish(returnValue);
-+    return finishCompatibilityCall(returnValue, branchInfo, blockUtility);
- }`;
- 
- /**
-@@ -292,7 +299,18 @@ baseRuntime += `const compareEqualSlow = (v1, v2) => {
-     if (Number.isNaN(n2) || (n2 === 0 && isNotActuallyZero(v2))) return ('' + v1).toLowerCase() === ('' + v2).toLowerCase();
-     return n1 === n2;
- };
--const compareEqual = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);`;
-+// TurboWasm: comparison-compare-equal-short-circuit
-+const compareEqualLegacy = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);
-+const compareEqual = (v1, v2) => {
-+    if (v1 === v2) return true;
-+    if (
-+        typeof v1 === 'number' &&
-+        typeof v2 === 'number' &&
-+        !Number.isNaN(v1) &&
-+        !Number.isNaN(v2)
-+    ) return false;
-+    return compareEqualSlow(v1, v2);
-+};`;
- 
- /**
-  * Determine if one value is greater than another.
-diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
-index ebbdc6b..2eb1325 100644
---- a/src/compiler/jsgen.js
-+++ b/src/compiler/jsgen.js
-@@ -207,8 +207,22 @@ class JSGenerator {
-         case InputOpcode.CONSTANT:
-             if (block.isAlwaysType(InputType.NUMBER)) {
-                 if (typeof node.value !== 'number') throw new Error(`JS: '${block.type}' type constant had ${typeof node.value} type value. Expected number.`);
-                 if (Object.is(node.value, -0)) return '-0';
-                 return node.value.toString();
-+            // TurboWasm: constant-folding-jsgen-nan-neg-zero-handler
-+            // Phase 3 fold (`vendored/scratch-vm/src/compiler/iroptimizer.js:tryFoldConstant`)
-+            // produces CONSTANT nodes with type NUMBER_NAN (= 0 / 0,
-+            // Infinity + (-Infinity), Infinity * 0) or NUMBER_NEG_ZERO
-+            // (= -0 - 0, 0 * -0, ...). Neither is a subset of NUMBER
-+            // (= 0x0ff) so the `isAlwaysType(NUMBER)` check above fails
-+            // and the emit would otherwise fall through to the throw.
-+            // Adding explicit cases for both restores the JS-side round-
-+            // trip: `NaN` / `-0` literals evaluate identically to the
-+            // runtime expression they replaced.
-+            } else if (block.isAlwaysType(InputType.NUMBER_NAN)) {
-+                return 'NaN';
-+            } else if (block.isAlwaysType(InputType.NUMBER_NEG_ZERO)) {
-+                return '-0';
-             } else if (block.isAlwaysType(InputType.BOOLEAN)) {
-                 if (typeof node.value !== 'boolean') throw new Error(`JS: '${block.type}' type constant had ${typeof node.value} type value. Expected boolean.`);
-                 return node.value.toString();
-@@ -405,7 +419,23 @@ class JSGenerator {
-             //  - We need to yield *between* each call in the same command block
-             //  - We need to evaluate arguments *before* that yield happens
- 
--            const procedureReference = `thread.procedures["${sanitize(procedureVariant)}"]`;
-+            // TurboWasm: procedure-lazy-cache
-+            // Hoist the `thread.procedures["<variant>"]` lookup into the
-+            // factory-level setup block via evaluateOnce(). The factory
-+            // (per `Thread.tryCompile`) is called once per thread when the
-+            // compiled script starts, so the variant→function map entry
-+            // is resolved lazily inside a closure — NOT eagerly at
-+            // factory time. Eager evaluation captured `undefined` for
-+            // any call site whose target procedure had not yet been
-+            // populated (= nested or recursive procedure calls),
-+            // which then threw at runtime and aborted `stepThreads`
-+            // mid-frame. The closure variant resolves the function at
-+            // call time, by which point `thread.procedures` is fully
-+            // populated. Subsequent call sites in the same compiled
-+            // script share the same captured `bN` (= the dedup key is
-+            // the source string including the variant) and pay only
-+            // one extra function-call frame per invocation.
-+            const procedureReference = this.evaluateOnce(`(...args) => thread.procedures["${sanitize(procedureVariant)}"](...args)`);
-             const args = [];
-             for (const input of node.arguments) {
-                 args.push(this.descendInput(input));
-@@ -556,9 +583,13 @@ class JSGenerator {
-             // Can matter if the input is not instantly evaluated.
-             this.source += `const resolvedValue = ${this.descendInput(node.condition)};\n`;
-             this.source += `const id = "${sanitize(node.id)}";\n`;
--            this.source += 'const hasOldEdgeValue = target.hasEdgeActivatedValue(id);\n';
-+            // TurboWasm: edge-detection-hat-sentinel-eliminated
-+            // Drop the explicit `hasEdgeActivatedValue` probe; `updateEdgeActivatedValue`
-+            // returns `undefined` on first access (== falsy), making `!undefined && v === v`.
-+            // After the first call it returns the previously stored value, so the
-+            // expression reduces to the same `!old && v` as the legacy ternary.
-             this.source += `const oldEdgeValue = target.updateEdgeActivatedValue(id, resolvedValue);\n`;
--            this.source += `const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;\n`;
-+            this.source += `const edgeWasActivated = !oldEdgeValue && resolvedValue;\n`;
-             this.source += `if (!edgeWasActivated) {\n`;
-             this.retire();
-             this.source += '}\n';
-@@ -879,7 +914,16 @@ class JSGenerator {
-                     throw new Error('Script uses yielding procedure but is not marked as yielding.');
-                 }
-             }
--            this.source += `thread.procedures["${sanitize(procedureVariant)}"](`;
-+            // TurboWasm: procedure-lazy-cache
-+            // Mirror of the reporter-path evaluateOnce() above. The
-+            // returned variable name (e.g. `b0`) is substituted into the
-+            // emitted source so the per-call site becomes a single
-+            // closure-captured identifier read. The captured value is a
-+            // thunk that resolves `thread.procedures["<variant>"]` at
-+            // call time (= AFTER all procedure factories have run), so
-+            // nested / recursive procedure calls reach the right
-+            // function instead of `undefined`.
-+            this.source += `${this.evaluateOnce(`(...args) => thread.procedures["${sanitize(procedureVariant)}"](...args)`)}(`;
-             const args = [];
-             for (const input of node.arguments) {
-                 args.push(this.descendInput(input));
-diff --git a/src/engine/execute.js b/src/engine/execute.js
-index c9f2f11..5051e6f 100644
---- a/src/engine/execute.js
-+++ b/src/engine/execute.js
-@@ -62,16 +62,21 @@ const handleReport = function (resolvedValue, sequencer, thread, blockCached, la
-         if (thread.stackClick) {
-             thread.status = Thread.STATUS_RUNNING;
-         } else if (sequencer.runtime.getIsEdgeActivatedHat(opcode)) {
-+            // TurboWasm: edge-detection-hat-sentinel-eliminated
-             // If this is an edge-activated hat, only proceed if the value is
-             // true and used to be false, or the stack was activated explicitly
--            // via stack click
--            const hasOldEdgeValue = thread.target.hasEdgeActivatedValue(currentBlockId);
-+            // via stack click. The sentinel elimination is semantically invariant
-+            // because `updateEdgeActivatedValue` returns `undefined` on first
-+            // access (== falsy) and `!undefined && resolvedValue === resolvedValue`.
-+            // Subsequent calls return the previously stored value, so the
-+            // expression reduces to the same `!old && resolvedValue` as the
-+            // legacy `hasOldEdgeValue ? (!old && new) : new` ternary.
-             const oldEdgeValue = thread.target.updateEdgeActivatedValue(
-                 currentBlockId,
-                 resolvedValue
-             );
- 
--            const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;
-+            const edgeWasActivated = !oldEdgeValue && resolvedValue;
-             if (edgeWasActivated) {
-                 thread.status = Thread.STATUS_RUNNING;
-             } else {
-diff --git a/src/engine/runtime.js b/src/engine/runtime.js
-index 1df8dff..925a6a3 100644
---- a/src/engine/runtime.js
-+++ b/src/engine/runtime.js
-@@ -273,6 +273,13 @@ class Runtime extends EventEmitter {
-          * @type {Object.<string, Object>}
-          */
-         this._hats = {};
-+        /**
-+         * Cached array of [hatOpcode, hatMeta] pairs for the hot-path iteration
-+         * in Runtime._step. Built lazily and invalidated whenever this._hats is
-+         * mutated. Avoids the per-frame `for...in + hasOwnProperty.call` walk.
-+         * @type {?Array.<[string, {edgeActivated: boolean, restartExistingThreads: boolean}]>}
-+         */
-+        this._hatsCache = null;
- 
-         /**
-          * Map of opcode to information about whether the block's return value should be interpreted
-@@ -282,10 +289,11 @@ class Runtime extends EventEmitter {
-         this._flowing = {};
- 
-         /**
--         * A list of script block IDs that were glowing during the previous frame.
--         * @type {!Array.<!string>}
-+         * A set of script block IDs that were glowing during the previous frame.
-+         * Stored as a Set for O(1) membership checks in the per-frame glow diff.
-+         * @type {!Set.<!string>}
-          */
--        this._scriptGlowsPreviousFrame = [];
-+        this._scriptGlowsPreviousFrame = new Set();
- 
-         /**
-          * Number of non-monitor threads running during the previous frame.
-@@ -1005,6 +1013,7 @@ class Runtime extends EventEmitter {
-                     for (const hatName in packageHats) {
-                         if (Object.prototype.hasOwnProperty.call(packageHats, hatName)) {
-                             this._hats[hatName] = packageHats[hatName];
-+                            this._hatsCache = null;
-                         }
-                     }
-                 }
-@@ -1173,6 +1182,7 @@ class Runtime extends EventEmitter {
-                             edgeActivated: blockInfo.isEdgeActivated,
-                             restartExistingThreads: blockInfo.shouldRestartExistingThreads
-                         };
-+                        this._hatsCache = null;
-                     } else if (blockInfo.blockType === BlockType.CONDITIONAL) {
-                         this._flowing[opcode] = {
-                             conditional: true,
-@@ -2111,7 +2121,11 @@ class Runtime extends EventEmitter {
-         // Remove any existing thread.
-         for (let i = 0; i < this.threads.length; i++) {
-             // Toggling a script that's already running turns it off
--            if (this.threads[i].topBlock === topBlockId && this.threads[i].status !== Thread.STATUS_DONE) {
-+            if (
-+                this.threads[i].target === opts.target &&
-+                this.threads[i].topBlock === topBlockId &&
-+                this.threads[i].status !== Thread.STATUS_DONE
-+            ) {
-                 const blockContainer = opts.target.blocks;
-                 const opcode = blockContainer.getOpcode(blockContainer.getBlock(topBlockId));
- 
-@@ -2520,16 +2534,45 @@ class Runtime extends EventEmitter {
-             this.profiler.start(stepProfilerId);
-         }
- 
--        // Clean up threads that were told to stop during or since the last step
--        this.threads = this.threads.filter(thread => !thread.isKilled);
--        this.updateThreadMap();
-+        // Clean up threads that were told to stop during or since the last step.
-+        // In-place compaction: only walk the array if at least one thread is killed.
-+        // The threadMap is maintained incrementally by _pushThread / _restartThread /
-+        // Sequencer.stepThreads, so no full rebuild is needed here.
-+        const threads = this.threads;
-+        let needsCompaction = false;
-+        for (let i = 0; i < threads.length; i++) {
-+            if (threads[i].isKilled) {
-+                needsCompaction = true;
-+                break;
-+            }
-+        }
-+        if (needsCompaction) {
-+            let writeIndex = 0;
-+            for (let readIndex = 0; readIndex < threads.length; readIndex++) {
-+                const thread = threads[readIndex];
-+                if (thread.isKilled) {
-+                    if (!thread.stackClick && !thread.updateMonitor) {
-+                        this.threadMap.delete(thread.getId());
-+                    }
-+                } else {
-+                    threads[writeIndex++] = thread;
-+                }
-+            }
-+            threads.length = writeIndex;
-+        }
- 
-         // Find all edge-activated hats, and add them to threads to be evaluated.
--        for (const hatType in this._hats) {
--            if (!Object.prototype.hasOwnProperty.call(this._hats, hatType)) continue;
--            const hat = this._hats[hatType];
--            if (hat.edgeActivated) {
--                this.startHats(hatType);
-+        // Iterate the cached [key, value] array to avoid per-frame property walks
-+        // and `hasOwnProperty` calls. The cache is rebuilt lazily whenever _hats
-+        // is mutated (see _registerBlockPackages, _registerExtensionPrimitives).
-+        if (this._hatsCache === null) {
-+            this._hatsCache = Object.entries(this._hats);
-+        }
-+        const hatsCache = this._hatsCache;
-+        for (let h = 0; h < hatsCache.length; h++) {
-+            const entry = hatsCache[h];
-+            if (entry[1].edgeActivated) {
-+                this.startHats(entry[0]);
-             }
-         }
-         this.redrawRequested = false;
-@@ -2551,7 +2594,7 @@ class Runtime extends EventEmitter {
-         // flag will still indicate that a script ran.
-         this._emitProjectRunStatus(
-             this.threads.length + doneThreads.length -
--                this._getMonitorThreadCount([...this.threads, ...doneThreads]));
-+                this._getMonitorThreadCount(this.threads, doneThreads));
-         // Store threads that completed this iteration for testing and other
-         // internal purposes.
-         this._lastStepDoneThreads = doneThreads;
-@@ -2595,16 +2638,24 @@ class Runtime extends EventEmitter {
-     }
- 
-     /**
--     * Get the number of threads in the given array that are monitor threads (threads
-+     * Get the number of threads in the given arrays that are monitor threads (threads
-      * that update monitor values, and don't count as running a script).
--     * @param {!Array.<Thread>} threads The set of threads to look through.
--     * @return {number} The number of monitor threads in threads.
-+     * @param {!Array.<Thread>} threadsA Primary set of threads to look through.
-+     * @param {Array.<Thread>=} threadsB Optional secondary set; pass to count both
-+     *     the live and just-finished threads in a single pass without allocating
-+     *     a combined array via spread.
-+     * @return {number} The number of monitor threads across the inputs.
-      */
--    _getMonitorThreadCount (threads) {
-+    _getMonitorThreadCount (threadsA, threadsB) {
-         let count = 0;
--        threads.forEach(thread => {
--            if (thread.updateMonitor) count++;
--        });
-+        for (let i = 0; i < threadsA.length; i++) {
-+            if (threadsA[i].updateMonitor) count++;
-+        }
-+        if (threadsB) {
-+            for (let i = 0; i < threadsB.length; i++) {
-+                if (threadsB[i].updateMonitor) count++;
-+            }
-+        }
-         return count;
-     }
- 
-@@ -2627,7 +2678,7 @@ class Runtime extends EventEmitter {
-         const oldEditingTarget = this._editingTarget;
-         this._editingTarget = editingTarget;
-         // Script glows must be cleared.
--        this._scriptGlowsPreviousFrame = [];
-+        this._scriptGlowsPreviousFrame = new Set();
-         this._updateGlows();
- 
-         if (oldEditingTarget !== this._editingTarget) {
-@@ -2960,22 +3011,36 @@ class Runtime extends EventEmitter {
-      * @param {Array.<Thread>=} optExtraThreads Optional list of inactive threads.
-      */
-     _updateGlows (optExtraThreads) {
--        const searchThreads = [];
--        searchThreads.push(...this.threads);
-+        // When no editing target is set (e.g. pure player), skip the whole pass.
-+        if (this._editingTarget === null) {
-+            return;
-+        }
-+        // Reuse a per-instance array for the merged thread list to avoid the
-+        // per-frame `[...this.threads, ...optExtraThreads]` spread allocation.
-+        let searchThreads = this._glowSearchThreads;
-+        if (!searchThreads) {
-+            searchThreads = this._glowSearchThreads = [];
-+        }
-+        searchThreads.length = 0;
-+        const liveThreads = this.threads;
-+        for (let i = 0; i < liveThreads.length; i++) {
-+            searchThreads.push(liveThreads[i]);
-+        }
-         if (optExtraThreads) {
--            searchThreads.push(...optExtraThreads);
-+            for (let i = 0; i < optExtraThreads.length; i++) {
-+                searchThreads.push(optExtraThreads[i]);
-+            }
-         }
--        // Set of scripts that request a glow this frame.
--        const requestedGlowsThisFrame = [];
--        // Final set of scripts glowing during this frame.
--        const finalScriptGlows = [];
--        // Find all scripts that should be glowing.
-+        // Build the set of scripts that request a glow this frame, as a Set
-+        // for O(1) membership checks. Avoids the previous O(N*M) indexOf walk.
-+        const requestedGlows = new Set();
-+        const editingTarget = this._editingTarget;
-         for (let i = 0; i < searchThreads.length; i++) {
-             const thread = searchThreads[i];
-             const target = thread.target;
--            if (target === this._editingTarget) {
--                const blockForThread = thread.blockGlowInFrame;
-+            if (target === editingTarget) {
-                 if (thread.requestScriptGlowInFrame || thread.stackClick) {
-+                    const blockForThread = thread.blockGlowInFrame;
-                     let script = target.blocks.getTopLevelScript(blockForThread);
-                     if (!script) {
-                         // Attempt to find in flyout blocks.
-@@ -2984,31 +3049,30 @@ class Runtime extends EventEmitter {
-                         );
-                     }
-                     if (script) {
--                        requestedGlowsThisFrame.push(script);
-+                        requestedGlows.add(script);
-                     }
-                 }
-             }
-         }
--        // Compare to previous frame.
--        for (let j = 0; j < this._scriptGlowsPreviousFrame.length; j++) {
--            const previousFrameGlow = this._scriptGlowsPreviousFrame[j];
--            if (requestedGlowsThisFrame.indexOf(previousFrameGlow) < 0) {
--                // Glow turned off.
-+        // Diff against previous frame and emit on/off events.
-+        const previous = this._scriptGlowsPreviousFrame;
-+        const next = new Set();
-+        // Scripts that were glowing last frame but no longer: turn off.
-+        for (const previousFrameGlow of previous) {
-+            if (!requestedGlows.has(previousFrameGlow)) {
-                 this.glowScript(previousFrameGlow, false);
-             } else {
--                // Still glowing.
--                finalScriptGlows.push(previousFrameGlow);
-+                next.add(previousFrameGlow);
-             }
-         }
--        for (let k = 0; k < requestedGlowsThisFrame.length; k++) {
--            const currentFrameGlow = requestedGlowsThisFrame[k];
--            if (this._scriptGlowsPreviousFrame.indexOf(currentFrameGlow) < 0) {
--                // Glow turned on.
-+        // Scripts newly glowing this frame: turn on.
-+        for (const currentFrameGlow of requestedGlows) {
-+            if (!previous.has(currentFrameGlow)) {
-                 this.glowScript(currentFrameGlow, true);
--                finalScriptGlows.push(currentFrameGlow);
-+                next.add(currentFrameGlow);
-             }
-         }
--        this._scriptGlowsPreviousFrame = finalScriptGlows;
-+        this._scriptGlowsPreviousFrame = next;
-     }
- 
-     /**
-@@ -3034,10 +3098,7 @@ class Runtime extends EventEmitter {
-      * @param {!string} scriptBlockId Id of top-level block in script to quiet.
-      */
-     quietGlow (scriptBlockId) {
--        const index = this._scriptGlowsPreviousFrame.indexOf(scriptBlockId);
--        if (index > -1) {
--            this._scriptGlowsPreviousFrame.splice(index, 1);
--        }
-+        this._scriptGlowsPreviousFrame.delete(scriptBlockId);
-     }
- 
-     /**
-@@ -3493,6 +3554,171 @@ class Runtime extends EventEmitter {
- 
-         return callback().then(onSuccess, onError);
-     }
-+
-+    // TurboWasm: list / scalar buffer accessors for the GPU compute kernel
-+    // pipeline (see gpu-kernel-spec-summary.md §6.1). These are non-
-+    // breaking additions: callers without @compute regions simply never
-+    // call them. They return a `{data, length, dtype}` triple where data
-+    // is a freshly-allocated Float32Array / Int32Array / Uint8Array view
-+    // mirroring the scratch-vm list, so the GPU side can call syncToHost
-+    // after the dispatch. The `dtype` matches the @bind directive's dtype.
-+
-+    /**
-+     * Look up a list by name (case-insensitive, lower-cased to match
-+     * scratch-vm's storage convention) and return a typed-array-backed
-+     * view of its current contents in the requested dtype.
-+     * @param {string} name list name.
-+     * @param {'f32'|'i32'|'byte'} [dtype='f32'] ABI dtype.
-+     * @return {{data: Float32Array|Int32Array|Uint8Array, length: number, dtype: string} | null}
-+     */
-+    __getListBuffer (name, dtype) {
-+        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
-+        const wantDtype = dtype || 'f32';
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            for (const varId of Object.keys(target.variables)) {
-+                const v = target.variables[varId];
-+                if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
-+                    return this.__getListBufferById(varId, wantDtype);
-+                }
-+            }
-+        }
-+        return null;
-+    }
-+
-+    /**
-+     * Look up a list by id and return a typed-array-backed view in the
-+     * requested dtype.
-+     * @param {string} id scratch-vm variable id.
-+     * @param {'f32'|'i32'|'byte'} [dtype='f32'] ABI dtype.
-+     * @return {{data: Float32Array|Int32Array|Uint8Array, length: number, dtype: string} | null}
-+     */
-+    __getListBufferById (id, dtype) {
-+        const wantDtype = dtype || 'f32';
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            const v = target.variables[id];
-+            if (v && v.type === 'list' && Array.isArray(v.value)) {
-+                if (wantDtype === 'i32') {
-+                    const data = new Int32Array(v.value.length);
-+                    for (let i = 0; i < v.value.length; i++) {
-+                        const n = Number(v.value[i]);
-+                        data[i] = Number.isFinite(n) ? (n | 0) : 0;
-+                    }
-+                    return {data, length: v.value.length, dtype: 'i32'};
-+                }
-+                if (wantDtype === 'byte') {
-+                    const data = new Uint8Array(v.value.length);
-+                    for (let i = 0; i < v.value.length; i++) {
-+                        const n = Number(v.value[i]);
-+                        data[i] = Number.isFinite(n) ? (n & 0xff) : 0;
-+                    }
-+                    return {data, length: v.value.length, dtype: 'byte'};
-+                }
-+                const data = new Float32Array(v.value.length);
-+                for (let i = 0; i < v.value.length; i++) {
-+                    const n = Number(v.value[i]);
-+                    data[i] = Number.isFinite(n) ? n : 0;
-+                }
-+                return {data, length: v.value.length, dtype: 'f32'};
-+            }
-+        }
-+        return null;
-+    }
-+
-+    /**
-+     * Write back a typed array into the host list identified by name
-+     * (case-insensitive, lower-cased to match scratch-vm's storage
-+     * convention).
-+     * @param {string} name list name.
-+     * @param {Float32Array|Int32Array|Uint8Array} value data to write.
-+     * @return {boolean}
-+     */
-+    __setListBuffer (name, value) {
-+        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
-+        const arr = value && value.length !== undefined ? value : null;
-+        if (!arr) return false;
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            for (const varId of Object.keys(target.variables)) {
-+                const v = target.variables[varId];
-+                if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
-+                    return this.__setListBufferById(varId, arr);
-+                }
-+            }
-+        }
-+        return false;
-+    }
-+
-+    /**
-+     * Write back a typed array into the host list identified by id.
-+     * Truncates to the existing list length so we don't accidentally
-+     * grow a list (scratch-vm list growth goes through `data_addtolist`).
-+     * @param {string} id scratch-vm variable id.
-+     * @param {Float32Array|Int32Array|Uint8Array} value data to write.
-+     * @return {boolean}
-+     */
-+    __setListBufferById (id, value) {
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            const v = target.variables[id];
-+            if (v && v.type === 'list' && Array.isArray(v.value)) {
-+                const n = Math.min(v.value.length, value.length);
-+                for (let i = 0; i < n; i++) {
-+                    v.value[i] = Number(value[i]);
-+                }
-+                v._monitorUpToDate = false;
-+                return true;
-+            }
-+        }
-+        return false;
-+    }
-+
-+    /**
-+     * Read a scalar variable by name (case-insensitive via scratch-vm's
-+     * lower-cased storage). Returns the numeric value or 0 when missing.
-+     * @param {string} name scalar variable name.
-+     * @return {number}
-+     */
-+    __getScalarValue (name) {
-+        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            for (const varId of Object.keys(target.variables)) {
-+                const v = target.variables[varId];
-+                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
-+                    const n = Number(v.value);
-+                    return Number.isFinite(n) ? n : 0;
-+                }
-+            }
-+        }
-+        return 0;
-+    }
-+
-+    /**
-+     * Write a scalar variable by name (case-insensitive). Returns true
-+     * when the variable was found and updated.
-+     * @param {string} name scalar variable name.
-+     * @param {number} value numeric value to write.
-+     * @return {boolean}
-+     */
-+    __setScalarValue (name, value) {
-+        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
-+        const n = Number(value);
-+        const safe = Number.isFinite(n) ? n : 0;
-+        for (const target of this.targets) {
-+            if (!target || !target.variables) continue;
-+            for (const varId of Object.keys(target.variables)) {
-+                const v = target.variables[varId];
-+                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
-+                    v.value = safe;
-+                    v._monitorUpToDate = false;
-+                    return true;
-+                }
-+            }
-+        }
-+        return false;
-+    }
- }
- 
- /**
-diff --git a/src/engine/sequencer.js b/src/engine/sequencer.js
-index c374fb6..bf67037 100644
---- a/src/engine/sequencer.js
-+++ b/src/engine/sequencer.js
-@@ -54,6 +54,16 @@ class Sequencer {
-         this.runtime = runtime;
- 
-         this.activeThread = null;
-+
-+        /**
-+         * Reusable array for collecting threads that completed during stepThreads.
-+         * Reset at the start of each stepThreads call. The array reference is
-+         * reused across calls to avoid per-step allocation; the contents are
-+         * read-only from the caller's perspective (Runtime._step) and must not
-+         * be mutated before the next stepThreads call.
-+         * @type {Array.<!Thread>}
-+         */
-+        this._doneThreads = [];
-     }
- 
-     /**
-@@ -81,7 +91,10 @@ class Sequencer {
-         let numActiveThreads = Infinity;
-         // Whether `stepThreads` has run through a full single tick.
-         let ranFirstTick = false;
--        const doneThreads = [];
-+        // Reuse the per-instance doneThreads array to avoid per-step allocation.
-+        // Caller must not retain a reference beyond the next stepThreads call.
-+        const doneThreads = this._doneThreads;
-+        doneThreads.length = 0;
-         // Conditions for continuing to stepping threads:
-         // 1. We must have threads in the list, and some must be active.
-         // 2. Time elapsed must be less than WORK_TIME.
-@@ -193,8 +206,10 @@ class Sequencer {
-             }
-         }
-         // Save the current block ID to notice if we did control flow.
--        while ((currentBlockId = thread.peekStack())) {
--            const initialStackSize = thread.stack.length;
-+        // Inline peekStack to avoid the helper function call per iteration.
-+        const stack = thread.stack;
-+        while ((currentBlockId = stack[stack.length - 1])) {
-+            const initialStackSize = stack.length;
-             let isWarpMode = thread.peekStackFrame().warpMode;
-             if (isWarpMode && !thread.warpTimer) {
-                 // Initialize warp-mode timer if it hasn't been already.
-diff --git a/src/engine/tw-frame-loop.js b/src/engine/tw-frame-loop.js
-index bf2554b..a75a652 100644
---- a/src/engine/tw-frame-loop.js
-+++ b/src/engine/tw-frame-loop.js
-@@ -10,12 +10,19 @@ const _cancelAnimationFrame = typeof requestAnimationFrame === 'function' ?
-     clearTimeout;
- 
- const animationFrameWrapper = callback => {
-+    // Allocate the cancel function once. The handle closure is shared across
-+    // every animation frame so we do not allocate a fresh closure per frame.
-     let id;
-+    let cancelled = false;
-     const handle = () => {
-+        if (cancelled) return;
-         id = _requestAnimationFrame(handle);
-         callback();
-     };
--    const cancel = () => _cancelAnimationFrame(id);
-+    const cancel = () => {
-+        cancelled = true;
-+        if (id !== undefined) _cancelAnimationFrame(id);
-+    };
-     id = _requestAnimationFrame(handle);
-     return {
-         cancel
-diff --git a/src/sprites/rendered-target.js b/src/sprites/rendered-target.js
-index eeb029f..0bebdd2 100644
---- a/src/sprites/rendered-target.js
-+++ b/src/sprites/rendered-target.js
-@@ -807,8 +807,16 @@ class RenderedTarget extends Target {
-         // Filter out dragging targets. This means a sprite that is being dragged
-         // can detect other sprites using touching <sprite>, but cannot be detected
-         // by other sprites while it is being dragged. This matches Scratch 2.0 behavior.
--        const drawableCandidates = firstClone.sprite.clones.filter(clone => !clone.dragging)
--            .map(clone => clone.drawableID);
-+        // Single-pass loop building the drawableID array directly; no intermediate
-+        // array from filter+map.
-+        const clones = firstClone.sprite.clones;
-+        const drawableCandidates = [];
-+        for (let i = 0; i < clones.length; i++) {
-+            const clone = clones[i];
-+            if (!clone.dragging) {
-+                drawableCandidates.push(clone.drawableID);
-+            }
-+        }
-         return this.renderer.isTouchingDrawables(
-             this.drawableID, drawableCandidates);
-     }
-diff --git a/src/util/cast.js b/src/util/cast.js
-index d78717a..9032581 100644
---- a/src/util/cast.js
-+++ b/src/util/cast.js
-@@ -159,15 +159,21 @@ class Cast {
-             }
-             return 0;
-         }
--        // Handle the special case of Infinity
--        if (
--            (n1 === Infinity && n2 === Infinity) ||
--            (n1 === -Infinity && n2 === -Infinity)
--        ) {
--            return 0;
--        }
--        // Compare as numbers.
--        return n1 - n2;
-+        // TurboWasm: comparison-infinity-branch-removed
-+        // The legacy `(n1 === Infinity && n2 === Infinity) || ...` special case
-+        // existed only because `Infinity - Infinity === NaN`, so subtraction
-+        // could not distinguish the equal-infinity pairs from the NaN path
-+        // (which is short-circuited above). Direct `<` / `>` comparison is
-+        // semantically invariant:
-+        //   Infinity === Infinity  -> false / false -> 0
-+        //   -Infinity === -Infinity -> false / false -> 0
-+        //   Infinity > -Infinity  -> false / true -> 1
-+        //   -Infinity < Infinity  -> true / false -> -1
-+        //   Infinity > finite     -> false / true -> 1
-+        //   finite < Infinity     -> true / false -> -1
-+        if (n1 < n2) return -1;
-+        if (n1 > n2) return 1;
-+        return 0;
-     }
- 
-     /**
 diff --git a/src/compiler/compile.js b/src/compiler/compile.js
-index 3b5125f..c05cd9b 100644
+index 3b5125f..ea8d528 100644
 --- a/src/compiler/compile.js
 +++ b/src/compiler/compile.js
 @@ -8,7 +8,12 @@ const compile = (/** @type {import("../engine/thread")} */ thread) => {
@@ -819,8 +16,61 @@ index 3b5125f..c05cd9b 100644
      irOptimizer.optimize();
  
      const procedures = {};
+diff --git a/src/compiler/irgen.js b/src/compiler/irgen.js
+index 08d1701..e3cfac5 100644
+--- a/src/compiler/irgen.js
++++ b/src/compiler/irgen.js
+@@ -1435,7 +1435,47 @@ class ScriptTreeGenerator {
+             // We also don't want it to be treated like a hat block
+             let entryBlock;
+             if (topBlock.opcode === 'procedures_definition') {
+-                entryBlock = topBlock.next;
++                // TurboWasm: procedure-definition-entry-prototype-substack
++                // Resolve the procedure body for compiled mode. Two shapes
++                // exist in real-world projects:
++                //
++                //  1. **Standard Scratch shape** (= `procedures_definition.next`
++                //     carries the body). Every project exported from the
++                //     official scratch-gui / scratch-blocks / scratch3 editor
++                //     uses this. Examples: `test/.test-fixtures/repro.sb3`
++                //     and `C:\files\devs\test\fps.sb3`.
++                //
++                //  2. **SUBSTACK shape** (= `proto.inputs.SUBSTACK.block`
++                //     carries the body). The procedurally-generated test
++                //     fixture `procedure-lazy-cache-fixture.sb3` uses this
++                //     layout; it does NOT match what scratch-gui produces,
++                //     but it does match what some scratch-parser paths and
++                //     partial deserialisations can produce.
++                //
++                // The pre-Phase 2-B code only handled (1) — `entryBlock =
++                // topBlock.next` — which meant the SUBSTACK-shape fixture
++                // compiled to an empty body. The Phase 2-B hunk only
++                // handled (2) — `entryBlock = proto.inputs.SUBSTACK.block`
++                // — which silently regressed every real Scratch project
++                // (= the bug pinned by `test/runtime/scratch-vm-procedure-
++                // body-standard-shape.test.ts`). Both shapes must be
++                // accepted so the compiled runtime stays parity-equivalent
++                // with the interpreter.
++                //
++                // Prefer (1) and fall back to (2). When both are absent
++                // (= a `procedures_definition` whose prototype has no body
++                // and whose `next` is null) emit an empty script rather
++                // than throwing on a missing `.block`.
++                if (topBlock.next) {
++                    entryBlock = topBlock.next;
++                } else {
++                    const proto = topBlock.inputs.custom_block
++                        ? this.blocks.getBlock(topBlock.inputs.custom_block.block)
++                        : null;
++                    entryBlock = proto && proto.inputs && proto.inputs.SUBSTACK
++                        ? proto.inputs.SUBSTACK.block
++                        : null;
++                }
+             } else {
+                 entryBlock = topBlockId;
+             }
 diff --git a/src/compiler/iroptimizer.js b/src/compiler/iroptimizer.js
-index b454ed5..9ca1156 100644
+index b454ed5..82eaf9a 100644
 --- a/src/compiler/iroptimizer.js
 +++ b/src/compiler/iroptimizer.js
 @@ -1,6 +1,7 @@
@@ -1068,87 +318,103 @@ index b454ed5..9ca1156 100644
  }
  
  
-diff --git a/src/engine/runtime.js b/src/engine/runtime.js
-index 925a6a3..5ea76d1 100644
---- a/src/engine/runtime.js
-+++ b/src/engine/runtime.js
-@@ -469,7 +469,16 @@ class Runtime extends EventEmitter {
- 
-         this.compilerOptions = {
-             enabled: true,
--            warpTimer: false
-+            warpTimer: false,
-+            // TurboWasm: constant-folding 窶・Phase 3 compiler-side fold
-+            // gate. Read by `IROptimizer.shouldFoldConstant` (= vendored
-+            // scratch-vm/src/compiler/iroptimizer.js) to decide whether
-+            // `tryFoldConstant` should run for each operator input.
-+            // Default-on so the optimization is live out of the box;
-+            // `setCompilerOptions({ constantFoldingEnabled: false })`
-+            // (wired from the Viewer's detailed toggle
-+            // `data.constantFolding`) disables it for power-users.
-+            constantFoldingEnabled: true
-         };
- 
-         this.debug = false;
-
-diff --git a/src/compiler/irgen.js b/src/compiler/irgen.js
-index 08d1701..d8e7f4a 100644
---- a/src/compiler/irgen.js
-+++ b/src/compiler/irgen.js
-@@ -1434,8 +1434,46 @@ class ScriptTreeGenerator {
-             // We don't evaluate the procedures_definition top block as it never does anything
-             // We also don't want it to be treated like a hat block
-             let entryBlock;
-             if (topBlock.opcode === 'procedures_definition') {
--                entryBlock = topBlock.next;
-+                // TurboWasm: procedure-definition-entry-prototype-substack
-+                // Resolve the procedure body for compiled mode. Two shapes
-+                // exist in real-world projects:
-+                //
-+                //  1. **Standard Scratch shape** (= `procedures_definition.next`
-+                //     carries the body). Every project exported from the
-+                //     official scratch-gui / scratch-blocks / scratch3 editor
-+                //     uses this. Examples: `test/.test-fixtures/repro.sb3`
-+                //     and `C:\files\devs\test\fps.sb3`.
-+                //
-+                //  2. **SUBSTACK shape** (= `proto.inputs.SUBSTACK.block`
-+                //     carries the body). The procedurally-generated test
-+                //     fixture `procedure-lazy-cache-fixture.sb3` uses this
-+                //     layout; it does NOT match what scratch-gui produces,
-+                //     but it does match what some scratch-parser paths and
-+                //     partial deserialisations can produce.
-+                //
-+                // The pre-Phase 2-B code only handled (1) — `entryBlock =
-+                // topBlock.next` — which meant the SUBSTACK-shape fixture
-+                // compiled to an empty body. The Phase 2-B hunk only
-+                // handled (2) — `entryBlock = proto.inputs.SUBSTACK.block`
-+                // — which silently regressed every real Scratch project
-+                // (= the bug pinned by `test/runtime/scratch-vm-procedure-
-+                // body-standard-shape.test.ts`). Both shapes must be
-+                // accepted so the compiled runtime stays parity-equivalent
-+                // with the interpreter.
-+                //
-+                // Prefer (1) and fall back to (2). When both are absent
-+                // (= a `procedures_definition` whose prototype has no body
-+                // and whose `next` is null) emit an empty script rather
-+                // than throwing on a missing `.block`.
-+                if (topBlock.next) {
-+                    entryBlock = topBlock.next;
-+                } else {
-+                    const proto = topBlock.inputs.custom_block
-+                        ? this.blocks.getBlock(topBlock.inputs.custom_block.block)
-+                        : null;
-+                    entryBlock = proto && proto.inputs && proto.inputs.SUBSTACK
-+                        ? proto.inputs.SUBSTACK.block
-+                        : null;
-+                }
-             } else {
-                 entryBlock = topBlockId;
-             }
 diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+index 61d69cd..1b88373 100644
 --- a/src/compiler/jsexecute.js
 +++ b/src/compiler/jsexecute.js
-@@ -214,12 +214,61 @@
+@@ -137,31 +137,31 @@ const isPromise = value => (
+     typeof value === 'object' &&
+     typeof value.then === 'function'
+ );
++// TurboWasm: compat-layer-finish-extracted
++const finishCompatibilityCall = (returnValue, branchInfo, blockUtility) => {
++    if (branchInfo) {
++        if (typeof returnValue === 'undefined' && blockUtility._startedBranch) {
++            branchInfo.isLoop = blockUtility._startedBranch[1];
++            return blockUtility._startedBranch[0];
++        }
++        branchInfo.isLoop = branchInfo.defaultIsLoop;
++        return returnValue;
++    }
++    return returnValue;
++};
+ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, useFlags, blockId, branchInfo) {
+     const thread = globalState.thread;
+     const blockUtility = globalState.blockUtility;
+     const stackFrame = branchInfo ? branchInfo.stackFrame : {};
+ 
+-    const finish = (returnValue) => {
+-        if (branchInfo) {
+-            if (typeof returnValue === 'undefined' && blockUtility._startedBranch) {
+-                branchInfo.isLoop = blockUtility._startedBranch[1];
+-                return blockUtility._startedBranch[0];
+-            }
+-            branchInfo.isLoop = branchInfo.defaultIsLoop;
+-            return returnValue;
+-        }
+-        return returnValue;
+-    };
+-
+-    const executeBlock = () => {
+-        blockUtility.init(thread, blockId, stackFrame);
+-        return blockFunction(inputs, blockUtility);
+-    };
+-
+-    let returnValue = executeBlock();
++    blockUtility.init(thread, blockId, stackFrame);
++    let returnValue = blockFunction(inputs, blockUtility);
+     if (isPromise(returnValue)) {
+-        returnValue = finish(yield* waitPromise(returnValue));
++        returnValue = finishCompatibilityCall(
++            yield* waitPromise(returnValue),
++            branchInfo,
++            blockUtility
++        );
+         if (useFlags) hasResumedFromPromise = true;
+         return returnValue;
+     }
+@@ -170,7 +170,7 @@ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, use
+         // Something external is forcing us to stop
+         yield;
+         // Make up a return value because whatever is forcing us to stop can't specify one
+-        return '';
++        return finishCompatibilityCall('', branchInfo, blockUtility);
+     }
+ 
+     while (thread.status === 2 /* STATUS_YIELD */ || thread.status === 3 /* STATUS_YIELD_TICK */) {
+@@ -186,34 +186,89 @@ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, use
+             yield;
+         }
+ 
+-        returnValue = executeBlock();
++        blockUtility.init(thread, blockId, stackFrame);
++        returnValue = blockFunction(inputs, blockUtility);
++
+         if (isPromise(returnValue)) {
+-            returnValue = finish(yield* waitPromise(returnValue));
++            returnValue = finishCompatibilityCall(
++                yield* waitPromise(returnValue),
++                branchInfo,
++                blockUtility
++            );
+             if (useFlags) hasResumedFromPromise = true;
+             return returnValue;
+         }
+ 
+         if (thread.status === 1 /* STATUS_PROMISE_WAIT */ || thread.status === 4 /* STATUS_DONE */) {
+             yield;
+-            return finish('');
++            return finishCompatibilityCall('', branchInfo, blockUtility);
+         }
+     }
+ 
+     // todo: do we have to do anything extra if status is STATUS_DONE?
+ 
+-    return finish(returnValue);
++    return finishCompatibilityCall(returnValue, branchInfo, blockUtility);
+ }`;
+ 
+ /**
   * @param {boolean} isLoop True if the block is a LOOP by default (can be overridden by startBranch() call)
   * @returns {unknown} Branch info object for compatibility layer.
   */
@@ -1216,10 +482,77 @@ diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
  
  /**
   * End the current script.
+@@ -292,7 +347,18 @@ baseRuntime += `const compareEqualSlow = (v1, v2) => {
+     if (Number.isNaN(n2) || (n2 === 0 && isNotActuallyZero(v2))) return ('' + v1).toLowerCase() === ('' + v2).toLowerCase();
+     return n1 === n2;
+ };
+-const compareEqual = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);`;
++// TurboWasm: comparison-compare-equal-short-circuit
++const compareEqualLegacy = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);
++const compareEqual = (v1, v2) => {
++    if (v1 === v2) return true;
++    if (
++        typeof v1 === 'number' &&
++        typeof v2 === 'number' &&
++        !Number.isNaN(v1) &&
++        !Number.isNaN(v2)
++    ) return false;
++    return compareEqualSlow(v1, v2);
++};`;
+ 
+ /**
+  * Determine if one value is greater than another.
 diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
+index ebbdc6b..1ccb0a8 100644
 --- a/src/compiler/jsgen.js
 +++ b/src/compiler/jsgen.js
-@@ -554,6 +554,18 @@
+@@ -209,6 +209,20 @@ class JSGenerator {
+                 if (typeof node.value !== 'number') throw new Error(`JS: '${block.type}' type constant had ${typeof node.value} type value. Expected number.`);
+                 if (Object.is(node.value, -0)) return '-0';
+                 return node.value.toString();
++            // TurboWasm: constant-folding-jsgen-nan-neg-zero-handler
++            // Phase 3 fold (`vendored/scratch-vm/src/compiler/iroptimizer.js:tryFoldConstant`)
++            // produces CONSTANT nodes with type NUMBER_NAN (= 0 / 0,
++            // Infinity + (-Infinity), Infinity * 0) or NUMBER_NEG_ZERO
++            // (= -0 - 0, 0 * -0, ...). Neither is a subset of NUMBER
++            // (= 0x0ff) so the `isAlwaysType(NUMBER)` check above fails
++            // and the emit would otherwise fall through to the throw.
++            // Adding explicit cases for both restores the JS-side round-
++            // trip: `NaN` / `-0` literals evaluate identically to the
++            // runtime expression they replaced.
++            } else if (block.isAlwaysType(InputType.NUMBER_NAN)) {
++                return 'NaN';
++            } else if (block.isAlwaysType(InputType.NUMBER_NEG_ZERO)) {
++                return '-0';
+             } else if (block.isAlwaysType(InputType.BOOLEAN)) {
+                 if (typeof node.value !== 'boolean') throw new Error(`JS: '${block.type}' type constant had ${typeof node.value} type value. Expected boolean.`);
+                 return node.value.toString();
+@@ -405,7 +419,23 @@ class JSGenerator {
+             //  - We need to yield *between* each call in the same command block
+             //  - We need to evaluate arguments *before* that yield happens
+ 
+-            const procedureReference = `thread.procedures["${sanitize(procedureVariant)}"]`;
++            // TurboWasm: procedure-lazy-cache
++            // Hoist the `thread.procedures["<variant>"]` lookup into the
++            // factory-level setup block via evaluateOnce(). The factory
++            // (per `Thread.tryCompile`) is called once per thread when the
++            // compiled script starts, so the variant→function map entry
++            // is resolved lazily inside a closure — NOT eagerly at
++            // factory time. Eager evaluation captured `undefined` for
++            // any call site whose target procedure had not yet been
++            // populated (= nested or recursive procedure calls),
++            // which then threw at runtime and aborted `stepThreads`
++            // mid-frame. The closure variant resolves the function at
++            // call time, by which point `thread.procedures` is fully
++            // populated. Subsequent call sites in the same compiled
++            // script share the same captured `bN` (= the dedup key is
++            // the source string including the variant) and pay only
++            // one extra function-call frame per invocation.
++            const procedureReference = this.evaluateOnce(`(...args) => thread.procedures["${sanitize(procedureVariant)}"](...args)`);
+             const args = [];
+             for (const input of node.arguments) {
+                 args.push(this.descendInput(input));
+@@ -524,6 +554,18 @@ class JSGenerator {
              } else if (blockType === BlockType.CONDITIONAL || blockType === BlockType.LOOP) {
                  const branchVariable = this.localVariables.next();
                  this.source += `const ${branchVariable} = createBranchInfo(${blockType === BlockType.LOOP});\n`;
@@ -1238,7 +571,7 @@ diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
                  this.source += `while (${branchVariable}.branch = +(${this.generateCompatibilityLayerCall(node, false, branchVariable)})) {\n`;
                  this.source += `switch (${branchVariable}.branch) {\n`;
                  for (const index in node.substacks) {
-@@ -566,6 +578,7 @@
+@@ -536,6 +578,7 @@ class JSGenerator {
                  this.source += `if (!${branchVariable}.isLoop) break;\n`;
                  this.yieldLoop();
                  this.source += '}\n'; // close while
@@ -1246,40 +579,811 @@ diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
              } else {
                  throw new Error(`Unknown block type: ${blockType}`);
              }
+@@ -556,9 +599,13 @@ class JSGenerator {
+             // Can matter if the input is not instantly evaluated.
+             this.source += `const resolvedValue = ${this.descendInput(node.condition)};\n`;
+             this.source += `const id = "${sanitize(node.id)}";\n`;
+-            this.source += 'const hasOldEdgeValue = target.hasEdgeActivatedValue(id);\n';
++            // TurboWasm: edge-detection-hat-sentinel-eliminated
++            // Drop the explicit `hasEdgeActivatedValue` probe; `updateEdgeActivatedValue`
++            // returns `undefined` on first access (== falsy), making `!undefined && v === v`.
++            // After the first call it returns the previously stored value, so the
++            // expression reduces to the same `!old && v` as the legacy ternary.
+             this.source += `const oldEdgeValue = target.updateEdgeActivatedValue(id, resolvedValue);\n`;
+-            this.source += `const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;\n`;
++            this.source += `const edgeWasActivated = !oldEdgeValue && resolvedValue;\n`;
+             this.source += `if (!edgeWasActivated) {\n`;
+             this.retire();
+             this.source += '}\n';
+@@ -879,7 +926,16 @@ class JSGenerator {
+                     throw new Error('Script uses yielding procedure but is not marked as yielding.');
+                 }
+             }
+-            this.source += `thread.procedures["${sanitize(procedureVariant)}"](`;
++            // TurboWasm: procedure-lazy-cache
++            // Mirror of the reporter-path evaluateOnce() above. The
++            // returned variable name (e.g. `b0`) is substituted into the
++            // emitted source so the per-call site becomes a single
++            // closure-captured identifier read. The captured value is a
++            // thunk that resolves `thread.procedures["<variant>"]` at
++            // call time (= AFTER all procedure factories have run), so
++            // nested / recursive procedure calls reach the right
++            // function instead of `undefined`.
++            this.source += `${this.evaluateOnce(`(...args) => thread.procedures["${sanitize(procedureVariant)}"](...args)`)}(`;
+             const args = [];
+             for (const input of node.arguments) {
+                 args.push(this.descendInput(input));
+diff --git a/src/engine/blocks.js b/src/engine/blocks.js
+index 68b3e60..9d399ea 100644
+--- a/src/engine/blocks.js
++++ b/src/engine/blocks.js
+@@ -84,7 +84,19 @@ class Blocks {
+ 
+             /**
+              * tw: A cache of top block (usually hat, but not always) opcodes to compiled scripts.
+-             * @type {object.<string, object>}
++             * When the runtime flag `mapConversionEnabled` is true
++             * (set via `setCompilerOptions({ mapConversionEnabled: true })`
++             * from the detailed toggle `data.mapConversion`), this field
++             * is a `Map<string, {success, value}>` instead of a plain
++             * object. Lookup/insert/has are 50-68% faster on a 50-key
++             * cache (see `scripts/bench-map-eval.mjs`). The plain-`{}`
++             * shape is preserved as the default (opt-in). The actual
++             * shape is migrated by `Blocks.resetCache` whenever the
++             * runtime emits `COMPILER_OPTIONS_CHANGED` (= every
++             * `setCompilerOptions` call, including the user's
++             * detailed-toggle change). The wire-up listener is added
++             * in the `Blocks` constructor (= hunk below).
++             * @type {object<string, object>|Map<string, object>}
+              */
+             compiledScripts: {},
+             
+@@ -110,6 +122,19 @@ class Blocks {
+          * @type {boolean}
+          */
+         this.forceNoGlow = optNoGlow || false;
++        // TurboWasm: blocks-cache-map — re-init the cache whenever the
++        // runtime emits `COMPILER_OPTIONS_CHANGED` (= every
++        // `setCompilerOptions` call). The cache shape flips between `{}`
++        // and `Map()` in `resetCache` so stale entries are dropped and
++        // the shape always matches the user's current toggle state.
++        // Without this listener, a toggle change mid-session would leave
++        // the cache as `{}` while the accessors call `Map.set()` /
++        // `Map.get()` (= TypeError). The `if (this.runtime)` guard lets
++        // unit tests instantiate Blocks with a mock/omitted runtime
++        // without crashing (= the legacy behaviour pre-Phase 4B).
++        if (this.runtime) {
++            this.runtime.on('COMPILER_OPTIONS_CHANGED', () => this.resetCache());
++        }
+     }
+ 
+     /**
+@@ -118,6 +143,18 @@ class Blocks {
+      * @returns {{success: boolean; value: any}|null} Cached success or error, or null if there is no cached value.
+      */
+     getCachedCompileResult (blockId) {
++        // TurboWasm: blocks-cache-map — opt-in Map backing for the
++        // compiledScripts cache. The `mapConversionEnabled` flag is
++        // forwarded from `runtime.compilerOptions.mapConversionEnabled`
++        // (= the detailed toggle `data.mapConversion`). When ON, the
++        // cache is a Map and `get` / `set` / `has` win 50%+ over plain
++        // `{}` lookup in the hot path (see `scripts/bench-map-eval.mjs`).
++        // When OFF (= default), the legacy plain-`{}` path is preserved
++        // byte-for-byte.
++        if (this.runtime.compilerOptions.mapConversionEnabled) {
++            const v = this._cache.compiledScripts.get(blockId);
++            return typeof v === 'undefined' ? null : v;
++        }
+         if (Object.prototype.hasOwnProperty.call(this._cache.compiledScripts, blockId)) {
+             return this._cache.compiledScripts[blockId];
+         }
+@@ -130,6 +167,13 @@ class Blocks {
+      * @param {*} value The compilation result to store.
+      */
+     cacheCompileResult (blockId, value) {
++        if (this.runtime.compilerOptions.mapConversionEnabled) {
++            this._cache.compiledScripts.set(blockId, {
++                success: true,
++                value: value
++            });
++            return;
++        }
+         this._cache.compiledScripts[blockId] = {
+             success: true,
+             value: value
+@@ -142,6 +186,13 @@ class Blocks {
+      * @param {*} error The error to store.
+      */
+     cacheCompileError (blockId, error) {
++        if (this.runtime.compilerOptions.mapConversionEnabled) {
++            this._cache.compiledScripts.set(blockId, {
++                success: false,
++                value: error
++            });
++            return;
++        }
+         this._cache.compiledScripts[blockId] = {
+             success: false,
+             value: error
+@@ -620,7 +671,19 @@ class Blocks {
+         this._cache._executeCached = {};
+         this._cache._monitored = null;
+         this._cache.scripts = {};
+-        this._cache.compiledScripts = {};
++        // TurboWasm: blocks-cache-map — when the compiledScripts cache is
++        // a Map (= mapConversionEnabled), replace it with a fresh Map so
++        // previous-frame entries (= may have been cached under a previous
++        // project / compile result) are dropped. When OFF, the legacy
++        // plain-`{}` reset path is preserved. The runtime flag is read
++        // directly from `runtime.compilerOptions` (no local mirror) so
++        // toggling the gate via `setCompilerOptions` is reflected on the
++        // next call without manual cache invalidation.
++        if (this.runtime.compilerOptions.mapConversionEnabled) {
++            this._cache.compiledScripts = new Map();
++        } else {
++            this._cache.compiledScripts = {};
++        }
+         this._cache.compiledProcedures = {};
+         this._cache.proceduresPopulated = false;
+     }
+diff --git a/src/engine/execute.js b/src/engine/execute.js
+index c9f2f11..4ef8c5c 100644
+--- a/src/engine/execute.js
++++ b/src/engine/execute.js
+@@ -62,16 +62,21 @@ const handleReport = function (resolvedValue, sequencer, thread, blockCached, la
+         if (thread.stackClick) {
+             thread.status = Thread.STATUS_RUNNING;
+         } else if (sequencer.runtime.getIsEdgeActivatedHat(opcode)) {
++            // TurboWasm: edge-detection-hat-sentinel-eliminated
+             // If this is an edge-activated hat, only proceed if the value is
+             // true and used to be false, or the stack was activated explicitly
+-            // via stack click
+-            const hasOldEdgeValue = thread.target.hasEdgeActivatedValue(currentBlockId);
++            // via stack click. The sentinel elimination is semantically invariant
++            // because `updateEdgeActivatedValue` returns `undefined` on first
++            // access (== falsy) and `!undefined && resolvedValue === resolvedValue`.
++            // Subsequent calls return the previously stored value, so the
++            // expression reduces to the same `!old && resolvedValue` as the
++            // legacy `hasOldEdgeValue ? (!old && new) : new` ternary.
+             const oldEdgeValue = thread.target.updateEdgeActivatedValue(
+                 currentBlockId,
+                 resolvedValue
+             );
+ 
+-            const edgeWasActivated = hasOldEdgeValue ? (!oldEdgeValue && resolvedValue) : resolvedValue;
++            const edgeWasActivated = !oldEdgeValue && resolvedValue;
+             if (edgeWasActivated) {
+                 thread.status = Thread.STATUS_RUNNING;
+             } else {
 diff --git a/src/engine/runtime.js b/src/engine/runtime.js
+index 1df8dff..baee962 100644
 --- a/src/engine/runtime.js
 +++ b/src/engine/runtime.js
-@@ -467,10 +467,10 @@
-             fencing: true
-         };
+@@ -273,6 +273,13 @@ class Runtime extends EventEmitter {
+          * @type {Object.<string, Object>}
+          */
+         this._hats = {};
++        /**
++         * Cached array of [hatOpcode, hatMeta] pairs for the hot-path iteration
++         * in Runtime._step. Built lazily and invalidated whenever this._hats is
++         * mutated. Avoids the per-frame `for...in + hasOwnProperty.call` walk.
++         * @type {?Array.<[string, {edgeActivated: boolean, restartExistingThreads: boolean}]>}
++         */
++        this._hatsCache = null;
  
--        this.compilerOptions = {
-+this.compilerOptions = {
+         /**
+          * Map of opcode to information about whether the block's return value should be interpreted
+@@ -282,10 +289,11 @@ class Runtime extends EventEmitter {
+         this._flowing = {};
+ 
+         /**
+-         * A list of script block IDs that were glowing during the previous frame.
+-         * @type {!Array.<!string>}
++         * A set of script block IDs that were glowing during the previous frame.
++         * Stored as a Set for O(1) membership checks in the per-frame glow diff.
++         * @type {!Set.<!string>}
+          */
+-        this._scriptGlowsPreviousFrame = [];
++        this._scriptGlowsPreviousFrame = new Set();
+ 
+         /**
+          * Number of non-monitor threads running during the previous frame.
+@@ -457,11 +465,56 @@ class Runtime extends EventEmitter {
+             maxClones: Runtime.MAX_CLONES,
+             miscLimits: true,
+             fencing: true
+-        };
+-
++        };
++
+         this.compilerOptions = {
              enabled: true,
-             warpTimer: false,
--            // TurboWasm: constant-folding 窶・Phase 3 compiler-side fold
+-            warpTimer: false
++            warpTimer: false,
 +            // TurboWasm: constant-folding — Phase 3 compiler-side fold
-             // gate. Read by `IROptimizer.shouldFoldConstant` (= vendored
-             // scratch-vm/src/compiler/iroptimizer.js) to decide whether
-             // `tryFoldConstant` should run for each operator input.
-@@ -478,7 +478,19 @@
-             // `setCompilerOptions({ constantFoldingEnabled: false })`
-             // (wired from the Viewer's detailed toggle
-             // `data.constantFolding`) disables it for power-users.
--            constantFoldingEnabled: true
++            // gate. Read by `IROptimizer.shouldFoldConstant` (= vendored
++            // scratch-vm/src/compiler/iroptimizer.js) to decide whether
++            // `tryFoldConstant` should run for each operator input.
++            // Default-on so the optimization is live out of the box;
++            // `setCompilerOptions({ constantFoldingEnabled: false })`
++            // (wired from the Viewer's detailed toggle
++            // `data.constantFolding`) disables it for power-users.
 +            constantFoldingEnabled: true,
-+            // TurboWasm: branch-info-pool — Phase 4A gate for the
++            // TurboWasm: branch-info-pool — §Phase 4A gate for the
 +            // per-thread branchInfo pool in `compiler/jsexecute.js`.
 +            // Read by `__branchInfoAcquire` (= vendored
 +            // scratch-vm/src/compiler/jsexecute.js) on every
-+            // CONDITIONAL/LOOP block in compiled mode. Defaults to ON
-+            // (= pool acquires instead of fresh-allocates); set to
-+            // `false` to restore the legacy allocate-once-per-branch
-+            // behaviour (used by the Phase 4A A/B bench). Phase 4B
-+            // will decide whether to wire this to a runtime toggle;
-+            // for now the bench scripts flip it directly via
-+            // `runtime.setCompilerOptions({ branchInfoPoolEnabled: false })`.
-+            branchInfoPoolEnabled: true
++            // CONDITIONAL/LOOP block in compiled mode. **Default OFF**
++            // (§Phase 4A opt-in) so legacy user projects are unaffected;
++            // wire ON via `setCompilerOptions({ branchInfoPoolEnabled: true })`
++            // (= driven by the detailed toggle `compatLayer.branchInfoReuse`
++            // in `settings-bridge.applyAdvancedSettings`) when the user
++            // explicitly opts in. The Phase 4A microbench
++            // (`scripts/bench-scratch-vm-ab.mjs`) shows a 97% heapDelta
++            // reduction in pooled mode (= ON) vs legacy mode (= OFF).
++            // Note: native `control_if` / `control_repeat` blocks are
++            // inlined as native JS by the vendored compiler and do NOT
++            // go through the compat layer, so this pool only affects
++            // extension blocks with `BlockType.CONDITIONAL` / `LOOP`.
++            branchInfoPoolEnabled: false,
++            // TurboWasm: blocks-cache-map — §Phase 4B gate for the
++            // `Blocks._cache.compiledScripts` Map backing. Read by
++            // `Blocks.getCachedCompileResult` / `cacheCompileResult` /
++            // `cacheCompileError` (= vendored
++            // scratch-vm/src/engine/blocks.js). **Default OFF**
++            // (§Phase 4B opt-in) so legacy plain-`{}` lookup is
++            // preserved (= unchanged from upstream scratch-vm). Wire
++            // ON via `setCompilerOptions({ mapConversionEnabled: true })`
++            // (= driven by the detailed toggle `data.mapConversion` in
++            // `settings-bridge.applyAdvancedSettings`) when the user
++            // explicitly opts in. The Phase 4B microbench
++            // (`scripts/bench-map-eval.mjs`) on a 50-key cache with
++            // 80% lookup / 20% insert workload shows wall median
++            // 4.04 ms (plain) → 1.28 ms (Map) = 68% faster. `Target.variables`
++            // / `Thread.procedures` are intentionally NOT in this opt-in
++            // (serialization compatibility / 4-key workload are not worth
++            // the Map migration cost) and remain plain `{}` regardless of
++            // this flag.
++            mapConversionEnabled: false
          };
  
          this.debug = false;
+@@ -1005,6 +1058,7 @@ class Runtime extends EventEmitter {
+                     for (const hatName in packageHats) {
+                         if (Object.prototype.hasOwnProperty.call(packageHats, hatName)) {
+                             this._hats[hatName] = packageHats[hatName];
++                            this._hatsCache = null;
+                         }
+                     }
+                 }
+@@ -1173,6 +1227,7 @@ class Runtime extends EventEmitter {
+                             edgeActivated: blockInfo.isEdgeActivated,
+                             restartExistingThreads: blockInfo.shouldRestartExistingThreads
+                         };
++                        this._hatsCache = null;
+                     } else if (blockInfo.blockType === BlockType.CONDITIONAL) {
+                         this._flowing[opcode] = {
+                             conditional: true,
+@@ -2111,7 +2166,11 @@ class Runtime extends EventEmitter {
+         // Remove any existing thread.
+         for (let i = 0; i < this.threads.length; i++) {
+             // Toggling a script that's already running turns it off
+-            if (this.threads[i].topBlock === topBlockId && this.threads[i].status !== Thread.STATUS_DONE) {
++            if (
++                this.threads[i].target === opts.target &&
++                this.threads[i].topBlock === topBlockId &&
++                this.threads[i].status !== Thread.STATUS_DONE
++            ) {
+                 const blockContainer = opts.target.blocks;
+                 const opcode = blockContainer.getOpcode(blockContainer.getBlock(topBlockId));
+ 
+@@ -2520,16 +2579,45 @@ class Runtime extends EventEmitter {
+             this.profiler.start(stepProfilerId);
+         }
+ 
+-        // Clean up threads that were told to stop during or since the last step
+-        this.threads = this.threads.filter(thread => !thread.isKilled);
+-        this.updateThreadMap();
++        // Clean up threads that were told to stop during or since the last step.
++        // In-place compaction: only walk the array if at least one thread is killed.
++        // The threadMap is maintained incrementally by _pushThread / _restartThread /
++        // Sequencer.stepThreads, so no full rebuild is needed here.
++        const threads = this.threads;
++        let needsCompaction = false;
++        for (let i = 0; i < threads.length; i++) {
++            if (threads[i].isKilled) {
++                needsCompaction = true;
++                break;
++            }
++        }
++        if (needsCompaction) {
++            let writeIndex = 0;
++            for (let readIndex = 0; readIndex < threads.length; readIndex++) {
++                const thread = threads[readIndex];
++                if (thread.isKilled) {
++                    if (!thread.stackClick && !thread.updateMonitor) {
++                        this.threadMap.delete(thread.getId());
++                    }
++                } else {
++                    threads[writeIndex++] = thread;
++                }
++            }
++            threads.length = writeIndex;
++        }
+ 
+         // Find all edge-activated hats, and add them to threads to be evaluated.
+-        for (const hatType in this._hats) {
+-            if (!Object.prototype.hasOwnProperty.call(this._hats, hatType)) continue;
+-            const hat = this._hats[hatType];
+-            if (hat.edgeActivated) {
+-                this.startHats(hatType);
++        // Iterate the cached [key, value] array to avoid per-frame property walks
++        // and `hasOwnProperty` calls. The cache is rebuilt lazily whenever _hats
++        // is mutated (see _registerBlockPackages, _registerExtensionPrimitives).
++        if (this._hatsCache === null) {
++            this._hatsCache = Object.entries(this._hats);
++        }
++        const hatsCache = this._hatsCache;
++        for (let h = 0; h < hatsCache.length; h++) {
++            const entry = hatsCache[h];
++            if (entry[1].edgeActivated) {
++                this.startHats(entry[0]);
+             }
+         }
+         this.redrawRequested = false;
+@@ -2551,7 +2639,7 @@ class Runtime extends EventEmitter {
+         // flag will still indicate that a script ran.
+         this._emitProjectRunStatus(
+             this.threads.length + doneThreads.length -
+-                this._getMonitorThreadCount([...this.threads, ...doneThreads]));
++                this._getMonitorThreadCount(this.threads, doneThreads));
+         // Store threads that completed this iteration for testing and other
+         // internal purposes.
+         this._lastStepDoneThreads = doneThreads;
+@@ -2595,16 +2683,24 @@ class Runtime extends EventEmitter {
+     }
+ 
+     /**
+-     * Get the number of threads in the given array that are monitor threads (threads
++     * Get the number of threads in the given arrays that are monitor threads (threads
+      * that update monitor values, and don't count as running a script).
+-     * @param {!Array.<Thread>} threads The set of threads to look through.
+-     * @return {number} The number of monitor threads in threads.
++     * @param {!Array.<Thread>} threadsA Primary set of threads to look through.
++     * @param {Array.<Thread>=} threadsB Optional secondary set; pass to count both
++     *     the live and just-finished threads in a single pass without allocating
++     *     a combined array via spread.
++     * @return {number} The number of monitor threads across the inputs.
+      */
+-    _getMonitorThreadCount (threads) {
++    _getMonitorThreadCount (threadsA, threadsB) {
+         let count = 0;
+-        threads.forEach(thread => {
+-            if (thread.updateMonitor) count++;
+-        });
++        for (let i = 0; i < threadsA.length; i++) {
++            if (threadsA[i].updateMonitor) count++;
++        }
++        if (threadsB) {
++            for (let i = 0; i < threadsB.length; i++) {
++                if (threadsB[i].updateMonitor) count++;
++            }
++        }
+         return count;
+     }
+ 
+@@ -2627,7 +2723,7 @@ class Runtime extends EventEmitter {
+         const oldEditingTarget = this._editingTarget;
+         this._editingTarget = editingTarget;
+         // Script glows must be cleared.
+-        this._scriptGlowsPreviousFrame = [];
++        this._scriptGlowsPreviousFrame = new Set();
+         this._updateGlows();
+ 
+         if (oldEditingTarget !== this._editingTarget) {
+@@ -2960,22 +3056,36 @@ class Runtime extends EventEmitter {
+      * @param {Array.<Thread>=} optExtraThreads Optional list of inactive threads.
+      */
+     _updateGlows (optExtraThreads) {
+-        const searchThreads = [];
+-        searchThreads.push(...this.threads);
++        // When no editing target is set (e.g. pure player), skip the whole pass.
++        if (this._editingTarget === null) {
++            return;
++        }
++        // Reuse a per-instance array for the merged thread list to avoid the
++        // per-frame `[...this.threads, ...optExtraThreads]` spread allocation.
++        let searchThreads = this._glowSearchThreads;
++        if (!searchThreads) {
++            searchThreads = this._glowSearchThreads = [];
++        }
++        searchThreads.length = 0;
++        const liveThreads = this.threads;
++        for (let i = 0; i < liveThreads.length; i++) {
++            searchThreads.push(liveThreads[i]);
++        }
+         if (optExtraThreads) {
+-            searchThreads.push(...optExtraThreads);
+-        }
+-        // Set of scripts that request a glow this frame.
+-        const requestedGlowsThisFrame = [];
+-        // Final set of scripts glowing during this frame.
+-        const finalScriptGlows = [];
+-        // Find all scripts that should be glowing.
++            for (let i = 0; i < optExtraThreads.length; i++) {
++                searchThreads.push(optExtraThreads[i]);
++            }
++        }
++        // Build the set of scripts that request a glow this frame, as a Set
++        // for O(1) membership checks. Avoids the previous O(N*M) indexOf walk.
++        const requestedGlows = new Set();
++        const editingTarget = this._editingTarget;
+         for (let i = 0; i < searchThreads.length; i++) {
+             const thread = searchThreads[i];
+             const target = thread.target;
+-            if (target === this._editingTarget) {
+-                const blockForThread = thread.blockGlowInFrame;
++            if (target === editingTarget) {
+                 if (thread.requestScriptGlowInFrame || thread.stackClick) {
++                    const blockForThread = thread.blockGlowInFrame;
+                     let script = target.blocks.getTopLevelScript(blockForThread);
+                     if (!script) {
+                         // Attempt to find in flyout blocks.
+@@ -2984,31 +3094,30 @@ class Runtime extends EventEmitter {
+                         );
+                     }
+                     if (script) {
+-                        requestedGlowsThisFrame.push(script);
++                        requestedGlows.add(script);
+                     }
+                 }
+             }
+         }
+-        // Compare to previous frame.
+-        for (let j = 0; j < this._scriptGlowsPreviousFrame.length; j++) {
+-            const previousFrameGlow = this._scriptGlowsPreviousFrame[j];
+-            if (requestedGlowsThisFrame.indexOf(previousFrameGlow) < 0) {
+-                // Glow turned off.
++        // Diff against previous frame and emit on/off events.
++        const previous = this._scriptGlowsPreviousFrame;
++        const next = new Set();
++        // Scripts that were glowing last frame but no longer: turn off.
++        for (const previousFrameGlow of previous) {
++            if (!requestedGlows.has(previousFrameGlow)) {
+                 this.glowScript(previousFrameGlow, false);
+             } else {
+-                // Still glowing.
+-                finalScriptGlows.push(previousFrameGlow);
++                next.add(previousFrameGlow);
+             }
+         }
+-        for (let k = 0; k < requestedGlowsThisFrame.length; k++) {
+-            const currentFrameGlow = requestedGlowsThisFrame[k];
+-            if (this._scriptGlowsPreviousFrame.indexOf(currentFrameGlow) < 0) {
+-                // Glow turned on.
++        // Scripts newly glowing this frame: turn on.
++        for (const currentFrameGlow of requestedGlows) {
++            if (!previous.has(currentFrameGlow)) {
+                 this.glowScript(currentFrameGlow, true);
+-                finalScriptGlows.push(currentFrameGlow);
++                next.add(currentFrameGlow);
+             }
+         }
+-        this._scriptGlowsPreviousFrame = finalScriptGlows;
++        this._scriptGlowsPreviousFrame = next;
+     }
+ 
+     /**
+@@ -3034,10 +3143,7 @@ class Runtime extends EventEmitter {
+      * @param {!string} scriptBlockId Id of top-level block in script to quiet.
+      */
+     quietGlow (scriptBlockId) {
+-        const index = this._scriptGlowsPreviousFrame.indexOf(scriptBlockId);
+-        if (index > -1) {
+-            this._scriptGlowsPreviousFrame.splice(index, 1);
+-        }
++        this._scriptGlowsPreviousFrame.delete(scriptBlockId);
+     }
+ 
+     /**
+@@ -3493,6 +3599,171 @@ class Runtime extends EventEmitter {
+ 
+         return callback().then(onSuccess, onError);
+     }
++
++    // TurboWasm: list / scalar buffer accessors for the GPU compute kernel
++    // pipeline (see gpu-kernel-spec-summary.md §6.1). These are non-
++    // breaking additions: callers without @compute regions simply never
++    // call them. They return a `{data, length, dtype}` triple where data
++    // is a freshly-allocated Float32Array / Int32Array / Uint8Array view
++    // mirroring the scratch-vm list, so the GPU side can call syncToHost
++    // after the dispatch. The `dtype` matches the @bind directive's dtype.
++
++    /**
++     * Look up a list by name (case-insensitive, lower-cased to match
++     * scratch-vm's storage convention) and return a typed-array-backed
++     * view of its current contents in the requested dtype.
++     * @param {string} name list name.
++     * @param {'f32'|'i32'|'byte'} [dtype='f32'] ABI dtype.
++     * @return {{data: Float32Array|Int32Array|Uint8Array, length: number, dtype: string} | null}
++     */
++    __getListBuffer (name, dtype) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const wantDtype = dtype || 'f32';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
++                    return this.__getListBufferById(varId, wantDtype);
++                }
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Look up a list by id and return a typed-array-backed view in the
++     * requested dtype.
++     * @param {string} id scratch-vm variable id.
++     * @param {'f32'|'i32'|'byte'} [dtype='f32'] ABI dtype.
++     * @return {{data: Float32Array|Int32Array|Uint8Array, length: number, dtype: string} | null}
++     */
++    __getListBufferById (id, dtype) {
++        const wantDtype = dtype || 'f32';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            const v = target.variables[id];
++            if (v && v.type === 'list' && Array.isArray(v.value)) {
++                if (wantDtype === 'i32') {
++                    const data = new Int32Array(v.value.length);
++                    for (let i = 0; i < v.value.length; i++) {
++                        const n = Number(v.value[i]);
++                        data[i] = Number.isFinite(n) ? (n | 0) : 0;
++                    }
++                    return {data, length: v.value.length, dtype: 'i32'};
++                }
++                if (wantDtype === 'byte') {
++                    const data = new Uint8Array(v.value.length);
++                    for (let i = 0; i < v.value.length; i++) {
++                        const n = Number(v.value[i]);
++                        data[i] = Number.isFinite(n) ? (n & 0xff) : 0;
++                    }
++                    return {data, length: v.value.length, dtype: 'byte'};
++                }
++                const data = new Float32Array(v.value.length);
++                for (let i = 0; i < v.value.length; i++) {
++                    const n = Number(v.value[i]);
++                    data[i] = Number.isFinite(n) ? n : 0;
++                }
++                return {data, length: v.value.length, dtype: 'f32'};
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Write back a typed array into the host list identified by name
++     * (case-insensitive, lower-cased to match scratch-vm's storage
++     * convention).
++     * @param {string} name list name.
++     * @param {Float32Array|Int32Array|Uint8Array} value data to write.
++     * @return {boolean}
++     */
++    __setListBuffer (name, value) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const arr = value && value.length !== undefined ? value : null;
++        if (!arr) return false;
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'list' && v.name && v.name.toLowerCase() === lowerName) {
++                    return this.__setListBufferById(varId, arr);
++                }
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Write back a typed array into the host list identified by id.
++     * Truncates to the existing list length so we don't accidentally
++     * grow a list (scratch-vm list growth goes through `data_addtolist`).
++     * @param {string} id scratch-vm variable id.
++     * @param {Float32Array|Int32Array|Uint8Array} value data to write.
++     * @return {boolean}
++     */
++    __setListBufferById (id, value) {
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            const v = target.variables[id];
++            if (v && v.type === 'list' && Array.isArray(v.value)) {
++                const n = Math.min(v.value.length, value.length);
++                for (let i = 0; i < n; i++) {
++                    v.value[i] = Number(value[i]);
++                }
++                v._monitorUpToDate = false;
++                return true;
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Read a scalar variable by name (case-insensitive via scratch-vm's
++     * lower-cased storage). Returns the numeric value or 0 when missing.
++     * @param {string} name scalar variable name.
++     * @return {number}
++     */
++    __getScalarValue (name) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
++                    const n = Number(v.value);
++                    return Number.isFinite(n) ? n : 0;
++                }
++            }
++        }
++        return 0;
++    }
++
++    /**
++     * Write a scalar variable by name (case-insensitive). Returns true
++     * when the variable was found and updated.
++     * @param {string} name scalar variable name.
++     * @param {number} value numeric value to write.
++     * @return {boolean}
++     */
++    __setScalarValue (name, value) {
++        const lowerName = typeof name === 'string' ? name.toLowerCase() : '';
++        const n = Number(value);
++        const safe = Number.isFinite(n) ? n : 0;
++        for (const target of this.targets) {
++            if (!target || !target.variables) continue;
++            for (const varId of Object.keys(target.variables)) {
++                const v = target.variables[varId];
++                if (v && v.type === 'scalar' && v.name && v.name.toLowerCase() === lowerName) {
++                    v.value = safe;
++                    v._monitorUpToDate = false;
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
+ }
+ 
+ /**
+diff --git a/src/engine/sequencer.js b/src/engine/sequencer.js
+index c374fb6..8b276cc 100644
+--- a/src/engine/sequencer.js
++++ b/src/engine/sequencer.js
+@@ -54,6 +54,16 @@ class Sequencer {
+         this.runtime = runtime;
+ 
+         this.activeThread = null;
++
++        /**
++         * Reusable array for collecting threads that completed during stepThreads.
++         * Reset at the start of each stepThreads call. The array reference is
++         * reused across calls to avoid per-step allocation; the contents are
++         * read-only from the caller's perspective (Runtime._step) and must not
++         * be mutated before the next stepThreads call.
++         * @type {Array.<!Thread>}
++         */
++        this._doneThreads = [];
+     }
+ 
+     /**
+@@ -81,7 +91,10 @@ class Sequencer {
+         let numActiveThreads = Infinity;
+         // Whether `stepThreads` has run through a full single tick.
+         let ranFirstTick = false;
+-        const doneThreads = [];
++        // Reuse the per-instance doneThreads array to avoid per-step allocation.
++        // Caller must not retain a reference beyond the next stepThreads call.
++        const doneThreads = this._doneThreads;
++        doneThreads.length = 0;
+         // Conditions for continuing to stepping threads:
+         // 1. We must have threads in the list, and some must be active.
+         // 2. Time elapsed must be less than WORK_TIME.
+@@ -193,8 +206,10 @@ class Sequencer {
+             }
+         }
+         // Save the current block ID to notice if we did control flow.
+-        while ((currentBlockId = thread.peekStack())) {
+-            const initialStackSize = thread.stack.length;
++        // Inline peekStack to avoid the helper function call per iteration.
++        const stack = thread.stack;
++        while ((currentBlockId = stack[stack.length - 1])) {
++            const initialStackSize = stack.length;
+             let isWarpMode = thread.peekStackFrame().warpMode;
+             if (isWarpMode && !thread.warpTimer) {
+                 // Initialize warp-mode timer if it hasn't been already.
+diff --git a/src/engine/tw-frame-loop.js b/src/engine/tw-frame-loop.js
+index bf2554b..54a7df0 100644
+--- a/src/engine/tw-frame-loop.js
++++ b/src/engine/tw-frame-loop.js
+@@ -10,12 +10,19 @@ const _cancelAnimationFrame = typeof requestAnimationFrame === 'function' ?
+     clearTimeout;
+ 
+ const animationFrameWrapper = callback => {
++    // Allocate the cancel function once. The handle closure is shared across
++    // every animation frame so we do not allocate a fresh closure per frame.
+     let id;
++    let cancelled = false;
+     const handle = () => {
++        if (cancelled) return;
+         id = _requestAnimationFrame(handle);
+         callback();
+     };
+-    const cancel = () => _cancelAnimationFrame(id);
++    const cancel = () => {
++        cancelled = true;
++        if (id !== undefined) _cancelAnimationFrame(id);
++    };
+     id = _requestAnimationFrame(handle);
+     return {
+         cancel
+diff --git a/src/sprites/rendered-target.js b/src/sprites/rendered-target.js
+index eeb029f..d085a07 100644
+--- a/src/sprites/rendered-target.js
++++ b/src/sprites/rendered-target.js
+@@ -807,8 +807,16 @@ class RenderedTarget extends Target {
+         // Filter out dragging targets. This means a sprite that is being dragged
+         // can detect other sprites using touching <sprite>, but cannot be detected
+         // by other sprites while it is being dragged. This matches Scratch 2.0 behavior.
+-        const drawableCandidates = firstClone.sprite.clones.filter(clone => !clone.dragging)
+-            .map(clone => clone.drawableID);
++        // Single-pass loop building the drawableID array directly; no intermediate
++        // array from filter+map.
++        const clones = firstClone.sprite.clones;
++        const drawableCandidates = [];
++        for (let i = 0; i < clones.length; i++) {
++            const clone = clones[i];
++            if (!clone.dragging) {
++                drawableCandidates.push(clone.drawableID);
++            }
++        }
+         return this.renderer.isTouchingDrawables(
+             this.drawableID, drawableCandidates);
+     }
+diff --git a/src/util/cast.js b/src/util/cast.js
+index d78717a..fd42ca2 100644
+--- a/src/util/cast.js
++++ b/src/util/cast.js
+@@ -159,15 +159,21 @@ class Cast {
+             }
+             return 0;
+         }
+-        // Handle the special case of Infinity
+-        if (
+-            (n1 === Infinity && n2 === Infinity) ||
+-            (n1 === -Infinity && n2 === -Infinity)
+-        ) {
+-            return 0;
+-        }
+-        // Compare as numbers.
+-        return n1 - n2;
++        // TurboWasm: comparison-infinity-branch-removed
++        // The legacy `(n1 === Infinity && n2 === Infinity) || ...` special case
++        // existed only because `Infinity - Infinity === NaN`, so subtraction
++        // could not distinguish the equal-infinity pairs from the NaN path
++        // (which is short-circuited above). Direct `<` / `>` comparison is
++        // semantically invariant:
++        //   Infinity === Infinity  -> false / false -> 0
++        //   -Infinity === -Infinity -> false / false -> 0
++        //   Infinity > -Infinity  -> false / true -> 1
++        //   -Infinity < Infinity  -> true / false -> -1
++        //   Infinity > finite     -> false / true -> 1
++        //   finite < Infinity     -> true / false -> -1
++        if (n1 < n2) return -1;
++        if (n1 > n2) return 1;
++        return 0;
+     }
+ 
+     /**

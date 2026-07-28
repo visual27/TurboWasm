@@ -114,6 +114,9 @@ describe('applyAdvancedSettings: VM API mapping', () => {
       enabled: false,
       warpTimer: true,
       constantFoldingEnabled: true,
+      // §Phase 4A / 4B opt-in — defaults are OFF.
+      branchInfoPoolEnabled: false,
+      mapConversionEnabled: false,
     });
   });
 
@@ -283,6 +286,9 @@ describe('applyAdvancedSettings — master TurboWasm Acceleration gate (Phase 0)
       enabled: false,
       warpTimer: false,
       constantFoldingEnabled: true,
+      // §Phase 4A / 4B opt-in — defaults are OFF (= legacy byte-identical).
+      branchInfoPoolEnabled: false,
+      mapConversionEnabled: false,
     });
   });
 });
@@ -299,6 +305,9 @@ describe('applyAdvancedSettings — constantFoldingEnabled gate (Phase 3)', () =
       enabled: true,
       warpTimer: false,
       constantFoldingEnabled: true,
+      // §Phase 4A / 4B opt-in — defaults are OFF.
+      branchInfoPoolEnabled: false,
+      mapConversionEnabled: false,
     });
   });
 
@@ -317,6 +326,9 @@ describe('applyAdvancedSettings — constantFoldingEnabled gate (Phase 3)', () =
       enabled: true,
       warpTimer: false,
       constantFoldingEnabled: false,
+      // §Phase 4A / 4B opt-in — defaults are OFF.
+      branchInfoPoolEnabled: false,
+      mapConversionEnabled: false,
     });
   });
 

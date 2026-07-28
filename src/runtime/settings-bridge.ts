@@ -20,6 +20,28 @@ interface VmRuntimeLike {
     // whether `tryFoldConstant` runs. Wired from the detailed toggle
     // `data.constantFolding` (see `applyAdvancedSettings` below).
     constantFoldingEnabled?: boolean;
+    // §Phase 4A opt-in — vendored scratch-vm's `__branchInfoAcquire`
+    // (= `src/compiler/jsexecute.js`) reads
+    // `runtime.compilerOptions.branchInfoPoolEnabled` to decide whether
+    // to acquire the branchInfo snapshot from the per-thread pool or
+    // allocate a fresh one. Default OFF in the vendored runtime; wired
+    // from the detailed toggle `compatLayer.branchInfoReuse` in
+    // `applyAdvancedSettings` below. 97% heapDelta reduction in
+    // microbench; only affects scripts that hit the compat layer
+    // (= extension blocks with BlockType.CONDITIONAL / LOOP).
+    branchInfoPoolEnabled?: boolean;
+    // §Phase 4B opt-in — vendored scratch-vm's
+    // `Blocks.getCachedCompileResult` / `cacheCompileResult` /
+    // `cacheCompileError` (= `src/engine/blocks.js`) read
+    // `runtime.compilerOptions.mapConversionEnabled` to decide whether
+    // `Blocks._cache.compiledScripts` is a `Map<string, ...>` (= ON)
+    // or a plain `{}` (= OFF). Default OFF in the vendored runtime;
+    // wired from the detailed toggle `data.mapConversion` in
+    // `applyAdvancedSettings` below. 68% wall median reduction on a
+    // 50-key cache (see `scripts/bench-map-eval.mjs`). The Map shape
+    // is runtime-internal (= never serialized to sb3) so sb3
+    // compatibility is preserved.
+    mapConversionEnabled?: boolean;
   }): void;
   setRuntimeOptions(
     opts: Partial<{ miscLimits: boolean; fencing: boolean; maxClones: number }>,
@@ -116,6 +138,21 @@ export function applyAdvancedSettings(
       enabled: !next.disableCompiler,
       warpTimer: next.warpTimer,
       constantFoldingEnabled: detailed['data.constantFolding'],
+      // §Phase 4A opt-in. `compatLayer.branchInfoReuse` defaults to false
+      // (= legacy allocate-once-per-branch); when the user enables it,
+      // the vendored scratch-vm's `__branchInfoAcquire` switches to the
+      // per-thread pool path (heapDelta -97% in microbench). Only affects
+      // scripts that hit the compat layer (= extension blocks with
+      // BlockType.CONDITIONAL / LOOP). Native `control_if` /
+      // `control_repeat` blocks are inlined as native JS by the vendored
+      // compiler and do NOT go through the compat layer, so this toggle
+      // is a no-op for typical sb3 projects (= 99% of user projects).
+      branchInfoPoolEnabled: detailed['compatLayer.branchInfoReuse'],
+      // §Phase 4B opt-in. `data.mapConversion` defaults to OFF; when
+      // enabled, `Blocks._cache.compiledScripts` is backed by a Map
+      // (= 68% wall median reduction on a 50-key cache). Runtime-internal
+      // shape change only (= never persisted to sb3).
+      mapConversionEnabled: detailed['data.mapConversionEvaluation'],
     });
 
     vm.runtime.setRuntimeOptions({

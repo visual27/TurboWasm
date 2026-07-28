@@ -118,8 +118,17 @@ describe('Phase 4A — runtime gate default', () => {
   }
   const runtimeText = readFileSync(VENDORED_SOURCE_RUNTIME, 'utf8');
 
-  it('runtime.js compilerOptions carries branchInfoPoolEnabled: true (= default ON)', () => {
-    expect(runtimeText).toContain('branchInfoPoolEnabled: true');
+  it('runtime.js compilerOptions carries branchInfoPoolEnabled: false (= §Phase 4A opt-in default OFF)', () => {
+    // §Phase 4A opt-in: the gate MUST default to `false` so existing
+    // user projects (= legacy allocate-once-per-branch path) are
+    // byte-identical until the user explicitly enables the toggle
+    // via the detailed Settings screen (= which calls
+    // `vm.runtime.setCompilerOptions({ branchInfoPoolEnabled: true })`
+    // from `settings-bridge.applyAdvancedSettings`). Toggling off the
+    // detailed toggle restores the legacy path; the patch is
+    // semantically invariant (= same observable behaviour for every
+    // status transition in `executeInCompatibilityLayer`).
+    expect(runtimeText).toMatch(/branchInfoPoolEnabled:\s*false/);
   });
 });
 
