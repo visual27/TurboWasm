@@ -40,6 +40,8 @@ the table below is the source-of-truth consumed by
 | Compiler (constant folding) | `// TurboWasm: constant-folding` | 3 | `vendored/scratch-vm/src/compiler/iroptimizer.js` + `vendored/scratch-vm/src/compiler/compile.js` + `vendored/scratch-vm/src/engine/runtime.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-constant-folding.test.ts` |
 | Compiler (NaN / -0 constant emit) | `// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler` | 3 follow-up | `vendored/scratch-vm/src/compiler/jsgen.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-tap-bridge-constant-folding.test.ts` |
 | GPU kernel runtime adapter (list / scalar buffer accessors) | `// TurboWasm: list / scalar buffer accessors` | M2 | `vendored/scratch-vm/src/engine/runtime.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/gpu-kernel-patches.test.ts` |
+| Compat layer (branch-info pool) | `// TurboWasm: branch-info-pool` | 4-A (opt-in) | `vendored/scratch-vm/src/compiler/jsexecute.js` + `vendored/scratch-vm/src/compiler/jsgen.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-compat-layer-branch-info-pool.test.ts` |
+| Engine blocks (compiledScripts Map backing) | `// TurboWasm: blocks-cache-map` | 4-B (opt-in) | `vendored/scratch-vm/src/engine/blocks.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-blocks-cache-map.test.ts` |
 
 The M2 row was previously shipped via the standalone
 `patches/vendored/gpu-kernel-list-binding+0.1.0.patch` (created at `6da15a7`,

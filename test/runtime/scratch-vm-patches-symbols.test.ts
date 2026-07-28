@@ -29,6 +29,7 @@ const UMD_PATH = resolve(
 // Mirror of `scripts/patches/scratch-vm-symbols.md`. Append new
 // markers in alphabetical order of the namespace for diff hygiene.
 const TURBOWASM_MARKERS: readonly string[] = [
+  '// TurboWasm: blocks-cache-map',
   '// TurboWasm: branch-info-pool',
   '// TurboWasm: compat-layer-finish-extracted',
   '// TurboWasm: comparison-compare-equal-short-circuit',
@@ -41,7 +42,7 @@ const TURBOWASM_MARKERS: readonly string[] = [
   '// TurboWasm: procedure-definition-entry-prototype-substack',
 ];
 
-describe('// TurboWasm: marker registry (Phase 1-A/B/C)', () => {
+describe('// TurboWasm: marker registry (Phase 1+ / Phase 4)', () => {
   it('the vendored scaffolding UMD exists (npm run setup has run)', () => {
     if (!existsSync(UMD_PATH)) {
       // eslint-disable-next-line no-console
