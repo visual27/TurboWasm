@@ -1466,3 +1466,269 @@ index a2a5ab4..63288e7 100644
          let result = n % modulus;
          // Scratch mod uses floored division instead of truncated division.
          if (result / modulus < 0) result += modulus;
+
+diff --git a/src/util/cast.js b/src/util/cast.js
+index fd42ca2..cb9e496 100644
+--- a/src/util/cast.js
++++ b/src/util/cast.js
+@@ -139,7 +139,14 @@ class Cast {
+      * @param {*} v2 Second value to compare.
+      * @returns {number} Negative number if v1 < v2; 0 if equal; positive otherwise.
+      */
+-    static compare (v1, v2) {
++static compare (v1, v2, caseSensitive = false) {
++        // TurboWasm: case-sensitive-strings (Phase 8-B)
++        // When `caseSensitive=true`, the string fallback path skips
++        // `.toLowerCase()` (= JS semantics). Default `false` preserves
++        // the legacy Scratch (= case-insensitive) behaviour for every
++        // existing caller. Wired from `runtime.compilerOptions.semantics
++        // .caseSensitiveStrings` in the interpreter path (= the only
++        // path that funnels through `Cast.compare`).
+         let n1 = Number(v1);
+         let n2 = Number(v2);
+         if (n1 === 0 && isNotActuallyZero(v1)) {
+@@ -150,8 +157,8 @@ class Cast {
+         if (isNaN(n1) || isNaN(n2)) {
+             // At least one argument can't be converted to a number.
+             // Scratch compares strings as case insensitive.
+-            const s1 = String(v1).toLowerCase();
+-            const s2 = String(v2).toLowerCase();
++            const s1 = caseSensitive ? String(v1) : String(v1).toLowerCase();
++            const s2 = caseSensitive ? String(v2) : String(v2).toLowerCase();
+             if (s1 < s2) {
+                 return -1;
+             } else if (s1 > s2) {
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+index 1b88373..f8b7b18 100644
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -34,7 +34,17 @@ const isStuck = () => {
+         return globalState.thread.target.runtime.sequencer.timer.timeElapsed() > 500;
+     }
+     return false;
+-};`;
++};
++// TurboWasm: case-sensitive-strings (Phase 8-B)
++// Capture the semantics bundle at script-compile time. `runtime` is
++// available on `globalState` (= the parameter passed to `new Function`)
++// when this `baseRuntime` block runs (= `scopedEval` evaluates a
++// script factory). `setCompilerOptions` invalidates the compile
++// cache on every flag change, so the next compile re-reads the
++// current `runtime.compilerOptions.semantics`. Default values match
++// upstream scratch-vm (= all OFF, Scratch-compatible) so the OFF path
++// is byte-identical to before this patch.
++const __semantics = (globalState && globalState.thread && globalState.thread.target && globalState.thread.target.runtime && globalState.thread.target.runtime.compilerOptions && globalState.thread.target.runtime.compilerOptions.semantics) || { caseSensitiveStrings: false, truncatedModulo: false, strictNumericEquality: false, propagateNaN: false, jsTruthyBooleans: false };`;
+ 
+ /**
+  * Start hats by opcode.
+@@ -340,25 +350,37 @@ baseRuntime += `const isNotActuallyZero = val => {
+  * @param {*} v2 Second value
+  * @returns {boolean} true if v1 is equal to v2
+  */
+-baseRuntime += `const compareEqualSlow = (v1, v2) => {
++baseRuntime += `// TurboWasm: case-sensitive-strings (Phase 8-B)
++// When the semantics flag is on, the slow path skips \`.toLowerCase()\`
++// and uses \`String(...)\` directly. The fast path is unaffected (= all
++// numbers and === references are case-insensitive by definition).
++const compareEqualSlow = (v1, v2) => {
+     const n1 = +v1;
+-    if (Number.isNaN(n1) || (n1 === 0 && isNotActuallyZero(v1))) return ('' + v1).toLowerCase() === ('' + v2).toLowerCase();
++    if (Number.isNaN(n1) || (n1 === 0 && isNotActuallyZero(v1))) {
++        const a = __semantics.caseSensitiveStrings ? ('' + v1) : ('' + v1).toLowerCase();
++        const b = __semantics.caseSensitiveStrings ? ('' + v2) : ('' + v2).toLowerCase();
++        return a === b;
++    }
+     const n2 = +v2;
+-    if (Number.isNaN(n2) || (n2 === 0 && isNotActuallyZero(v2))) return ('' + v1).toLowerCase() === ('' + v2).toLowerCase();
++    if (Number.isNaN(n2) || (n2 === 0 && isNotActuallyZero(v2))) {
++        const a = __semantics.caseSensitiveStrings ? ('' + v1) : ('' + v1).toLowerCase();
++        const b = __semantics.caseSensitiveStrings ? ('' + v2) : ('' + v2).toLowerCase();
++        return a === b;
++    }
+     return n1 === n2;
+ };
+-// TurboWasm: comparison-compare-equal-short-circuit
+-const compareEqualLegacy = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);
+-const compareEqual = (v1, v2) => {
+-    if (v1 === v2) return true;
+-    if (
+-        typeof v1 === 'number' &&
+-        typeof v2 === 'number' &&
+-        !Number.isNaN(v1) &&
+-        !Number.isNaN(v2)
+-    ) return false;
+-    return compareEqualSlow(v1, v2);
+-};`;
++// TurboWasm: comparison-compare-equal-short-circuit
++const compareEqualLegacy = (v1, v2) => (typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) && !Number.isNaN(v2) || v1 === v2) ? v1 === v2 : compareEqualSlow(v1, v2);
++const compareEqual = (v1, v2) => {
++    if (v1 === v2) return true;
++    if (
++        typeof v1 === 'number' &&
++        typeof v2 === 'number' &&
++        !Number.isNaN(v1) &&
++        !Number.isNaN(v2)
++    ) return false;
++    return compareEqualSlow(v1, v2);
++};`;
+ 
+ /**
+  * Determine if one value is greater than another.
+@@ -366,7 +388,8 @@ const compareEqual = (v1, v2) => {
+  * @param {*} v2 Second value
+  * @returns {boolean} true if v1 is greater than v2
+  */
+-runtimeFunctions.compareGreaterThan = `const compareGreaterThanSlow = (v1, v2) => {
++runtimeFunctions.compareGreaterThan = `// TurboWasm: case-sensitive-strings (Phase 8-B)
++const compareGreaterThanSlow = (v1, v2) => {
+     let n1 = +v1;
+     let n2 = +v2;
+     if (n1 === 0 && isNotActuallyZero(v1)) {
+@@ -375,8 +398,9 @@ runtimeFunctions.compareGreaterThan = `const compareGreaterThanSlow = (v1, v2) =
+         n2 = NaN;
+     }
+     if (Number.isNaN(n1) || Number.isNaN(n2)) {
+-        const s1 = ('' + v1).toLowerCase();
+-        const s2 = ('' + v2).toLowerCase();
++        // TurboWasm: case-sensitive-strings
++        const s1 = __semantics.caseSensitiveStrings ? ('' + v1) : ('' + v1).toLowerCase();
++        const s2 = __semantics.caseSensitiveStrings ? ('' + v2) : ('' + v2).toLowerCase();
+         return s1 > s2;
+     }
+     return n1 > n2;
+@@ -389,7 +413,8 @@ const compareGreaterThan = (v1, v2) => typeof v1 === 'number' && typeof v2 === '
+  * @param {*} v2 Second value
+  * @returns {boolean} true if v1 is less than v2
+  */
+-runtimeFunctions.compareLessThan = `const compareLessThanSlow = (v1, v2) => {
++runtimeFunctions.compareLessThan = `// TurboWasm: case-sensitive-strings (Phase 8-B)
++const compareLessThanSlow = (v1, v2) => {
+     let n1 = +v1;
+     let n2 = +v2;
+     if (n1 === 0 && isNotActuallyZero(v1)) {
+@@ -398,8 +423,9 @@ runtimeFunctions.compareLessThan = `const compareLessThanSlow = (v1, v2) => {
+         n2 = NaN;
+     }
+     if (Number.isNaN(n1) || Number.isNaN(n2)) {
+-        const s1 = ('' + v1).toLowerCase();
+-        const s2 = ('' + v2).toLowerCase();
++        // TurboWasm: case-sensitive-strings
++        const s1 = __semantics.caseSensitiveStrings ? ('' + v1) : ('' + v1).toLowerCase();
++        const s2 = __semantics.caseSensitiveStrings ? ('' + v2) : ('' + v2).toLowerCase();
+         return s1 < s2;
+     }
+     return n1 < n2;
+@@ -580,6 +606,26 @@ runtimeFunctions.listContains = `const listContains = (list, item) => {
+     return false;
+ }`;
+ 
++/**
++ * TurboWasm: case-sensitive-strings (Phase 8-B)
++ *
++ * Substring search for the `operator_contains` block. The legacy
++ * scratch-vm emit (= `jsgen.js:OP_CONTAINS`) baked
++ * `.toLowerCase().indexOf(...)` into the compiled source, which made
++ * the semantics flag's effect a no-op. This helper delegates to the
++ * captured `__semantics` (= see the `baseRuntime` block above) so the
++ * flag flips the substring search case-sensitivity at runtime.
++ */
++runtimeFunctions.compareContains = `// TurboWasm: case-sensitive-strings (Phase 8-B)
++const compareContains = (a, b) => {
++    const aStr = '' + a;
++    const bStr = '' + b;
++    if (__semantics.caseSensitiveStrings) {
++        return aStr.indexOf(bStr) !== -1;
++    }
++    return aStr.toLowerCase().indexOf(bStr.toLowerCase()) !== -1;
++};`;
++
+ /**
+  * Find the 1-indexed index of an item in a list.
+  * @param {import('../engine/variable')} list The list.
+
+diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
+index 1ccb0a8..577cef7 100644
+--- a/src/compiler/jsgen.js
++++ b/src/compiler/jsgen.js
+@@ -302,7 +302,13 @@ class JSGenerator {
+         case InputOpcode.OP_CEILING:
+             return `Math.ceil(${this.descendInput(node.value)})`;
+         case InputOpcode.OP_CONTAINS:
+-            return `(${this.descendInput(node.string)}.toLowerCase().indexOf(${this.descendInput(node.contains)}.toLowerCase()) !== -1)`;
++            // TurboWasm: case-sensitive-strings (Phase 8-B)
++            // Delegate to the `compareContains` runtime helper so the
++            // `semantics.caseSensitiveStrings` flag flips the substring
++            // search. The legacy hard-coded `.toLowerCase()` baked into
++            // the compiled source is removed because it made the flag
++            // a no-op (= always case-insensitive).
++            return `compareContains(${this.descendInput(node.string)}, ${this.descendInput(node.contains)})`;
+         case InputOpcode.OP_COS:
+             return `(Math.round(Math.cos((Math.PI * ${this.descendInput(node.value)}) / 180) * 1e10) / 1e10)`;
+         case InputOpcode.OP_DIVIDE:
+diff --git a/src/blocks/scratch3_operators.js b/src/blocks/scratch3_operators.js
+index a2a5ab4..7fb824e 100644
+--- a/src/blocks/scratch3_operators.js
++++ b/src/blocks/scratch3_operators.js
+@@ -112,6 +112,17 @@ class Scratch3OperatorsBlocks {
+     }
+ 
+     contains (args) {
++        // TurboWasm: case-sensitive-strings (Phase 8-B)
++        // The compiled path is gated by `compareContains` (= reads
++        // `runtime.compilerOptions.semantics.caseSensitiveStrings`).
++        // The interpreter path is gated here so `disableCompiler=true`
++        // (= interpreter-only) still flips the flag.
++        const sem = this.runtime.compilerOptions.semantics;
++        if (sem && sem.caseSensitiveStrings) {
++            const a = Cast.toString(args.STRING1);
++            const b = Cast.toString(args.STRING2);
++            return a.indexOf(b) !== -1;
++        }
+         const format = function (string) {
+             return Cast.toString(string).toLowerCase();
+         };
+diff --git a/src/blocks/scratch3_data.js b/src/blocks/scratch3_data.js
+index 1290434..43e7ff3 100644
+--- a/src/blocks/scratch3_data.js
++++ b/src/blocks/scratch3_data.js
+@@ -190,11 +190,20 @@ class Scratch3DataBlocks {
+         const list = util.target.lookupOrCreateList(
+             args.LIST.id, args.LIST.name);
+ 
++        // TurboWasm: case-sensitive-strings (Phase 8-B)
++        // The compiled path uses `compareEqual` (= gated by the
++        // captured `__semantics`). The interpreter path passes the
++        // flag through `Cast.compare(..., caseSensitive)` so
++        // `disableCompiler=true` (= interpreter-only) still flips the
++        // case sensitivity for list searches.
++        const sem = util.runtime.compilerOptions.semantics;
++        const caseSensitive = !!(sem && sem.caseSensitiveStrings);
++
+         // Go through the list items one-by-one using Cast.compare. This is for
+         // cases like checking if 123 is contained in a list [4, 7, '123'] --
+         // Scratch considers 123 and '123' to be equal.
+         for (let i = 0; i < list.value.length; i++) {
+-            if (Cast.compare(list.value[i], item) === 0) {
++            if (Cast.compare(list.value[i], item, caseSensitive) === 0) {
+                 return i + 1;
+             }
+         }
+@@ -223,13 +232,16 @@ class Scratch3DataBlocks {
+         const item = args.ITEM;
+         const list = util.target.lookupOrCreateList(
+             args.LIST.id, args.LIST.name);
++        // TurboWasm: case-sensitive-strings (Phase 8-B)
++        const sem = util.runtime.compilerOptions.semantics;
++        const caseSensitive = !!(sem && sem.caseSensitiveStrings);
+         if (list.value.indexOf(item) >= 0) {
+             return true;
+         }
+         // Try using Scratch comparison operator on each item.
+         // (Scratch considers the string '123' equal to the number 123).
+         for (let i = 0; i < list.value.length; i++) {
+-            if (Cast.compare(list.value[i], item) === 0) {
++            if (Cast.compare(list.value[i], item, caseSensitive) === 0) {
+                 return true;
+             }
+         }
+

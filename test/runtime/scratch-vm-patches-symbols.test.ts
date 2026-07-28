@@ -61,6 +61,17 @@ const APPLIED_MARKERS: readonly string[] = [
   // `patches/vendored/scratch-vm.patch` and ship in the UMD.
   '// TurboWasm: truncated-modulo',
   '// TurboWasm: truncated-modulo-interpreter',
+  // §Phase 8-B — case-sensitive strings. Wired across 5 files:
+  //   - `jsgen.js:OP_CONTAINS` (compiled emit delegates to helper)
+  //   - `jsexecute.js` (compare family + new `compareContains` helper,
+  //     plus a `__semantics` capture in `baseRuntime`)
+  //   - `cast.js:compare` (signature accepts `caseSensitive`)
+  //   - `scratch3_operators.js:contains` (interpreter path)
+  //   - `scratch3_data.js` (`listContainsItem` / `getItemNumOfList`)
+  // All markers in this row share the same `// TurboWasm: case-sensitive-strings`
+  // name (= verified by the source-level regex; the patch may be split
+  // across multiple `+` blocks in `patches/vendored/scratch-vm.patch`).
+  '// TurboWasm: case-sensitive-strings',
 ];
 
 // Reference-only markers — checked in `patches/vendored/*.patch` ONLY.

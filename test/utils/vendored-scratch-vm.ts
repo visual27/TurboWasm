@@ -24,7 +24,8 @@ export interface VendoredScratchVm {
     scopedEval(name: string): unknown;
   };
   cast: {
-    compare(v1: unknown, v2: unknown): number;
+    // §Phase 8-B — `caseSensitive` parameter (default false).
+    compare(v1: unknown, v2: unknown, caseSensitive?: boolean): number;
     toNumber(v: unknown): number;
     toBoolean(v: unknown): boolean;
     toString(v: unknown): string;
