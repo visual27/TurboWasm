@@ -1,0 +1,30 @@
+diff --git a/src/compiler/irgen.js b/src/compiler/irgen.js
+--- a/src/compiler/irgen.js
++++ b/src/compiler/irgen.js
+@@ -1492,6 +1492,12 @@
+     constructor (thread) {
+         this.thread = thread;
+         this.blocks = thread.blockContainer;
+ 
+         this.proceduresToCompile = new Map();
+         this.compilingProcedures = new Map();
+         /** @type {Object.<string, IntermediateScript>} */
+         this.procedures = {};
+ 
+         this.analyzedProcedures = new Set();
+     }
++
++    // TurboWasm: generator-eval-Y — §Phase 6 reference-only marker.
++    // This hunk is a documentation anchor; the actual two-tier-emit
++    // telemetry lives in `scripts/bench-generator-eval.mjs`
++    // (`installVariantY`) which monkey-patches the vendored scratch-vm
++    // in a temp copy at bench time. The marker lets
++    // `test/runtime/scratch-vm-patches-symbols.test.ts` detect drift
++    // if the reference patch is removed from this file without
++    // updating the marker registry.
+ }
+ 
+ module.exports = {
+     ScriptTreeGenerator,
+     IRGenerator
+ };

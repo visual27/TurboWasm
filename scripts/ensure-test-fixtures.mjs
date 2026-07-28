@@ -159,6 +159,18 @@ export const FIXTURE_GENERATORS = {
   // `test/runtime/scratch-vm-scheduler-eval-{a,b}.test.ts`.
   'clone-storm-fixture.sb3': () =>
     import('./make-clone-storm-fixture.mjs').then((m) => m.makeCloneStormFixture()),
+  // §Phase 6 (generator research) — generator granularity fixture. A
+  // single sprite whose hat body is a `repeat(5)` loop interleaving
+  // pure prefix (counter ++, call `pure_inc_x100`, square reporter),
+  // yielding sites (`wait`, `say`, `broadcast and wait`), and a final
+  // recursive `factorial` reporter. Final state: counter=5+5*100+5
+  // (=510 from the pure call), sum=Σ₁⁵ i²=55, fact=5040. Loaded by
+  // `scripts/bench-generator-eval.mjs` and
+  // `test/runtime/scratch-vm-generator-eval-{x,y}.test.ts`.
+  'generator-granularity-fixture.sb3': () =>
+    import('./make-generator-granularity-fixture.mjs').then((m) =>
+      m.makeGeneratorGranularityFixture(),
+    ),
 };
 
 /**

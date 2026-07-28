@@ -44,6 +44,8 @@ the table below is the source-of-truth consumed by
 | Engine blocks (compiledScripts Map backing) | `// TurboWasm: blocks-cache-map` | 4-B (opt-in) | `vendored/scratch-vm/src/engine/blocks.js` | `test/runtime/scratch-vm-patches-symbols.test.ts` + `test/runtime/scratch-vm-blocks-cache-map.test.ts` |
 | Scheduler (eval-A reference patch) | `// TurboWasm: scheduler-eval-A` | 5 (research-only) | `patches/vendored/scratch-vm-eval-scheduler-A.patch` (sequencer.js + runtime.js; not auto-applied) | `test/runtime/scratch-vm-patches-symbols.test.ts` (patches-dir probe) + `test/runtime/scratch-vm-scheduler-eval-a.test.ts` |
 | Scheduler (eval-B reference patch) | `// TurboWasm: scheduler-eval-B` | 5 (research-only) | `patches/vendored/scratch-vm-eval-scheduler-B.patch` (sequencer.js + runtime.js; not auto-applied) | `test/runtime/scratch-vm-patches-symbols.test.ts` (patches-dir probe) + `test/runtime/scratch-vm-scheduler-eval-b.test.ts` |
+| Generator (eval-X reference patch) | `// TurboWasm: generator-eval-X` | 6 (research-only) | `patches/vendored/scratch-vm-eval-generator-X.patch` (jsgen.js; not auto-applied) | `test/runtime/scratch-vm-patches-symbols.test.ts` (patches-dir probe) + `test/runtime/scratch-vm-generator-eval-x.test.ts` |
+| Generator (eval-Y reference patch) | `// TurboWasm: generator-eval-Y` | 6 (research-only) | `patches/vendored/scratch-vm-eval-generator-Y.patch` (irgen.js; not auto-applied) | `test/runtime/scratch-vm-patches-symbols.test.ts` (patches-dir probe) + `test/runtime/scratch-vm-generator-eval-y.test.ts` |
 
 The M2 row was previously shipped via the standalone
 `patches/vendored/gpu-kernel-list-binding+0.1.0.patch` (created at `6da15a7`,

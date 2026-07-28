@@ -1,0 +1,22 @@
+diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
+--- a/src/compiler/jsgen.js
++++ b/src/compiler/jsgen.js
+@@ -1193,6 +1193,12 @@
+         }
+ 
+         script += this.source;
+ 
+         script += '};\n })';
+ 
+         return script;
+     }
++
++    // TurboWasm: generator-eval-X — §Phase 6 reference-only marker.
++    // This hunk is a documentation anchor; the actual pure-interval
++    // extraction logic lives in `scripts/bench-generator-eval.mjs`
++    // (`installVariantX`) which monkey-patches the vendored scratch-vm
++    // in a temp copy at bench time. The marker lets
++    // `test/runtime/scratch-vm-patches-symbols.test.ts` detect drift
++    // if the reference patch is removed from this file without
++    // updating the marker registry.
++}

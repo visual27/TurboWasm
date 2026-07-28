@@ -63,6 +63,15 @@ const APPLIED_MARKERS: readonly string[] = [
 const REFERENCE_ONLY_MARKERS: readonly string[] = [
   '// TurboWasm: scheduler-eval-A',
   '// TurboWasm: scheduler-eval-B',
+  // §Phase 6 (generator research). The benchmark harness
+  // `scripts/bench-generator-eval.mjs` exposes `installVariantX` /
+  // `installVariantY` (pure-interval extraction prototype + two-tier
+  // emit prototype) via runtime monkey-patching against a temp copy
+  // of the vendored scratch-vm. Both variants are pure telemetry —
+  // they do not modify the emitted source, so the UMD / source probes
+  // explicitly skip them.
+  '// TurboWasm: generator-eval-X',
+  '// TurboWasm: generator-eval-Y',
 ];
 
 // Union for the patch-file probe (= every marker must land in
