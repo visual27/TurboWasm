@@ -55,6 +55,12 @@ const APPLIED_MARKERS: readonly string[] = [
   '// TurboWasm: procedure-lazy-cache',
   '// TurboWasm: procedure-definition-entry-prototype-substack',
   '// TurboWasm: semantics-compiler-options',
+  // §Phase 8-A — truncated modulo (= JS `%` instead of Scratch
+  // floored modulo). Wired in `jsgen.js:OP_MOD` (compiled) +
+  // `scratch3_operators.js:mod` (interpreter). Both markers live in
+  // `patches/vendored/scratch-vm.patch` and ship in the UMD.
+  '// TurboWasm: truncated-modulo',
+  '// TurboWasm: truncated-modulo-interpreter',
 ];
 
 // Reference-only markers — checked in `patches/vendored/*.patch` ONLY.

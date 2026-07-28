@@ -1410,3 +1410,59 @@ index d78717a..fd42ca2 100644
      }
  
      /**
+
+diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
+index 1ccb0a8..7047902 100644
+--- a/src/compiler/jsgen.js
++++ b/src/compiler/jsgen.js
+@@ -376,9 +376,25 @@ class JSGenerator {
+             return `Math.log(${this.descendInput(node.value)})`;
+         case InputOpcode.OP_LOG_10:
+             return `(Math.log(${this.descendInput(node.value)}) / Math.LN10)`;
+-        case InputOpcode.OP_MOD:
++        case InputOpcode.OP_MOD: {
++            // TurboWasm: truncated-modulo (Phase 8-A)
++            // When `runtime.compilerOptions.semantics.truncatedModulo` is
++            // `true`, emit the JS `%` operator directly instead of the
++            // Scratch-compatibility `mod(left, right)` wrapper (= a
++            // function call into the runtime helper). The wrapper remains
++            // the default (= floored modulo, Scratch-compatible). The
++            // interpreter path (`scratch3_operators.js:mod`) reads the
++            // same flag, so `disableCompiler=true` (= interpreter-only)
++            // produces the same observable result.
++            const left = this.descendInput(node.left);
++            const right = this.descendInput(node.right);
+             this.descendedIntoModulo = true;
+-            return `mod(${this.descendInput(node.left)}, ${this.descendInput(node.right)})`;
++            const sem = this.target.runtime.compilerOptions.semantics;
++            if (sem && sem.truncatedModulo) {
++                return `(${left} % ${right})`;
++            }
++            return `mod(${left}, ${right})`;
++        }
+         case InputOpcode.OP_MULTIPLY:
+             return `(${this.descendInput(node.left)} * ${this.descendInput(node.right)})`;
+         case InputOpcode.OP_NOT:
+diff --git a/src/blocks/scratch3_operators.js b/src/blocks/scratch3_operators.js
+index a2a5ab4..63288e7 100644
+--- a/src/blocks/scratch3_operators.js
++++ b/src/blocks/scratch3_operators.js
+@@ -119,8 +119,18 @@ class Scratch3OperatorsBlocks {
+     }
+ 
+     mod (args) {
++        // TurboWasm: truncated-modulo-interpreter (Phase 8-A)
++        // The compiled path is gated in `jsgen.js:OP_MOD` (= emits `%`
++        // directly when the flag is on). The interpreter path is gated
++        // here so `disableCompiler=true` (= interpreter-only) still
++        // flips the semantics flag. Default behaviour remains Scratch
++        // floored modulo when `semantics.truncatedModulo` is `false`.
++        const sem = this.runtime.compilerOptions.semantics;
+         const n = Cast.toNumber(args.NUM1);
+         const modulus = Cast.toNumber(args.NUM2);
++        if (sem && sem.truncatedModulo) {
++            return n % modulus;
++        }
+         let result = n % modulus;
+         // Scratch mod uses floored division instead of truncated division.
+         if (result / modulus < 0) result += modulus;
