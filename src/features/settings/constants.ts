@@ -116,9 +116,9 @@ export const SEMANTIC_FLAG_LABELS: Readonly<Record<string, string>> = {
 
 export const SEMANTIC_FLAG_DESCRIPTIONS: Readonly<Record<string, string>> = {
   strictNumericEquality:
-    'Use `===` directly. Type-mixed comparisons return false instead of coercing.',
+    'Use `===` directly. Type-mixed comparisons return false instead of coercing. List `contains` and `operator_contains` follow the same gate.',
   caseSensitiveStrings:
-    'String comparisons treat case as distinct. Most user-visible change.',
+    'String comparisons treat case as distinct. Most user-visible change. Combined with strict mode, substring matches also fail on type-mixed operands.',
   propagateNaN:
     'Do not convert NaN to 0. Errors propagate silently through arithmetic.',
   truncatedModulo:

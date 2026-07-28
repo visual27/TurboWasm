@@ -61,6 +61,25 @@ const APPLIED_MARKERS: readonly string[] = [
   // `patches/vendored/scratch-vm.patch` and ship in the UMD.
   '// TurboWasm: truncated-modulo',
   '// TurboWasm: truncated-modulo-interpreter',
+  // §Phase 9-A — strict numeric equality. Type-mixed comparisons return
+  // a non-zero value (= never equal). Wired across 6 files:
+  //   - `cast.js:compare` (interpreter path; signature gains `strictEqual`)
+  //   - `jsexecute.js` (compareEqual / compareGreaterThan / compareLessThan
+  //     + the existing `compareContains` helper, all gated by the
+  //     captured `__semantics.strictNumericEquality`)
+  //   - `scratch3_operators.js` (equals / lt / gt / contains — thread
+  //     the `Cast.compare` 4-arg form through the interpreter path)
+  //   - `scratch3_data.js` (listContainsItem / getItemNumOfList — same
+  //     4-arg threading)
+  //   - `iroptimizer.js:foldCompare` (constant-fold path must agree
+  //     with the runtime helpers or folded comparisons would diverge
+  //     from the runtime when the user flips the toggle)
+  //   - `runtime.js` (no source change — `compilerOptions.semantics`
+  //     was already seeded with `strictNumericEquality: false` in
+  //     §Phase 7, so the gate key is purely a runtime read).
+  // All markers in this row share the same `// TurboWasm: strict-numeric-equality`
+  // name (= verified by the source-level regex).
+  '// TurboWasm: strict-numeric-equality',
   // §Phase 8-B — case-sensitive strings. Wired across 5 files:
   //   - `jsgen.js:OP_CONTAINS` (compiled emit delegates to helper)
   //   - `jsexecute.js` (compare family + new `compareContains` helper,

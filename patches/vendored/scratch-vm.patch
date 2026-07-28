@@ -1476,7 +1476,7 @@ index fd42ca2..cb9e496 100644
       * @returns {number} Negative number if v1 < v2; 0 if equal; positive otherwise.
       */
 -    static compare (v1, v2) {
-+static compare (v1, v2, caseSensitive = false) {
++static compare (v1, v2, caseSensitive = false, strictEqual = false) {
 +        // TurboWasm: case-sensitive-strings (Phase 8-B)
 +        // When `caseSensitive=true`, the string fallback path skips
 +        // `.toLowerCase()` (= JS semantics). Default `false` preserves
@@ -1484,6 +1484,17 @@ index fd42ca2..cb9e496 100644
 +        // existing caller. Wired from `runtime.compilerOptions.semantics
 +        // .caseSensitiveStrings` in the interpreter path (= the only
 +        // path that funnels through `Cast.compare`).
++        //
++        // TurboWasm: strict-numeric-equality (Phase 9-A)
++        // When `strictEqual=true`, type-mixed comparisons return a
++        // non-zero value (= never equal). Number vs number still routes
++        // through the NaN-aware coercion below so Infinity / -Infinity /
++        // NaN keep Phase 1-C semantics. String vs string falls back to
++        // the caseSensitive-aware substring compare. Other mixed types
++        // (number ↔ string, number ↔ boolean, ...) are guaranteed
++        // non-zero so `'5' = 5` returns false (JS strict-equality
++        // semantics). Wired from `runtime.compilerOptions.semantics
++        // .strictNumericEquality` in the interpreter path.
          let n1 = Number(v1);
          let n2 = Number(v2);
          if (n1 === 0 && isNotActuallyZero(v1)) {

@@ -25,7 +25,8 @@ export interface VendoredScratchVm {
   };
   cast: {
     // §Phase 8-B — `caseSensitive` parameter (default false).
-    compare(v1: unknown, v2: unknown, caseSensitive?: boolean): number;
+    // §Phase 9-A — `strictEqual` parameter (default false).
+    compare(v1: unknown, v2: unknown, caseSensitive?: boolean, strictEqual?: boolean): number;
     toNumber(v: unknown): number;
     toBoolean(v: unknown): boolean;
     toString(v: unknown): string;
