@@ -1513,22 +1513,26 @@ diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
 index 1b88373..f8b7b18 100644
 --- a/src/compiler/jsexecute.js
 +++ b/src/compiler/jsexecute.js
-@@ -34,7 +34,17 @@ const isStuck = () => {
+@@ -34,4 +34,17 @@ const isStuck = () => {
          return globalState.thread.target.runtime.sequencer.timer.timeElapsed() > 500;
      }
      return false;
 -};`;
 +};
-+// TurboWasm: case-sensitive-strings (Phase 8-B)
-+// Capture the semantics bundle at script-compile time. \`runtime\` is
-+// available on \`globalState\` (= the parameter passed to \`new Function\`)
-+// when this \`baseRuntime\` block runs (= \`scopedEval\` evaluates a
-+// script factory). \`setCompilerOptions\` invalidates the compile
-+// cache on every flag change, so the next compile re-reads the
-+// current \`runtime.compilerOptions.semantics\`. Default values match
-+// upstream scratch-vm (= all OFF, Scratch-compatible) so the OFF path
-+// is byte-identical to before this patch.
-+const __semantics = (globalState && globalState.thread && globalState.thread.target && globalState.thread.target.runtime && globalState.thread.target.runtime.compilerOptions && globalState.thread.target.runtime.compilerOptions.semantics) || { caseSensitiveStrings: false, truncatedModulo: false, strictNumericEquality: false, propagateNaN: false, jsTruthyBooleans: false };`;
++// TurboWasm: case-sensitive-strings (Phase 8-B) / Phase 9-B capture fix
++// Capture the semantics bundle at script-compile time. \`scopedEval\`
++// (= called from \`JSGenerator.compile()\`) stashes the
++// CURRENTLY-compiled thread's runtime as
++// \`globalState.__twCaptureRuntime\` before this block runs, so the
++// capture prefers that over \`globalState.thread\`. The latter is null
++// at first compile (= no thread has executed yet) or stale from a
++// previous VM instance sharing the same jsexecute module cache).
++// \`setCompilerOptions\` invalidates the compile cache on every flag
++// change so the next compile re-reads the current
++// \`runtime.compilerOptions.semantics\`. Default values match upstream
++// scratch-vm (= all OFF, Scratch-compatible) so the OFF path is
++// byte-identical to before this patch.
++const __semantics = (globalState && globalState.__twCaptureRuntime && globalState.__twCaptureRuntime.compilerOptions && globalState.__twCaptureRuntime.compilerOptions.semantics) || (globalState && globalState.thread && globalState.thread.target && globalState.thread.target.runtime && globalState.thread.target.runtime.compilerOptions && globalState.thread.target.runtime.compilerOptions.semantics) || { caseSensitiveStrings: false, truncatedModulo: false, strictNumericEquality: false, propagateNaN: false, jsTruthyBooleans: false };`;
  
  /**
   * Start hats by opcode.
@@ -2018,10 +2022,10 @@ diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
 +    // TurboWasm: js-truthy-booleans (Phase 9-B)
 +    // When the semantics flag is on, JS standard truthy / falsy wins.
 +    // The OFF path stays byte-identical to upstream scratch-vm (= all
-+    // Scratch string-coercion quirks preserved). `__semantics` is the
-+    // capture seeded by the Phase 8-B hunk in `baseRuntime` (= default
-+    // `{ ..., jsTruthyBooleans: false }`). The flag flips when the
-+    // user opts in via `Runtime.setCompilerOptions({ semantics: { jsTruthyBooleans: true } })`.
++    // Scratch string-coercion quirks preserved). \`__semantics\` is the
++    // capture seeded by the Phase 8-B hunk in \`baseRuntime\` (= default
++    // \`{ ..., jsTruthyBooleans: false }\`). The flag flips when the
++    // user opts in via \`Runtime.setCompilerOptions({ semantics: { jsTruthyBooleans: true } })\`.
 +    if (__semantics.jsTruthyBooleans) return !!value;
      if (typeof value === 'boolean') {
          return value;
@@ -2105,3 +2109,74 @@ diff --git a/src/util/cast.js b/src/util/cast.js
      /**
       * Scratch cast to string.
       * @param {*} value Value to cast to string.
+
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -11,8 +11,15 @@ const globalState = {
+     blockUtility: require('./compat-block-utility'),
+     /** @type{import("../engine/thread")?} */
+-    thread: null
++    thread: null,
++    // TurboWasm: capture-time runtime for the __semantics capture in
++    // baseRuntime (= set by jsexecute.scopedEval(source, runtime) so the
++    // capture reads the CURRENTLY-compiled thread's runtime even when
++    // globalState.thread is null at first compile or stale across VM
++    // instances sharing the same jsexecute module cache).
++    /** @type{import("../engine/runtime")?} */
++    __twCaptureRuntime: null
+ };
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -631,12 +631,26 @@ const scopedEval = source => {
+  */
+-const scopedEval = source => {
+-    const withRuntime = insertRuntime(source);
+-    try {
+-        return new Function('globalState', withRuntime)(globalState);
+-    } catch (e) {
+-        globalState.log.error('was unable to compile script', withRuntime);
+-        throw e;
+-    }
+-};
++// TurboWasm: __semantics capture context (Phase 9-B fix).
++// Accept an optional `runtime` (= the thread's runtime that should
++// drive the capture) so the `__semantics` const captured in
++// `baseRuntime` reads `this.target.runtime.compilerOptions.semantics`
++// (= correct even when `globalState.thread` is null at first compile
++// or stale across VM instances sharing the jsexecute module cache).
++// The runtime is stashed on `globalState.__twCaptureRuntime` for the
++// duration of the `new Function(...)` invocation, then restored from
++// the outer call's saved value (= nested compile calls compose
++// correctly).
++const scopedEval = (source, runtime) => {
++    const withRuntime = insertRuntime(source);
++    const prevCaptureRuntime = globalState.__twCaptureRuntime;
++    globalState.__twCaptureRuntime = runtime || null;
++    try {
++        return new Function('globalState', withRuntime)(globalState);
++    } catch (e) {
++        globalState.log.error('was unable to compile script', withRuntime);
++        throw e;
++    } finally {
++        globalState.__twCaptureRuntime = prevCaptureRuntime;
++    }
++};
+ 
+ execute.scopedEval = scopedEval;
+diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
+--- a/src/compiler/jsgen.js
++++ b/src/compiler/jsgen.js
+@@ -1183,7 +1183,11 @@ class JSGenerator {
+         this.stopScript();
+ 
+         const factory = this.createScriptFactory();
+-        const fn = jsexecute.scopedEval(factory);
++        // TurboWasm: __semantics capture context (Phase 9-B fix).
++        // Pass `this.target.runtime` so the capture in `baseRuntime`
++        // reads the CURRENTLY-compiled thread's runtime even when
++        // `globalState.thread` is null or stale (= cross-VM pollution).
++        const fn = jsexecute.scopedEval(factory, this.target.runtime);
+ 
+         if (this.debug) {

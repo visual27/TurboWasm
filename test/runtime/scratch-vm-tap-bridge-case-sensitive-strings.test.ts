@@ -223,8 +223,16 @@ describe('Phase 8-B — OP_CONTAINS emit + compareContains helper (source shape)
     expect(jsexecSource).toMatch(/runtimeFunctions\.compareContains = `[\s\S]*__semantics\.caseSensitiveStrings/);
   });
 
-  it('jsexecute.js: baseRuntime captures __semantics from globalState.thread.target.runtime', () => {
-    expect(jsexecSource).toMatch(/const __semantics = \(globalState && globalState\.thread/);
+  it('jsexecute.js: baseRuntime captures __semantics from globalState.__twCaptureRuntime (Phase 9-B fix) or globalState.thread (legacy)', () => {
+    // §Phase 9-B — __semantics capture prefers `globalState.__twCaptureRuntime`
+    // (set by `scopedEval(factory, runtime)` called from `JSGenerator.compile()`)
+    // so the capture reads the CURRENTLY-compiled thread's runtime even when
+    // `globalState.thread` is null at first compile or stale across VM
+    // instances. Falls back to the `globalState.thread` chain for tests that
+    // call `jsexecute.scopedEval(...)` without a runtime argument.
+    expect(jsexecSource).toMatch(
+      /const __semantics = \(globalState && (?:globalState\.__twCaptureRuntime|globalState\.thread)/,
+    );
   });
 
   it('cast.js:compare signature accepts an optional `caseSensitive` parameter', () => {
