@@ -2180,3 +2180,105 @@ diff --git a/src/compiler/jsgen.js b/src/compiler/jsgen.js
 +        const fn = jsexecute.scopedEval(factory, this.target.runtime);
  
          if (this.debug) {
+             log.info(`JS: ${this.target.getName()}: compiled ${this.script.procedureCode || 'script'}`, factory);
+
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -306,7 +306,22 @@ runtimeFunctions.retire = `const retire = () => {
+  * @param {number} value A number. Might be NaN.
+  * @returns {number} A number. Never NaN.
+  */
+-runtimeFunctions.toNotNaN = `const toNotNaN = value => Number.isNaN(value) ? 0 : value`;
++// TurboWasm: propagate-nan (Phase 9-C)
++// When `runtime.compilerOptions.semantics.propagateNaN` is true, the
++// coercion short-circuits and the input value flows through (= JS
++// semantics). The OFF path stays byte-identical to upstream scratch-vm
++// (= NaN coerced to 0, Scratch-compatible). `__semantics` is the
++// capture seeded by the Phase 8-B hunk in `baseRuntime` (Phase 9-C
++// adds `propagateNaN` to that captured bundle but does not touch the
++// capture line). The flag flips via
++// `Runtime.setCompilerOptions({ semantics: { propagateNaN: true } })`,
++// and `resetAllCaches()` (= vendored runtime.js) drops the compiled
++// scripts so the next compile re-reads `__semantics.propagateNaN`
++// from `runtime.compilerOptions.semantics`. The interpreter path
++// uses the static `Cast._propagateNaNFlag` mirror (= wired by
++// `Cast.setSemanticFlags`) so `disableCompiler=true` (=
++// interpreter-only) reads the same flag from a different surface.
++runtimeFunctions.toNotNaN = `const toNotNaN = value => __semantics.propagateNaN ? value : (Number.isNaN(value) ? 0 : value)`;
+ 
+ /**
+  * Scratch cast to boolean.
+diff --git a/src/engine/runtime.js b/src/engine/runtime.js
+--- a/src/engine/runtime.js
++++ b/src/engine/runtime.js
+@@ -2812,11 +2812,13 @@ class Runtime extends EventEmitter {
+     setCompilerOptions (compilerOptions) {
+         this.compilerOptions = Object.assign({}, this.compilerOptions, compilerOptions);
+         // TurboWasm: js-truthy-booleans (Phase 9-B)
+-        // Mirror the semantics bundle into `Cast._jsTruthyFlag` AFTER the
+-        // `Object.assign` merge (= so the latest `this.compilerOptions
+-        // .semantics` is reflected) and BEFORE `resetAllCaches()` (= so
+-        // the interpreter flag flips in lockstep with the compile cache
+-        // invalidation that fires from `COMPILER_OPTIONS_CHANGED`).
++        // TurboWasm: propagate-nan (Phase 9-C)
++        // Mirror the semantics bundle into `Cast._jsTruthyFlag` and
++        // `Cast._propagateNaNFlag` AFTER the `Object.assign` merge (=
++        // so the latest `this.compilerOptions.semantics` is reflected)
++        // and BEFORE `resetAllCaches()` (= so the interpreter flags
++        // flip in lockstep with the compile cache invalidation that
++        // fires from `COMPILER_OPTIONS_CHANGED`).
+         const Cast = require('../util/cast');
+         Cast.setSemanticFlags(this.compilerOptions.semantics);
+         this.resetAllCaches();
+diff --git a/src/util/cast.js b/src/util/cast.js
+--- a/src/util/cast.js
++++ b/src/util/cast.js
+@@ -40,7 +40,26 @@ class Cast {
+      * @param {*} value Value to cast to number.
+      * @return {number} The Scratch-casted number value.
+      */
++    // TurboWasm: propagate-nan (Phase 9-C)
++    // When `runtime.compilerOptions.semantics.propagateNaN` is true,
++    // `Cast.toNumber` returns `Number(value)` directly (= JS semantics
++    // where `Number("abc")` is NaN and `Number(undefined)` is NaN).
++    // Static mirror wired by `Cast.setSemanticFlags` from
++    // `Runtime.setCompilerOptions` so the interpreter-side flag
++    // flips in lockstep with the compile-side cache invalidation.
++    // Single-VM constraint applies (= same shape as the Phase 9-B
++    // `_jsTruthyFlag` static); cross-VM sharing would leak the last
++    // `setCompilerOptions` call into the un-set VM. Acceptable for
++    // the TurboWasm Viewer's single-runtime invariant.
++    static _propagateNaNFlag = false;
++
+     static toNumber (value) {
++        // TurboWasm: propagate-nan-interpreter (Phase 9-C)
++        // ON path: pure JS `Number(...)` coercion (= NaN preserved).
++        // OFF path: legacy Scratch coercion (= NaN coerced to 0).
++        if (Cast._propagateNaNFlag) {
++            return Number(value);
++        }
+         // If value is already a number we don't need to coerce it with
+         // Number().
+         if (typeof value === 'number') {
+@@ -99,8 +118,9 @@ class Cast {
+     }
+ 
+     // TurboWasm: js-truthy-booleans (Phase 9-B)
+-    // Reflect `semantics.jsTruthyBooleans` into the static flag so the
+-    // interpreter-side `toBoolean` observes the toggle on the next tick.
++    // TurboWasm: propagate-nan (Phase 9-C)
++    // Reflect each semantic flag into its static mirror so the
++    // interpreter-side helper observes the toggle on the next tick.
+     // Called from `Runtime.setCompilerOptions` (= vendored runtime.js)
+     // after the `Object.assign` merge and before `resetAllCaches()` so
+     // the interpreter flag flips in lockstep with the compile cache
+@@ -108,6 +128,7 @@ class Cast {
+     // .semantics` via the captured `__semantics` const).
+     static setSemanticFlags (sem) {
+         Cast._jsTruthyFlag = !!(sem && sem.jsTruthyBooleans);
++        Cast._propagateNaNFlag = !!(sem && sem.propagateNaN);
+     }
+ 
+     /**
+

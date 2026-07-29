@@ -29,12 +29,27 @@ export interface VendoredScratchVm {
     // §Phase 9-B — `jsTruthyBooleans` static flag (= mirrors
     // `runtime.compilerOptions.semantics.jsTruthyBooleans`); see
     // `setSemanticFlags(sem)` for the setter.
+    // §Phase 9-C — `_propagateNaNFlag` static flag (= mirrors
+    // `runtime.compilerOptions.semantics.propagateNaN`). When true,
+    // `Cast.toNumber` short-circuits to JS `Number(value)` (= NaN
+    // preserved; the legacy Scratch NaN→0 conversion is skipped).
     compare(v1: unknown, v2: unknown, caseSensitive?: boolean, strictEqual?: boolean): number;
     toNumber(v: unknown): number;
     toBoolean(v: unknown): boolean;
     toString(v: unknown): string;
     _jsTruthyFlag: boolean;
-    setSemanticFlags(sem: { jsTruthyBooleans?: boolean } | undefined): void;
+    _propagateNaNFlag: boolean;
+    setSemanticFlags(
+      sem:
+        | {
+            jsTruthyBooleans?: boolean;
+            propagateNaN?: boolean;
+            strictNumericEquality?: boolean;
+            caseSensitiveStrings?: boolean;
+            truncatedModulo?: boolean;
+          }
+        | undefined,
+    ): void;
   };
   // §Phase 3 — exposed so the constant-folding tap bridge can drive
   // `IROptimizer.tryFoldConstant` against hand-built IR inputs.

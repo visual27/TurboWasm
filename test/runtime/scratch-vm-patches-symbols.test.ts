@@ -52,6 +52,19 @@ const APPLIED_MARKERS: readonly string[] = [
   '// TurboWasm: constant-folding-jsgen-nan-neg-zero-handler',
   '// TurboWasm: edge-detection-hat-sentinel-eliminated',
   '// TurboWasm: js-truthy-booleans',
+  // §Phase 9-C — propagate NaN. Wired across 3 files:
+  //   - `util/cast.js`: `Cast._propagateNaNFlag` static mirror + short-
+  //     circuit in `toNumber` to bypass NaN→0 conversion when the flag
+  //     is on (= pure JS `Number(...)` coercion). Extended
+  //     `setSemanticFlags(sem)` to also mirror `propagateNaN`.
+  //   - `compiler/jsexecute.js`: `runtimeFunctions.toNotNaN` short-
+  //     circuits to a pass-through when `__semantics.propagateNaN` is
+  //     true (= JS-style NaN propagation through arithmetic chains).
+  //   - `engine/runtime.js`: comment in `setCompilerOptions` already
+  //     calls `Cast.setSemanticFlags` (= propagated to both flags).
+  // All markers in this row share the same `// TurboWasm: propagate-nan`
+  // name (= verified by the source-level regex).
+  '// TurboWasm: propagate-nan',
   '// TurboWasm: list / scalar buffer accessors',
   '// TurboWasm: procedure-lazy-cache',
   '// TurboWasm: procedure-definition-entry-prototype-substack',
