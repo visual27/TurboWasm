@@ -382,7 +382,7 @@ log(`Applying ${scratchVmPatch} to vendored/scrub-vm`);
 // git apply fails at the very first hunk with "corrupt patch at line
 // 1148" (= the boundary between the existing patch and Phase 4A
 // appended hunks) because the upstream line numbers no longer match.
-run('git', ['apply', '--3way', '--ignore-whitespace', '--recount', scratchVmPatch], { cwd: scratchVmDir });
+run('git', ['apply', '--3way', '--ignore-whitespace', '--recount', '-C', '3', scratchVmPatch], { cwd: scratchVmDir });
 
 // GPU compute kernel pipeline (M2): the standalone runtime hook patch below
 // is optional. When missing OR failing to apply, the script proceeds with a

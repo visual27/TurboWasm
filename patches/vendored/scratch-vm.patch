@@ -788,7 +788,7 @@ index 1df8dff..baee962 100644
  
          /**
           * Number of non-monitor threads running during the previous frame.
-@@ -457,11 +465,56 @@ class Runtime extends EventEmitter {
+@@ -457,11 +465,79 @@ class Runtime extends EventEmitter {
              maxClones: Runtime.MAX_CLONES,
              miscLimits: true,
              fencing: true
@@ -1471,12 +1471,12 @@ diff --git a/src/util/cast.js b/src/util/cast.js
 index fd42ca2..cb9e496 100644
 --- a/src/util/cast.js
 +++ b/src/util/cast.js
-@@ -139,7 +139,14 @@ class Cast {
+@@ -139,7 +139,25 @@ class Cast {
       * @param {*} v2 Second value to compare.
       * @returns {number} Negative number if v1 < v2; 0 if equal; positive otherwise.
       */
 -    static compare (v1, v2) {
-+static compare (v1, v2, caseSensitive = false, strictEqual = false) {
++    static compare (v1, v2, caseSensitive = false, strictEqual = false) {
 +        // TurboWasm: case-sensitive-strings (Phase 8-B)
 +        // When `caseSensitive=true`, the string fallback path skips
 +        // `.toLowerCase()` (= JS semantics). Default `false` preserves
@@ -1498,7 +1498,7 @@ index fd42ca2..cb9e496 100644
          let n1 = Number(v1);
          let n2 = Number(v2);
          if (n1 === 0 && isNotActuallyZero(v1)) {
-@@ -150,8 +157,8 @@ class Cast {
+@@ -150,8 +168,8 @@ class Cast {
          if (isNaN(n1) || isNaN(n2)) {
              // At least one argument can't be converted to a number.
              // Scratch compares strings as case insensitive.
@@ -1520,12 +1520,12 @@ index 1b88373..f8b7b18 100644
 -};`;
 +};
 +// TurboWasm: case-sensitive-strings (Phase 8-B)
-+// Capture the semantics bundle at script-compile time. `runtime` is
-+// available on `globalState` (= the parameter passed to `new Function`)
-+// when this `baseRuntime` block runs (= `scopedEval` evaluates a
-+// script factory). `setCompilerOptions` invalidates the compile
++// Capture the semantics bundle at script-compile time. \`runtime\` is
++// available on \`globalState\` (= the parameter passed to \`new Function\`)
++// when this \`baseRuntime\` block runs (= \`scopedEval\` evaluates a
++// script factory). \`setCompilerOptions\` invalidates the compile
 +// cache on every flag change, so the next compile re-reads the
-+// current `runtime.compilerOptions.semantics`. Default values match
++// current \`runtime.compilerOptions.semantics\`. Default values match
 +// upstream scratch-vm (= all OFF, Scratch-compatible) so the OFF path
 +// is byte-identical to before this patch.
 +const __semantics = (globalState && globalState.thread && globalState.thread.target && globalState.thread.target.runtime && globalState.thread.target.runtime.compilerOptions && globalState.thread.target.runtime.compilerOptions.semantics) || { caseSensitiveStrings: false, truncatedModulo: false, strictNumericEquality: false, propagateNaN: false, jsTruthyBooleans: false };`;
