@@ -228,7 +228,13 @@ describe('Phase 8-B — OP_CONTAINS emit + compareContains helper (source shape)
   });
 
   it('cast.js:compare signature accepts an optional `caseSensitive` parameter', () => {
-    expect(castSource).toMatch(/static compare \(v1, v2, caseSensitive = false\)/);
+    // §Phase 9-A — Phase 8-B's 3-arg signature stays backward compatible:
+    // the trailing `strictEqual = false` is optional. The regex matches
+    // either the 3-arg shape (pre-Phase 9-A) or the 4-arg shape (= the
+    // current `vendor/scratch-vm` state).
+    expect(castSource).toMatch(
+      /static compare \(v1, v2, caseSensitive = false(?:, strictEqual = false)?\)/,
+    );
   });
 
   it('scratch3_operators.js:contains reads the semantics flag', () => {
@@ -238,6 +244,9 @@ describe('Phase 8-B — OP_CONTAINS emit + compareContains helper (source shape)
   it('scratch3_data.js:listContainsItem + getItemNumOfList pass caseSensitive to Cast.compare', () => {
     expect(dataSource).toMatch(/listContainsItem \(args, util\) \{[\s\S]*caseSensitiveStrings/);
     expect(dataSource).toMatch(/getItemNumOfList \(args, util\) \{[\s\S]*caseSensitiveStrings/);
-    expect(dataSource).toMatch(/Cast\.compare\(list\.value\[i\], item, caseSensitive\)/);
+    // §Phase 9-A — accept the trailing 4th arg `, strict` (= Phase 9-A
+    // threaded `strictNumericEquality` through `Cast.compare`). The
+    // 3-arg shape still matches because the trailing group is optional.
+    expect(dataSource).toMatch(/Cast\.compare\(list\.value\[i\], item, caseSensitive(?:, strict)?\)/);
   });
 });

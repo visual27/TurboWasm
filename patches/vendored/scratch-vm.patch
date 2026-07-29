@@ -1743,3 +1743,266 @@ index 1290434..43e7ff3 100644
              }
          }
 
+
+diff --git a/src/blocks/scratch3_data.js b/src/blocks/scratch3_data.js
+index 43e7ff3..d93ab58 100644
+--- a/src/blocks/scratch3_data.js
++++ b/src/blocks/scratch3_data.js
+@@ -196,14 +196,23 @@ class Scratch3DataBlocks {
+         // flag through `Cast.compare(..., caseSensitive)` so
+         // `disableCompiler=true` (= interpreter-only) still flips the
+         // case sensitivity for list searches.
++        //
++        // TurboWasm: strict-numeric-equality (Phase 9-A)
++        // Symmetric companion to the compiled-path gate (= the captured
++        // `__semantics.strictNumericEquality` in `jsexecute.js`).
++        // The interpreter path passes `strict` through
++        // `Cast.compare(..., caseSensitive, strict)` so
++        // `disableCompiler=true` (= interpreter-only) still flips
++        // the type-strictness for list searches.
+         const sem = util.runtime.compilerOptions.semantics;
+         const caseSensitive = !!(sem && sem.caseSensitiveStrings);
++        const strict = !!(sem && sem.strictNumericEquality);
+ 
+         // Go through the list items one-by-one using Cast.compare. This is for
+         // cases like checking if 123 is contained in a list [4, 7, '123'] --
+         // Scratch considers 123 and '123' to be equal.
+         for (let i = 0; i < list.value.length; i++) {
+-            if (Cast.compare(list.value[i], item, caseSensitive) === 0) {
++            if (Cast.compare(list.value[i], item, caseSensitive, strict) === 0) {
+                 return i + 1;
+             }
+         }
+@@ -233,15 +242,24 @@ class Scratch3DataBlocks {
+         const list = util.target.lookupOrCreateList(
+             args.LIST.id, args.LIST.name);
+         // TurboWasm: case-sensitive-strings (Phase 8-B)
++        // TurboWasm: strict-numeric-equality (Phase 9-A)
++        // `strict` is read alongside `caseSensitive` so the
++        // interpreter path mirrors the compiled path's gate (= see
++        // `jsexecute.js:compareEqual` and the captured
++        // `__semantics` bundle). When `strict` is on, `Cast.compare`
++        // short-circuits type-mixed pairs to a non-zero value, so
++        // `'5' in [5]` returns false (= JS strict-equality
++        // semantics).
+         const sem = util.runtime.compilerOptions.semantics;
+         const caseSensitive = !!(sem && sem.caseSensitiveStrings);
++        const strict = !!(sem && sem.strictNumericEquality);
+         if (list.value.indexOf(item) >= 0) {
+             return true;
+         }
+         // Try using Scratch comparison operator on each item.
+         // (Scratch considers the string '123' equal to the number 123).
+         for (let i = 0; i < list.value.length; i++) {
+-            if (Cast.compare(list.value[i], item, caseSensitive) === 0) {
++            if (Cast.compare(list.value[i], item, caseSensitive, strict) === 0) {
+                 return true;
+             }
+         }
+diff --git a/src/blocks/scratch3_operators.js b/src/blocks/scratch3_operators.js
+index 7fb824e..c209dd9 100644
+--- a/src/blocks/scratch3_operators.js
++++ b/src/blocks/scratch3_operators.js
+@@ -54,15 +54,23 @@ class Scratch3OperatorsBlocks {
+     }
+ 
+     lt (args) {
+-        return Cast.compare(args.OPERAND1, args.OPERAND2) < 0;
++        // TurboWasm: strict-numeric-equality (Phase 9-A)
++        // Threads `caseSensitive` and `strictEqual` through `Cast.compare`.
++        // `Cast.compare` returns 0 (= equal), positive (= greater),
++        // negative (= less). `strictEqual` short-circuits type-mixed
++        // pairs to a non-zero value, so the `< 0` check returns false.
++        const sem = this.runtime.compilerOptions.semantics;
++        return Cast.compare(args.OPERAND1, args.OPERAND2, !!sem?.caseSensitiveStrings, !!sem?.strictNumericEquality) < 0;
+     }
+ 
+     equals (args) {
+-        return Cast.compare(args.OPERAND1, args.OPERAND2) === 0;
++        const sem = this.runtime.compilerOptions.semantics;
++        return Cast.compare(args.OPERAND1, args.OPERAND2, !!sem?.caseSensitiveStrings, !!sem?.strictNumericEquality) === 0;
+     }
+ 
+     gt (args) {
+-        return Cast.compare(args.OPERAND1, args.OPERAND2) > 0;
++        const sem = this.runtime.compilerOptions.semantics;
++        return Cast.compare(args.OPERAND1, args.OPERAND2, !!sem?.caseSensitiveStrings, !!sem?.strictNumericEquality) > 0;
+     }
+ 
+     and (args) {
+@@ -117,7 +125,18 @@ class Scratch3OperatorsBlocks {
+         // `runtime.compilerOptions.semantics.caseSensitiveStrings`).
+         // The interpreter path is gated here so `disableCompiler=true`
+         // (= interpreter-only) still flips the flag.
++        //
++        // TurboWasm: strict-numeric-equality (Phase 9-A)
++        // The compiled path's `compareContains` helper reads
++        // `__semantics.strictNumericEquality`; the interpreter path
++        // gates here so `disableCompiler=true` (= interpreter-only)
++        // still flips the flag. `operator_contains` is a string
++        // operator but extensions may pass non-strings (= same
++        // defensive uniform behaviour).
+         const sem = this.runtime.compilerOptions.semantics;
++        if (sem && sem.strictNumericEquality && typeof args.STRING1 !== typeof args.STRING2) {
++            return false;
++        }
+         if (sem && sem.caseSensitiveStrings) {
+             const a = Cast.toString(args.STRING1);
+             const b = Cast.toString(args.STRING2);
+diff --git a/src/compiler/iroptimizer.js b/src/compiler/iroptimizer.js
+index 61592f1..8f0d2f8 100644
+--- a/src/compiler/iroptimizer.js
++++ b/src/compiler/iroptimizer.js
+@@ -994,6 +994,19 @@ class IROptimizer {
+         return this.createConstantInput(result, type);
+     }
+
++    // TurboWasm: strict-numeric-equality (Phase 9-A)
+     /**
+      * Fold a comparison operator through `Cast.compare` so the
+      * scratch equality semantics (`'5' = 5` 竊・true) survive.
++     *
++     * TurboWasm: strict-numeric-equality (Phase 9-A) /
++     * case-sensitive-strings (Phase 8-B)
++     * The 4-arg `Cast.compare` shape is the interpreter path's
++     * gate point; constant-folding must agree with the runtime
++     * helpers (= `compareEqual` in `jsexecute.js`) so a folded
++     * `'5' = 5` does not diverge from a non-folded one when the
++     * user flips `semantics.strictNumericEquality` or
++     * `semantics.caseSensitiveStrings` mid-compile. Compiler cache
++     * invalidation on a flag flip (`setCompilerOptions`) guarantees
++     * the next compile sees the new values.
++     *
+      * @param {IntermediateInput} input
+      * @param {IntermediateInput} left
+      * @param {IntermediateInput} right
+@@ -1001,7 +1013,14 @@ class IROptimizer {
+      * @private
+      */
+     foldCompare (input, left, right) {
+-        const cmp = Cast.compare(left.inputs.value, right.inputs.value);
++        const sem =
++            (this.compilationTarget && this.compilationTarget.runtime &&
++                this.compilationTarget.runtime.compilerOptions &&
++                this.compilationTarget.runtime.compilerOptions.semantics) ||
++            { strictNumericEquality: false, caseSensitiveStrings: false };
++        const caseSensitive = !!sem.caseSensitiveStrings;
++        const strictEqual = !!sem.strictNumericEquality;
++        const cmp = Cast.compare(left.inputs.value, right.inputs.value, caseSensitive, strictEqual);
+         let result;
+         switch (input.opcode) {
+         case InputOpcode.OP_EQUALS: result = cmp === 0; break;
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+index 1e6a021..37cd360 100644
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -379,6 +379,8 @@ const compareEqual = (v1, v2) => {
+         !Number.isNaN(v1) &&
+         !Number.isNaN(v2)
+     ) return false;
++    // TurboWasm: strict-numeric-equality (Phase 9-A)
++    if (__semantics.strictNumericEquality && typeof v1 !== typeof v2) return false;
+     return compareEqualSlow(v1, v2);
+ };`;
+ 
+@@ -405,7 +407,11 @@ const compareGreaterThanSlow = (v1, v2) => {
+     }
+     return n1 > n2;
+ };
+-const compareGreaterThan = (v1, v2) => typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) ? v1 > v2 : compareGreaterThanSlow(v1, v2)`;
++const compareGreaterThan = (v1, v2) => {
++    // TurboWasm: strict-numeric-equality (Phase 9-A)
++    if (__semantics.strictNumericEquality && typeof v1 !== typeof v2) return false;
++    return typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v1) ? v1 > v2 : compareGreaterThanSlow(v1, v2);
++};`;
+ 
+ /**
+  * Determine if one value is less than another.
+@@ -430,7 +436,11 @@ const compareLessThanSlow = (v1, v2) => {
+     }
+     return n1 < n2;
+ };
+-const compareLessThan = (v1, v2) => typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v2) ? v1 < v2 : compareLessThanSlow(v1, v2)`;
++const compareLessThan = (v1, v2) => {
++    // TurboWasm: strict-numeric-equality (Phase 9-A)
++    if (__semantics.strictNumericEquality && typeof v1 !== typeof v2) return false;
++    return typeof v1 === 'number' && typeof v2 === 'number' && !Number.isNaN(v2) ? v1 < v2 : compareLessThanSlow(v1, v2);
++};`;
+ 
+ /**
+  * Generate a random integer.
+@@ -616,8 +626,21 @@ runtimeFunctions.listContains = `const listContains = (list, item) => {
+  * captured `__semantics` (= see the `baseRuntime` block above) so the
+  * flag flips the substring search case-sensitivity at runtime.
+  */
++/**
++ * TurboWasm: case-sensitive-strings (Phase 8-B)
++ * Substring search for the `operator_contains` block.
++ *
++ * TurboWasm: strict-numeric-equality (Phase 9-A)
++ * Type-mixed comparisons short-circuit to `false` when the
++ * semantics flag is on. The `operator_contains` block's two
++ * arguments are typically strings, but extensions may pass
++ * anything; the gate keeps the runtime path symmetric with the
++ * interpreter path in `scratch3_operators.js:contains`.
++ */
+ runtimeFunctions.compareContains = `// TurboWasm: case-sensitive-strings (Phase 8-B)
++// TurboWasm: strict-numeric-equality (Phase 9-A)
+ const compareContains = (a, b) => {
++    if (__semantics.strictNumericEquality && typeof a !== typeof b) return false;
+     const aStr = '' + a;
+     const bStr = '' + b;
+     if (__semantics.caseSensitiveStrings) {
+diff --git a/src/util/cast.js b/src/util/cast.js
+index c4fdf86..143f1ca 100644
+--- a/src/util/cast.js
++++ b/src/util/cast.js
+@@ -151,13 +151,17 @@ class Cast {
+         // TurboWasm: strict-numeric-equality (Phase 9-A)
+         // When `strictEqual=true`, type-mixed comparisons return a
+         // non-zero value (= never equal). Number vs number still routes
+-        // through the NaN-aware coercion below so Infinity / -Infinity /
+-        // NaN keep Phase 1-C semantics. String vs string falls back to
+-        // the caseSensitive-aware substring compare. Other mixed types
++        // through the NaN-aware coercion below so Infinity / -Infinity
++        // keep Phase 1-C semantics; both-NaN is short-circuited to
++        // non-zero so NaN === NaN returns false (JS strict-equality
++        // semantics). String vs string falls back to the
++        // caseSensitive-aware substring compare. Other mixed types
+         // (number ↔ string, number ↔ boolean, ...) are guaranteed
+-        // non-zero so `'5' = 5` returns false (JS strict-equality
+-        // semantics). Wired from `runtime.compilerOptions.semantics
+-        // .strictNumericEquality` in the interpreter path.
++        // non-zero so `'5' = 5` returns false. Wired from
++        // `runtime.compilerOptions.semantics.strictNumericEquality` in
++        // the interpreter path (scratch3_data / scratch3_operators) and
++        // from `runtime.compilerOptions.semantics` via the captured
++        // `__semantics` in the compiled path (jsexecute.js helpers).
+         let n1 = Number(v1);
+         let n2 = Number(v2);
+         if (n1 === 0 && isNotActuallyZero(v1)) {
+@@ -165,6 +169,24 @@ class Cast {
+         } else if (n2 === 0 && isNotActuallyZero(v2)) {
+             n2 = NaN;
+         }
++        // TurboWasm: strict-numeric-equality (Phase 9-A)
++        // Branch on type-mixed comparisons when `strictEqual=true`. Both
++        // numbers fall through (= handled by the NaN-aware coercion
++        // path below). Same-type string fall through (= handled by the
++        // string fallback below). The single-vs-multi NaN guard bypasses
++        // the existing string fallback (= "nan" == "nan" would yield 0)
++        // so NaN === NaN is non-zero (= JS strict-equality semantics).
++        if (strictEqual) {
++            if (typeof v1 !== typeof v2 &&
++                !(typeof v1 === 'number' && typeof v2 === 'number')) {
++                return v1 < v2 ? -1 : 1;
++            }
++            if (typeof v1 === 'number' && typeof v2 === 'number' &&
++                (Number.isNaN(v1) || Number.isNaN(v2))) {
++                if (Number.isNaN(v1) && Number.isNaN(v2)) return -1;
++                return v1 < v2 ? -1 : 1;
++            }
++        }
+         if (isNaN(n1) || isNaN(n2)) {
+             // At least one argument can't be converted to a number.
+             // Scratch compares strings as case insensitive.
