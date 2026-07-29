@@ -2006,3 +2006,102 @@ index c4fdf86..143f1ca 100644
          if (isNaN(n1) || isNaN(n2)) {
              // At least one argument can't be converted to a number.
              // Scratch compares strings as case insensitive.
+
+diff --git a/src/compiler/jsexecute.js b/src/compiler/jsexecute.js
+--- a/src/compiler/jsexecute.js
++++ b/src/compiler/jsexecute.js
+@@ -238,8 +238,16 @@
+  * @param {*} value The value to cast
+  * @returns {boolean} The value cast to a boolean
+  */
+ runtimeFunctions.toBoolean = `const toBoolean = value => {
++    // TurboWasm: js-truthy-booleans (Phase 9-B)
++    // When the semantics flag is on, JS standard truthy / falsy wins.
++    // The OFF path stays byte-identical to upstream scratch-vm (= all
++    // Scratch string-coercion quirks preserved). `__semantics` is the
++    // capture seeded by the Phase 8-B hunk in `baseRuntime` (= default
++    // `{ ..., jsTruthyBooleans: false }`). The flag flips when the
++    // user opts in via `Runtime.setCompilerOptions({ semantics: { jsTruthyBooleans: true } })`.
++    if (__semantics.jsTruthyBooleans) return !!value;
+     if (typeof value === 'boolean') {
+         return value;
+     }
+diff --git a/src/engine/runtime.js b/src/engine/runtime.js
+--- a/src/engine/runtime.js
++++ b/src/engine/runtime.js
+@@ -2690,11 +2690,19 @@ class Runtime extends EventEmitter {
+     /**
+      * tw: Update compiler options
+      * @param {*} compilerOptions New options
+      */
+     setCompilerOptions (compilerOptions) {
+         this.compilerOptions = Object.assign({}, this.compilerOptions, compilerOptions);
++        // TurboWasm: js-truthy-booleans (Phase 9-B)
++        // Mirror the semantics bundle into `Cast._jsTruthyFlag` AFTER the
++        // `Object.assign` merge (= so the latest `this.compilerOptions
++        // .semantics` is reflected) and BEFORE `resetAllCaches()` (= so
++        // the interpreter flag flips in lockstep with the compile cache
++        // invalidation that fires from `COMPILER_OPTIONS_CHANGED`).
++        const Cast = require('../util/cast');
++        Cast.setSemanticFlags(this.compilerOptions.semantics);
+         this.resetAllCaches();
+         this.emit(Runtime.COMPILER_OPTIONS_CHANGED, this.compilerOptions);
+     }
+diff --git a/src/util/cast.js b/src/util/cast.js
+--- a/src/util/cast.js
++++ b/src/util/cast.js
+@@ -63,15 +63,27 @@ class Cast {
+     /**
+      * Scratch cast to boolean.
+      * In Scratch 2.0, this is captured by `interp.boolArg.`
+      * Treats some string values differently from JavaScript.
+      * @param {*} value Value to cast to boolean.
+      * @return {boolean} The Scratch-casted boolean value.
+      */
++    // TurboWasm: js-truthy-booleans (Phase 9-B)
++    // Static mirror of `runtime.compilerOptions.semantics.jsTruthyBooleans`.
++    // `Runtime.setCompilerOptions` calls `Cast.setSemanticFlags(...)`
++    // after the `Object.assign` merge (= vendored runtime.js) so the
++    // interpreter-side `toBoolean` is in lockstep with the compile-side
++    // cached `__semantics` capture. `resetAllCaches()` (= next line in
++    // `setCompilerOptions`) then forces a re-compile so the new flag
++    // value reaches `runtimeFunctions.toBoolean`.
++    static _jsTruthyFlag = false;
++
+     static toBoolean (value) {
++        // TurboWasm: js-truthy-booleans-interpreter (Phase 9-B)
++        if (Cast._jsTruthyFlag) return Boolean(value);
+         // Already a boolean?
+         if (typeof value === 'boolean') {
+             return value;
+         }
+         if (typeof value === 'string') {
+             // These specific strings are treated as false in Scratch.
+             if ((value === '') ||
+@@ -87,7 +99,18 @@ class Cast {
+                 (value === '0') ||
+                 (value.toLowerCase() === 'false')) {
+                 return false;
+             }
+             // All other strings treated as true.
+             return true;
+         }
+         // Coerce other values and numbers.
+         return Boolean(value);
+     }
+
++    // TurboWasm: js-truthy-booleans (Phase 9-B)
++    // Reflect `semantics.jsTruthyBooleans` into the static flag so the
++    // interpreter-side `toBoolean` observes the toggle on the next tick.
++    // Called from `Runtime.setCompilerOptions` (= vendored runtime.js)
++    // after the `Object.assign` merge and before `resetAllCaches()` so
++    // the interpreter flag flips in lockstep with the compile cache
++    // invalidation (= the next compile re-reads `runtime.compilerOptions
++    // .semantics` via the captured `__semantics` const).
++    static setSemanticFlags (sem) {
++        Cast._jsTruthyFlag = !!(sem && sem.jsTruthyBooleans);
++    }
++
+     /**
+      * Scratch cast to string.
+      * @param {*} value Value to cast to string.

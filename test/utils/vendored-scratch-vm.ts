@@ -26,10 +26,15 @@ export interface VendoredScratchVm {
   cast: {
     // §Phase 8-B — `caseSensitive` parameter (default false).
     // §Phase 9-A — `strictEqual` parameter (default false).
+    // §Phase 9-B — `jsTruthyBooleans` static flag (= mirrors
+    // `runtime.compilerOptions.semantics.jsTruthyBooleans`); see
+    // `setSemanticFlags(sem)` for the setter.
     compare(v1: unknown, v2: unknown, caseSensitive?: boolean, strictEqual?: boolean): number;
     toNumber(v: unknown): number;
     toBoolean(v: unknown): boolean;
     toString(v: unknown): string;
+    _jsTruthyFlag: boolean;
+    setSemanticFlags(sem: { jsTruthyBooleans?: boolean } | undefined): void;
   };
   // §Phase 3 — exposed so the constant-folding tap bridge can drive
   // `IROptimizer.tryFoldConstant` against hand-built IR inputs.
