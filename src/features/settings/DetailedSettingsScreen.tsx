@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
+import { Button } from '@/components/ui/button';
 import { ClickableFieldRow } from './SettingsDialog';
 import {
   DETAILED_CATEGORY_LABELS,
@@ -30,6 +31,14 @@ export interface DetailedSettingsScreenProps {
   setEnableWasm: (value: boolean) => void;
   onToggleDetailed: (id: DetailedOptimizationId, enabled: boolean) => void;
   onOpenSemantics: () => void;
+  /**
+   * Phase 14 — optional close callback. When provided, the screen
+   * renders a top-row Close button so the user can return to the
+   * Settings dialog root (= the `TurboWasm` section that hosts the
+   * `Detailed Settings` navigation row). When absent the screen omits
+   * the Close button (legacy mount style).
+   */
+  onClose?: () => void;
 }
 
 /**
@@ -63,6 +72,7 @@ export function DetailedSettingsScreen({
   setEnableWasm,
   onToggleDetailed,
   onOpenSemantics,
+  onClose,
 }: DetailedSettingsScreenProps): React.JSX.Element {
   const disabled = !masterOn;
   return (
@@ -71,12 +81,27 @@ export function DetailedSettingsScreen({
       data-testid="settings-section-detailed"
       className="flex flex-col"
     >
-      <h3
-        id="settings-section-detailed"
-        className="pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.35em] text-muted-foreground"
-      >
-        Detailed Settings
-      </h3>
+      <div className="flex items-center justify-between gap-3 pb-3 pt-2">
+        <h3
+          id="settings-section-detailed"
+          className="text-[11px] font-semibold uppercase tracking-[0.35em] text-muted-foreground"
+        >
+          Detailed Settings
+        </h3>
+        {onClose && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            data-testid="detailed-close"
+            style={{ pointerEvents: 'auto' }}
+            aria-label="Close detailed settings"
+          >
+            Close
+          </Button>
+        )}
+      </div>
 
       <Subsection id="pipeline" title="TurboWasm Pipeline">
         <FieldRow

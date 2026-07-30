@@ -419,9 +419,11 @@ const LimitsSection = React.memo(function LimitsSection({
 const TurboWasmMasterSection = React.memo(function TurboWasmMasterSection({
   advanced,
   toggleMaster,
+  onOpenDetailed,
 }: {
   advanced: AdvancedSettings;
   toggleMaster: (value: boolean) => void;
+  onOpenDetailed: () => void;
 }): React.JSX.Element {
   return (
     <SettingsSection id="turbowasm" title="TurboWasm">
@@ -437,6 +439,25 @@ const TurboWasmMasterSection = React.memo(function TurboWasmMasterSection({
           ariaLabel="TurboWasm Acceleration toggle"
         />
       </FieldRow>
+      {/* Phase 14 — the Detailed Settings entry point. The detailed
+          optimization toggles + the Semantics screen now live behind
+          a separate screen (= the dialog root lists the categories
+          and the user drills into `Detailed Settings` to inspect
+          them). Mirrors the old Semantics entry-point pattern: a
+          `ClickableFieldRow` (= chevron + trailing count badge) that
+          sets `detailedOpen = true` in the dialog. Disabled when
+          the master toggle is off so a user who flipped every
+          related flag to `false` cannot poke toggles that have no
+          observable effect anyway. */}
+      <ClickableFieldRow
+        id="detailed-settings-row"
+        label="Detailed Settings"
+        description="Per-toggle power-user controls (= Enable WebGPU / Enable WASM / Custom Block Inlining + branchInfo pool / map conversion / constant folding + semantics preset & flags). Disabled when TurboWasm Acceleration is OFF."
+        onClick={onOpenDetailed}
+        disabled={!advanced.turboWasmAccelerationEnabled}
+        ariaLabel="Open detailed settings"
+        testId="settings-detailed-row"
+      />
     </SettingsSection>
   );
 });
@@ -518,15 +539,25 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
 
   // Phase 14 — Settings-dialog refactor. There is no longer a view
   // stack; the dialog opens straight onto the full category listing.
-  // The Semantics screen is exposed inline (= `SemanticsScreen`
-  // renders below its ClickableFieldRow) and toggled via a boolean
-  // `semanticsOpen` so the dialog never spawns a push/pop history.
+  // The `Detailed Settings` and `Semantics` screens are exposed
+  // inline (each is a single boolean toggle) so the dialog never
+  // spawns a push/pop history. The two booleans are independent
+  // (= the user can be inside `Detailed Settings` with the
+  // Semantics screen expanded), but in practice `detailedOpen`
+  // gates `DetailedSettingsScreen` and `semanticsOpen` is read by
+  // the Semantics row inside it.
+  const [detailedOpen, setDetailedOpen] = React.useState<boolean>(false);
   const [semanticsOpen, setSemanticsOpen] = React.useState<boolean>(false);
   // Reset to "closed" each time the dialog re-opens so a stale open
   // state from a prior session does not leak through.
   React.useEffect(() => {
-    if (open) setSemanticsOpen(false);
+    if (open) {
+      setDetailedOpen(false);
+      setSemanticsOpen(false);
+    }
   }, [open]);
+  const onOpenDetailed = React.useCallback(() => setDetailedOpen(true), []);
+  const onCloseDetailed = React.useCallback(() => setDetailedOpen(false), []);
   const onOpenSemantics = React.useCallback(() => setSemanticsOpen(true), []);
   const onCloseSemantics = React.useCallback(() => setSemanticsOpen(false), []);
 
@@ -564,19 +595,26 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
             <RuntimeSection advanced={advanced} patch={patch} />
             <RenderingSection advanced={advanced} patch={patch} />
             <LimitsSection advanced={advanced} patch={patch} />
-            <TurboWasmMasterSection advanced={advanced} toggleMaster={toggleMaster} />
-            <DetailedSettingsScreen
-              masterOn={advanced.turboWasmAccelerationEnabled}
-              detailed={detailedOptimizations}
-              semantics={advanced.semantics}
-              enableWebgpu={advanced.enableWebgpu}
-              enableWasm={enableWasm}
-              customBlockInliningEnabled={advanced.customBlockInliningEnabled}
-              patchAdvanced={patch}
-              setEnableWasm={setEnableWasm}
-              onToggleDetailed={setDetailedOptimization}
-              onOpenSemantics={onOpenSemantics}
+            <TurboWasmMasterSection
+              advanced={advanced}
+              toggleMaster={toggleMaster}
+              onOpenDetailed={onOpenDetailed}
             />
+            {detailedOpen && (
+              <DetailedSettingsScreen
+                masterOn={advanced.turboWasmAccelerationEnabled}
+                detailed={detailedOptimizations}
+                semantics={advanced.semantics}
+                enableWebgpu={advanced.enableWebgpu}
+                enableWasm={enableWasm}
+                customBlockInliningEnabled={advanced.customBlockInliningEnabled}
+                patchAdvanced={patch}
+                setEnableWasm={setEnableWasm}
+                onToggleDetailed={setDetailedOptimization}
+                onOpenSemantics={onOpenSemantics}
+                onClose={onCloseDetailed}
+              />
+            )}
             {semanticsOpen && (
               <SemanticsScreen
                 masterOn={advanced.turboWasmAccelerationEnabled}

@@ -154,28 +154,39 @@ The Settings dialog maps directly to the TurboWarp VM/Runtime APIs:
 
 ### Layout (Phase 14)
 
-The Settings dialog uses an accordion (常時展開) layout: every
-category is visible inline, no view-stack navigation, no back
-button. The visible categories are:
+The Settings dialog uses a single-level navigation layout (= the
+root lists the visible categories, the user drills into a screen
+to inspect the detailed optimization toggles). The visible root
+categories are:
 
 1. **Runtime** — FPS, Turbo Mode, Interpolation, Warp Timer
 2. **Rendering** — High Quality Pen, Stage Size
 3. **Limits** — Infinity Clones, Remove Fencing, Remove Misc Limits
-4. **TurboWasm** — TurboWasm Acceleration master toggle only
-5. **Detailed Settings** — `TurboWasm Pipeline` sub-section (Enable
-   WebGPU / Enable WASM / Custom Block Inlining) + `Compatibility
-   Layer` sub-section (`Branch Info Reuse`) + `Data Structures`
-   sub-section (`Map Conversion Evaluation`, `Constant Folding`) +
-   `Semantics` row that expands inline below the row when clicked.
+4. **TurboWasm** — TurboWasm Acceleration master toggle +
+   `Detailed Settings` navigation row (= `ClickableFieldRow`).
+   Clicking the row reveals the Detailed Settings screen below
+   the TurboWasm section (= the same pattern the Semantics screen
+   used pre-§Phase 14). Master-off locks the row (= the user
+   cannot reach a screen whose every leaf would be forced off
+   anyway).
+5. **Detailed Settings screen** (= hidden until the user clicks
+   the row above) — `TurboWasm Pipeline` sub-section (Enable
+   WebGPU / Enable WASM / Custom Block Inlining) +
+   `Compatibility Layer` sub-section (`Branch Info Reuse`) +
+   `Data Structures` sub-section (`Map Conversion Evaluation`,
+   `Constant Folding`) + `Semantics` row that expands inline
+   below the row when clicked. A `Close` button in the section
+   header returns the user to the dialog root.
 6. **Others** — Volume, Disable Compiler
 
-When the master toggle is `off`, every leaf inside "Detailed
-Settings" (= the three pipeline rows, the three surviving
-detailed-optimization toggles, and the Semantics row + its
-inline-expanded content) is `disabled`. The runtime-side
-`useSettingsStore.toggleTurboWasmMaster(false)` guard snapshots the
-previous state and forces every related flag to `false`, so the
-`disabled` UI matches the runtime.
+When the master toggle is `off`, the `Detailed Settings`
+navigation row is `disabled` (= the user cannot drill in), and
+once inside the screen every leaf (= the three pipeline rows,
+the three surviving detailed-optimization toggles, and the
+Semantics row + its inline-expanded content) is also `disabled`.
+The runtime-side `useSettingsStore.toggleTurboWasmMaster(false)`
+guard snapshots the previous state and forces every related flag
+to `false`, so the `disabled` UI matches the runtime.
 
 ### Performance Mode
 
