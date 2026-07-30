@@ -3,47 +3,43 @@ import type { AdvancedSettings } from '@/types/settings';
 /**
  * Phase 0 — Foundation.
  *
- * Detailed optimization toggle identifiers. Phase 0 introduces the
- * data model + UI surface only; the underlying optimization work
- * (compare-equal short-circuit, edge-hat sentinel elimination, etc.)
- * is owned by Phase 1+ in `patches/scratch-vm-symbols.md`.
+ * Detailed optimization toggle identifiers. After the v14 settings-dialog
+ * refactor (= navigation-state retired + Settings accordion restructured),
+ * only the IDs that are actually wired into a runtime gate survive in
+ * the `DetailedOptimizationMap`. The Phase 1 cosmetic IDs
+ * (= `comparison.shortCircuit` / `comparison.infinityBranchRemoval` /
+ * `edgeHat.sentinelElimination`) are unconditionally applied by the
+ * vendored runtime patch and never read from the map, so removing the
+ * UI toggles does not affect runtime behaviour — but the toggle keys
+ * are also dropped so a stale localStorage payload does not carry a
+ * dangling key. The Phase 2 cosmetic IDs (= `compatLayer.closureReuse`
+ * / `compatLayer.procedureCache`), the unwired
+ * `compatLayer.procedureCacheThreadCompaction`, and the research-only
+ * `compiler.generatorGranularityResearch` row all fall under the same
+ * "no runtime gate" rationale. See
+ * `scripts/patches/scratch-vm-symbols.md` for the marker-by-marker
+ * rationale and `src/lib/persistence.ts:migrateV13ToV14` for the
+ * localStorage silent drop.
  *
- * The IDs are namespaced so future categories can be added without
- * renaming existing ones — a renaming would invalidate the `// TurboWasm:`
- * marker registry (P0-5) and the in-memory snapshot the master toggle
- * relies on (P0-3).
+ * The remaining IDs map 1:1 to `runtime.setCompilerOptions` keys:
+ * `data.constantFolding` → `constantFoldingEnabled` (Phase 3),
+ * `compatLayer.branchInfoReuse` → `branchInfoPoolEnabled` (Phase 4A),
+ * `data.mapConversionEvaluation` → `mapConversionEnabled` (Phase 4B).
  */
-export type DetailedCategoryId =
-  | 'compat-layer'
-  | 'edge-detection'
-  | 'comparison'
-  | 'data-structures'
-  | 'compiler';
+export type DetailedCategoryId = 'compat-layer' | 'data-structures';
 
 export type DetailedOptimizationId =
   // Compatibility Layer
-  | 'compatLayer.closureReuse'
-  | 'compatLayer.procedureCache'
   | 'compatLayer.branchInfoReuse'
-  | 'compatLayer.procedureCacheThreadCompaction'
-  // Edge Detection
-  | 'edgeHat.sentinelElimination'
-  // Comparison
-  | 'comparison.shortCircuit'
-  | 'comparison.infinityBranchRemoval'
   // Data Structures
   | 'data.mapConversionEvaluation'
-  | 'data.constantFolding'
-  // Compiler
-  | 'compiler.generatorGranularityResearch';
+  | 'data.constantFolding';
 
 /**
- * Per-toggle UI state. `availableInMaster` distinguishes shipped
- * toggles from "research" rows that are visible but disabled until
- * the underlying optimization lands in a future Phase. Phase 0 ships
- * every ID with `availableInMaster: true` so the detailed screen
- * renders the full matrix; Phase 1+ can flip individual IDs to
- * `false` as their patches stabilize.
+ * Per-toggle UI state. Kept for backward-compatibility with downstream
+ * consumers that may have used the type; the SettingsDialog no longer
+ * renders individual toggle rows beyond the three wired IDs that map
+ * directly onto `setCompilerOptions` keys.
  */
 export interface DetailedOptimizationState {
   id: DetailedOptimizationId;
@@ -52,23 +48,6 @@ export interface DetailedOptimizationState {
 }
 
 export type DetailedOptimizationMap = Readonly<Record<DetailedOptimizationId, boolean>>;
-
-/**
- * SettingsDialog view state (Phase 0 §P0-2-A).
- *
- * Phase 0 keeps the existing single-Dialog layout — push/pop replaces
- * the contents rather than spawning a nested Dialog (which would fight
- * Radix's `pointer-events: none` body lock). `stack` is always
- * non-empty; the bottom entry is the section picker that the master
- * SettingsDialog manages.
- */
-export type SettingsViewEntry =
-  | { kind: 'section'; section: 'turboWasm' }
-  | { kind: 'detailed' }
-  | { kind: 'detailed-category'; categoryId: DetailedCategoryId }
-  | { kind: 'semantics' };
-
-export type SettingsViewStack = readonly SettingsViewEntry[];
 
 /**
  * Master-toggle polarity. Mirrors `advanced.turboWasmAccelerationEnabled`

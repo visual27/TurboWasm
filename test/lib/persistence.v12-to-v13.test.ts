@@ -32,8 +32,13 @@ describe('persistence: v12 → v13 migration (§Phase 7)', () => {
     localStorage.clear();
   });
 
-  it('STORAGE_VERSION is 13 (§Phase 7 bumped from 12)', () => {
-    expect(STORAGE_VERSION).toBe(13);
+  it('STORAGE_VERSION is 14 (settings-dialog refactor bumped from 13)', () => {
+    // §Phase 14 — settings-dialog refactor moved STORAGE_VERSION from
+    // 13 to 14. The semantic-preset field added in Phase 7 (= v13)
+    // survives the v13 → v14 read; the cosmetic detailed-optimization
+    // IDs are silently dropped. Future schema bumps must read this
+    // version so they can act on the v14 shape.
+    expect(STORAGE_VERSION).toBe(14);
   });
 
   it('seeds semantics = DEFAULT_SEMANTIC_OPTIONS when missing from v12 payload', () => {

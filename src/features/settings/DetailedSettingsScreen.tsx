@@ -1,61 +1,70 @@
 import * as React from 'react';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import { ClickableFieldRow } from './SettingsDialog';
 import {
-  DETAILED_CATEGORY_DESCRIPTIONS,
   DETAILED_CATEGORY_LABELS,
   DETAILED_CATEGORY_ORDER,
   DETAILED_OPTIMIZATIONS_BY_CATEGORY,
+  DETAILED_OPTIMIZATION_DESCRIPTIONS,
+  DETAILED_OPTIMIZATION_LABELS,
 } from './constants';
-import { ClickableFieldRow } from './SettingsDialog';
-import type { DetailedCategoryId, DetailedOptimizationMap } from './types';
+import type {
+  DetailedOptimizationId,
+  DetailedOptimizationMap,
+} from './types';
+import type { AdvancedSettings, SemanticOptions } from '@/types/settings';
 
 export interface DetailedSettingsScreenProps {
   masterOn: boolean;
   detailed: DetailedOptimizationMap;
-  onOpenCategory: (categoryId: DetailedCategoryId) => void;
+  semantics: SemanticOptions;
+  /** FieldRow-shaped row that toggles `advanced.enableWebgpu`. */
+  enableWebgpu: boolean;
+  /** FieldRow-shaped row that toggles the global `enableWasm`. */
+  enableWasm: boolean;
+  /** FieldRow-shaped row that toggles `advanced.customBlockInliningEnabled`. */
+  customBlockInliningEnabled: boolean;
+  patchAdvanced: (patch: Partial<AdvancedSettings>) => void;
+  setEnableWasm: (value: boolean) => void;
+  onToggleDetailed: (id: DetailedOptimizationId, enabled: boolean) => void;
+  onOpenSemantics: () => void;
 }
 
 /**
- * Phase 0 — Foundation. Category picker for the detailed settings
- * screen. One row per category; each row opens that category's
- * toggle list when clicked. The category list mirrors
- * `DETAILED_CATEGORY_ORDER` so the visible order is deterministic.
+ * Phase 14 — Settings-dialog refactor. Renders the entire "Detailed
+ * Settings" category inline (= no drill-down): a single h3 + three
+ * nested sub-sections (`TurboWasm Pipeline` / `Compatibility Layer` /
+ * `Data Structures`) plus a `Semantics` ClickableFieldRow at the
+ * bottom. There is no back button, no view-stack, and no push/pop —
+ * the user navigates by scrolling.
  *
- * When `masterOn` is false the rows stay clickable (so the user can
- * still inspect what's there) but every leaf toggle in the category
- * is forced to false by the runtime guard in
- * `useSettingsStore.toggleTurboWasmMaster(false)`. The category rows
- * themselves do not show a disabled visual — Phase 1+ can revisit
- * this once a category ships a row whose runtime side effect is
- * observably harmful while master-off.
+ * Master-off behaviour: when `masterOn === false` every leaf toggle
+ * (= the 3 `TurboWasm Pipeline` rows + the surviving detailed
+ * optimization rows + the `Semantics` row) is disabled. The runtime
+ * guard in `useSettingsStore.toggleTurboWasmMaster(false)` already
+ * forces every related flag to false, so an interactive control here
+ * would be a UI lie.
+ *
+ * Layout: each sub-section uses the shared `SettingsSection`-style
+ * heading + divide-y border so the dialog reads as a single scroll
+ * of category listings (per the user's accordion-常時展開
+ * preference).
  */
 export function DetailedSettingsScreen({
   masterOn,
   detailed,
-  onOpenCategory,
+  semantics,
+  enableWebgpu,
+  enableWasm,
+  customBlockInliningEnabled,
+  patchAdvanced,
+  setEnableWasm,
+  onToggleDetailed,
+  onOpenSemantics,
 }: DetailedSettingsScreenProps): React.JSX.Element {
-  // Count the per-category leaf toggles. Master ON → "off" is the
-  // number of detailed-optimization IDs the user has flipped to
-  // false. Master OFF → every leaf is locked to false by
-  // `useSettingsStore.toggleTurboWasmMaster(false)`, so we report
-  // `off = total` for every category.
-  const summaryByCategory = React.useMemo(() => {
-    const map = new Map<DetailedCategoryId, { off: number; total: number }>();
-    for (const categoryId of DETAILED_CATEGORY_ORDER) {
-      const ids = DETAILED_OPTIMIZATIONS_BY_CATEGORY[categoryId];
-      let off = 0;
-      for (const id of ids) {
-        if (detailed[id] === false) off += 1;
-      }
-      map.set(categoryId, { off, total: ids.length });
-    }
-    if (!masterOn) {
-      for (const [categoryId, entry] of map) {
-        map.set(categoryId, { off: entry.total, total: entry.total });
-      }
-    }
-    return map;
-  }, [masterOn, detailed]);
-
+  const disabled = !masterOn;
   return (
     <section
       aria-labelledby="settings-section-detailed"
@@ -68,32 +77,188 @@ export function DetailedSettingsScreen({
       >
         Detailed Settings
       </h3>
-      <div className="divide-y divide-border">
-        {DETAILED_CATEGORY_ORDER.map((categoryId) => {
-          const summary = summaryByCategory.get(categoryId) ?? { off: 0, total: 0 };
-          const description = masterOn
-            ? DETAILED_CATEGORY_DESCRIPTIONS[categoryId]
-            : `${DETAILED_CATEGORY_DESCRIPTIONS[categoryId]} (master toggle is off — every row is locked to off until TurboWasm Acceleration is turned back on).`;
-          return (
-            <ClickableFieldRow
-              key={categoryId}
-              id={`detailed-category-${categoryId}`}
-              label={DETAILED_CATEGORY_LABELS[categoryId]}
-              description={description}
-              onClick={() => onOpenCategory(categoryId)}
-              ariaLabel={`Open ${DETAILED_CATEGORY_LABELS[categoryId]} detailed settings`}
-              testId={`detailed-category-row-${categoryId}`}
-            >
-              <span
-                aria-hidden="true"
-                className="text-xs tabular-nums text-muted-foreground"
-              >
-                {summary.off}/{summary.total}
-              </span>
-            </ClickableFieldRow>
-          );
-        })}
-      </div>
+
+      <Subsection id="pipeline" title="TurboWasm Pipeline">
+        <FieldRow
+          id="enable-webgpu"
+          label="Enable WebGPU"
+          description="Offload @compute regions (marked in a project via the // @compute comment DSL) to WebGPU compute shaders. Falls back to the JS path when WebGPU is unavailable or when a region is unsupported (D1/D2/D3 demote). Independent of the WASM toggle below — turning this off disables the GPU compute kernel pipeline without affecting WASM SIMD collision detection."
+          disabled={disabled}
+          checked={enableWebgpu}
+          onChange={(v) => patchAdvanced({ enableWebgpu: v })}
+          ariaLabel="Enable WebGPU toggle"
+          testId="detailed-toggle-row-enable-webgpu"
+        />
+        <FieldRow
+          id="enable-wasm"
+          label="Enable WASM"
+          description="Install the WASM-SIMD collision-detection hooks on the renderer. Off clears every TurboWasm hook so the runtime behaves identically to unmodified scratch-render (the Definition-of-Done parity mode). On uses WASM SIMD when it has initialised and falls back to the JS path otherwise. Independent of the WebGPU toggle above."
+          disabled={disabled}
+          checked={enableWasm}
+          onChange={(v) => setEnableWasm(v)}
+          ariaLabel="Enable WASM toggle"
+          testId="detailed-toggle-row-enable-wasm"
+        />
+        <FieldRow
+          id="custom-block-inlining"
+          label="Custom Block Inlining"
+          description="When enabled, GPU compute regions can call custom blocks (pre-parse inline expansion). Disable to treat procedure_call as D1-unsafe so regions that use custom blocks fall back to the JS path instead of the GPU pipeline. Power-user toggle: 'Set as default' preserves the current value rather than forcing it on."
+          disabled={disabled}
+          checked={customBlockInliningEnabled}
+          onChange={(v) => patchAdvanced({ customBlockInliningEnabled: v })}
+          ariaLabel="Custom Block Inlining toggle"
+          testId="detailed-toggle-row-custom-block-inlining"
+        />
+      </Subsection>
+
+      {DETAILED_CATEGORY_ORDER.map((categoryId) => (
+        <Subsection
+          key={categoryId}
+          id={categoryId}
+          title={DETAILED_CATEGORY_LABELS[categoryId]}
+        >
+          {DETAILED_OPTIMIZATIONS_BY_CATEGORY[categoryId].map((optimizationId) => (
+            <DetailedOptimizationRow
+              key={optimizationId}
+              id={optimizationId}
+              disabled={disabled}
+              checked={detailed[optimizationId]}
+              onChange={(v) => onToggleDetailed(optimizationId, v)}
+            />
+          ))}
+        </Subsection>
+      ))}
+
+      <ClickableFieldRow
+        id="semantics-settings"
+        label="Semantics"
+        description={`Comparison / modulo / NaN / truthy semantics. Active preset: ${semantics.preset}. Disabled when TurboWasm Acceleration is OFF.`}
+        onClick={onOpenSemantics}
+        disabled={disabled}
+        ariaLabel="Open semantics settings"
+        testId="settings-semantics-row"
+      >
+        <span
+          aria-hidden="true"
+          className="text-xs uppercase tracking-[0.2em] text-muted-foreground"
+        >
+          {semantics.preset}
+        </span>
+      </ClickableFieldRow>
+      <Separator className="mt-4" />
+      <p className="pt-4 text-[11px] uppercase tracking-[0.25em] text-muted-foreground">
+        {disabled
+          ? 'Master off — every row is locked to off until TurboWasm Acceleration is turned back on.'
+          : 'Master on — every row above is wired to a runtime gate.'}
+      </p>
     </section>
+  );
+}
+
+interface SubsectionProps {
+  id: string;
+  title: string;
+  children: React.ReactNode;
+}
+
+/**
+ * Nested sub-section inside the "Detailed Settings" category. Renders
+ * a smaller uppercase title + a divide-y stack of rows. Visually
+ * distinct from the outer `SettingsSection` (= it sits one indent
+ * level deeper) so the user can tell the section headings apart at a
+ * glance.
+ */
+function Subsection({ id, title, children }: SubsectionProps): React.JSX.Element {
+  return (
+    <section
+      aria-labelledby={`detailed-subsection-${id}`}
+      data-testid={`detailed-subsection-${id}`}
+      className="flex flex-col pb-2"
+    >
+      <h4
+        id={`detailed-subsection-${id}`}
+        className="pb-2 pt-3 text-[10px] font-semibold uppercase tracking-[0.3em] text-muted-foreground/90"
+      >
+        {title}
+      </h4>
+      <div className="divide-y divide-border">{children}</div>
+    </section>
+  );
+}
+
+interface FieldRowProps {
+  id: string;
+  label: string;
+  description: string;
+  disabled: boolean;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  ariaLabel: string;
+  testId: string;
+}
+
+function FieldRow({
+  id,
+  label,
+  description,
+  disabled,
+  checked,
+  onChange,
+  ariaLabel,
+  testId,
+}: FieldRowProps): React.JSX.Element {
+  return (
+    <div
+      className="flex items-start justify-between gap-4 py-4"
+      data-testid={testId}
+    >
+      <div className="flex-1">
+        <Label htmlFor={id} className="text-sm">
+          {label}
+        </Label>
+        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+          {description}
+        </p>
+      </div>
+      <div
+        className="flex shrink-0 items-center gap-2"
+        style={{ pointerEvents: 'auto' }}
+      >
+        <Switch
+          id={id}
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={onChange}
+          aria-label={ariaLabel}
+        />
+      </div>
+    </div>
+  );
+}
+
+interface DetailedOptimizationRowProps {
+  id: DetailedOptimizationId;
+  disabled: boolean;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}
+
+function DetailedOptimizationRow({
+  id,
+  disabled,
+  checked,
+  onChange,
+}: DetailedOptimizationRowProps): React.JSX.Element {
+  return (
+    <FieldRow
+      id={`detailed-toggle-${id}`}
+      label={DETAILED_OPTIMIZATION_LABELS[id]}
+      description={DETAILED_OPTIMIZATION_DESCRIPTIONS[id]}
+      disabled={disabled}
+      checked={checked}
+      onChange={onChange}
+      ariaLabel={`${DETAILED_OPTIMIZATION_LABELS[id]} toggle`}
+      testId={`detailed-toggle-row-${id}`}
+    />
   );
 }

@@ -196,16 +196,32 @@ function sanitizeAllowedExtensionUrls(input: unknown): string[] {
 }
 
 /**
- * §Phase 1 — Sanitize a `detailedOptimizations` payload. Accepts any
- * plain object that maps known `DetailedOptimizationId` strings to
- * boolean values; unknown IDs are silently dropped (the read keeps a
- * field at the wrong shape rather than rejecting the whole payload)
- * and missing IDs are filled in from
+ * §Phase 1 / §Phase 14 — Sanitize a `detailedOptimizations` payload.
+ * Accepts any plain object; known `DetailedOptimizationId` keys are
+ * copied verbatim and missing IDs are filled in from
  * {@link DEFAULT_DETAILED_OPTIMIZATIONS}. This is intentionally
  * permissive: the v11 → v12 migration writes a freshly-seeded default
  * map when the payload omits the field, but a user who toggled a few
  * rows under Phase 0 (in-memory only) does not get those choices
  * silently rolled back.
+ *
+ * §Phase 14 — the `base` map now only carries the three IDs with an
+ * actual `setCompilerOptions` runtime gate (= `data.constantFolding` /
+ * `compatLayer.branchInfoReuse` / `data.mapConversionEvaluation`).
+ * Stale v13 payloads that still carry the dropped cosmetic IDs
+ * (= `comparison.shortCircuit` / `edgeHat.sentinelElimination` /
+ * `comparison.infinityBranchRemoval` / `compatLayer.closureReuse` /
+ * `compatLayer.procedureCache` /
+ * `compatLayer.procedureCacheThreadCompaction` /
+ * `compiler.generatorGranularityResearch`) are silently filtered by
+ * the `Object.keys(base)` iteration — the cosmetic keys simply have
+ * no slot in the v14 output, so a reload reads them as absent and
+ * seeds from `DEFAULT_DETAILED_OPTIMIZATIONS`. No runtime behaviour
+ * changes (every dropped ID was either a no-op cosmetic toggle or a
+ * vendored-runtime patch applied unconditionally regardless of the
+ * toggle value), so the silent drop is correct for users who toggled
+ * the dropped rows before v14 — the toggles never did anything at
+ * the vendored runtime.
  */
 function sanitizeDetailedOptimizations(input: unknown): DetailedOptimizationMap {
   const base: DetailedOptimizationMap = { ...DEFAULT_DETAILED_OPTIMIZATIONS };

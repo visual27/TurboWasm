@@ -11,8 +11,8 @@ This project is **not** a Scratch editor — it is a read-only player for `.sb3`
 - **TurboWasm Acceleration** (see [Advanced Settings mapping](#advanced-settings-mapping)):
   - WASM SIMD batched `isTouchingColor` / `isTouchingDrawables` with per-lane perspective divide.
   - WASM-SIMD ↔ JavaScript 2-tier fallback chain plus a `Performance Mode` selector (`auto` / `force-wasm` / `legacy-only`).
-- **GPU compute kernels** (`@compute` comment DSL — see [GPU compute kernel DSL](#gpu-compute-kernel-dsl)): optional WebGPU offload for `control_repeat` regions marked with `@compute`. Falls back to the JS path when WebGPU is unavailable, when a region is unsupported (D1/D2/D3 demote), or when Performance Mode is `legacy-only`. Configured via the `GPU Kernels` toggle in the TurboWasm section of the Settings dialog.
-- Advanced settings (FPS, Interpolation, Warp Timer, High Quality Pen, Turbo Mode, Compiler toggle, Infinity Clones, Remove Fencing, Remove Misc Limits, Stage size, **Performance Mode**, **GPU Kernels**) with **immediate apply**.
+- **GPU compute kernels** (`@compute` comment DSL — see [GPU compute kernel DSL](#gpu-compute-kernel-dsl)): optional WebGPU offload for `control_repeat` regions marked with `@compute`. Falls back to the JS path when WebGPU is unavailable or when a region is unsupported (D1/D2/D3 demote). Configured via the **Detailed Settings → TurboWasm Pipeline → Enable WebGPU** toggle in the Settings dialog.
+- Advanced settings (FPS, Interpolation, Warp Timer, High Quality Pen, Turbo Mode, Compiler toggle, Infinity Clones, Remove Fencing, Remove Misc Limits, Stage size, **TurboWasm Acceleration master**, **Enable WebGPU**, **Enable WASM**, **Custom Block Inlining**, **Detailed Optimizations**, **Semantics**) with **immediate apply**. See [Advanced Settings mapping](#advanced-settings-mapping) for the layout.
 - `twconfig` parsing from project comments (read-only).
 - System / Light / Dark / Midnight theme with `prefers-color-scheme` support.
 - Stage-only Fullscreen mode with overlay controls.
@@ -141,11 +141,41 @@ The Settings dialog maps directly to the TurboWarp VM/Runtime APIs:
 | Remove Fencing       | `vm.runtime.setRuntimeOptions({fencing: false})`    |
 | Remove Misc Limits   | `vm.runtime.setRuntimeOptions({miscLimits: false})` |
 | Turbo Mode           | `vm.setTurboMode(v)`                                |
-| Disable Compiler     | `vm.runtime.setCompilerOptions({enabled: !v})`      |
+| Disable Compiler     | `vm.runtime.setCompilerOptions({enabled: !v})` (session-only — "Set as default" forces this back to `false`) |
 | Stage Width / Height | `vm.setStageSize(w, h)`                             |
-| TurboWasm Acceleration | `applyTurboWasmAcceleration(enabled, caps, mode)` |
-| Performance Mode     | `applyTurboWasmAcceleration(enabled, caps, mode)` (controls tier selection; see below) |
-| Custom Block Inlining (Phase 5) | `bootstrapGpuKernels` flips `procedure_call` / `argument_reporter_*` back to D1-unsafe when this is `false`. See [Phase 5 DSL — Custom Block Inlining](#phase-5-dsl--custom-block-inlining-) |
+| TurboWasm Acceleration (master) | `useSettingsStore.toggleTurboWasmMaster(v)` — when `false`, snapshots all related flags and forces every detailed-optimization / WebGPU / WASM / procedure-inlining flag off |
+| Enable WebGPU (Detailed Settings → TurboWasm Pipeline) | `applyTurboWasmAcceleration(enabled, caps, mode)` together with the GPU kernel registry bootstrap |
+| Enable WASM (Detailed Settings → TurboWasm Pipeline)  | `useSettingsStore.setEnableWasm(v)` — installs / clears the WASM-SIMD hooks on `RenderWebGL` |
+| Custom Block Inlining (Detailed Settings → TurboWasm Pipeline, Phase 5) | `bootstrapGpuKernels` flips `procedure_call` / `argument_reporter_*` back to D1-unsafe when this is `false`. See [Phase 5 DSL — Custom Block Inlining](#phase-5-dsl--custom-block-inlining-) |
+| `data.constantFolding` (Detailed Settings → Data Structures) | `vm.runtime.setCompilerOptions({constantFoldingEnabled})` |
+| `compatLayer.branchInfoReuse` (Detailed Settings → Compatibility Layer) | `vm.runtime.setCompilerOptions({branchInfoPoolEnabled})` |
+| `data.mapConversionEvaluation` (Detailed Settings → Data Structures) | `vm.runtime.setCompilerOptions({mapConversionEnabled})` |
+| Semantics (Detailed Settings → Semantics) | `vm.runtime.setCompilerOptions({semantics})` — preset + 5 per-flag booleans |
+
+### Layout (Phase 14)
+
+The Settings dialog uses an accordion (常時展開) layout: every
+category is visible inline, no view-stack navigation, no back
+button. The visible categories are:
+
+1. **Runtime** — FPS, Turbo Mode, Interpolation, Warp Timer
+2. **Rendering** — High Quality Pen, Stage Size
+3. **Limits** — Infinity Clones, Remove Fencing, Remove Misc Limits
+4. **TurboWasm** — TurboWasm Acceleration master toggle only
+5. **Detailed Settings** — `TurboWasm Pipeline` sub-section (Enable
+   WebGPU / Enable WASM / Custom Block Inlining) + `Compatibility
+   Layer` sub-section (`Branch Info Reuse`) + `Data Structures`
+   sub-section (`Map Conversion Evaluation`, `Constant Folding`) +
+   `Semantics` row that expands inline below the row when clicked.
+6. **Others** — Volume, Disable Compiler
+
+When the master toggle is `off`, every leaf inside "Detailed
+Settings" (= the three pipeline rows, the three surviving
+detailed-optimization toggles, and the Semantics row + its
+inline-expanded content) is `disabled`. The runtime-side
+`useSettingsStore.toggleTurboWasmMaster(false)` guard snapshots the
+previous state and forces every related flag to `false`, so the
+`disabled` UI matches the runtime.
 
 ### Performance Mode
 
@@ -171,8 +201,9 @@ silently downgraded to `'auto'` on first load — the migration lives in
 
 ### GPU Kernels
 
-The `GPU Kernels` toggle enables the GPU compute kernel pipeline (the
-`@compute` comment DSL described in [GPU compute kernel DSL](#gpu-compute-kernel-dsl)).
+The **Detailed Settings → TurboWasm Pipeline → Enable WebGPU**
+toggle enables the GPU compute kernel pipeline (the `@compute`
+comment DSL described in [GPU compute kernel DSL](#gpu-compute-kernel-dsl)).
 When `true`, every `control_repeat` block that carries an `@compute`
 block comment on itself (Phase 4 loose-position form) is pre-parsed on
 `loadProject` and, when feasible, turned into a WebGPU compute dispatch.
@@ -182,12 +213,15 @@ button so the user cannot accidentally lock themselves off the GPU path.
 
 Short-circuit rules (any one disables GPU dispatch for this project):
 
-1. `performanceMode === 'legacy-only'`.
-2. `advanced.enableGpuKernels === false`.
-3. `globalThis.navigator.gpu` is `undefined` (jsdom, Safari, older browsers).
-4. The vendored scratch-vm patch series is not installed (a missing
+1. `turboWasmAccelerationEnabled === false` (master toggle off).
+2. `advanced.enableWebgpu === false` (= the Enable WebGPU toggle off).
+3. `enableWasm === false` (= the Enable WASM toggle off; the GPU
+   pipeline still runs the pre-parse phase but the kernel hook falls
+   back to the JS path because the host's WASM hooks are cleared).
+4. `globalThis.navigator.gpu` is `undefined` (jsdom, Safari, older browsers).
+5. The vendored scratch-vm patch series is not installed (a missing
    `globalThis.__turboWasmGpuKernelLookup` falls through to the JS path).
-5. `createComputePipelineAsync` fails — kernel is D4-demoted for the
+6. `createComputePipelineAsync` fails — kernel is D4-demoted for the
    remainder of the session.
 
 Failures surface in the inline error log panel with codes from
@@ -993,7 +1027,7 @@ supersede them.
 
 The `localStorage` blob under `tw-viewer:settings:v1` carries an
 explicit `version` field. Migrations run on read; older payloads are
-folded forward silently. Current `STORAGE_VERSION = 11`
+folded forward silently. Current `STORAGE_VERSION = 14`
 (`src/utils/constants.ts`). Each bump:
 
 - v2: split `advanced` (runtime state) and `defaultAdvanced` (saved defaults).
@@ -1006,6 +1040,9 @@ folded forward silently. Current `STORAGE_VERSION = 11`
 - v9: `advanced.nestedParallelizationEnabled` added (Phase 4 nested `@compute` opt-in).
 - v10: `nestedParallelizationEnabled` retired (Phase 4 BREAKING) — silently dropped on read.
 - v11: `advanced.customBlockInliningEnabled: boolean` added (Phase 5 inlining opt-out, default `true`). v10→v11 migration seeds `true` if unset.
+- v12: top-level `detailedOptimizations` added (Phase 1 per-toggle persistence, default-on for every shipped ID).
+- v13: `advanced.semantics: SemanticOptions` added (Phase 7 preset + 5 per-flag booleans; v12→v13 migration seeds `'scratch'` preset = all flags off when missing).
+- v14: settings-dialog refactor — `DetailedOptimizationMap` reduced to the three IDs with an actual `setCompilerOptions` runtime gate (`data.constantFolding` / `compatLayer.branchInfoReuse` / `data.mapConversionEvaluation`); seven cosmetic IDs are silently dropped from the v13 read payload. Migration = silent, no user-visible behaviour change.
 
 `!clear-storage` debug command drops the entire blob.
 

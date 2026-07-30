@@ -26,12 +26,14 @@ describe('persistence: v10 → v11 migration (§Phase 5)', () => {
     localStorage.clear();
   });
 
-  it('STORAGE_VERSION is 13 (Phase 7 bumped from 12)', () => {
-    // Phase 7 (`patches/vendored/scratch-vm.patch`) added the
-    // `advanced.semantics: SemanticOptions` field. The
-    // `STORAGE_VERSION` constant moved from 12 to 13 so future
-    // `readSettings` knows it has to read the new field.
-    expect(STORAGE_VERSION).toBe(13);
+  it('STORAGE_VERSION is 14 (settings-dialog refactor bumped from 13)', () => {
+    // §Phase 14 — the settings-dialog refactor (= navigation-state
+    // retired + Detailed Settings restructured + cosmetic IDs dropped)
+    // moved `STORAGE_VERSION` from 13 to 14. The new value is the
+    // floor for `readSettings` so a payload tagged at the older 13 is
+    // still accepted (= the v13 → v14 migration is silent and
+    // cosmetic-only).
+    expect(STORAGE_VERSION).toBe(14);
   });
 
   it('seeds customBlockInliningEnabled = true when missing from v10 payload', () => {
@@ -250,7 +252,7 @@ describe('persistence: v11 → v12 migration (§Phase 1)', () => {
         userExplicitFps: null,
         detailedOptimizations: {
           ...DEFAULT_DETAILED_OPTIMIZATIONS,
-          'comparison.shortCircuit': false,
+          'data.mapConversionEvaluation': true,
         },
       },
       version: 11,
@@ -258,9 +260,10 @@ describe('persistence: v11 → v12 migration (§Phase 1)', () => {
     localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(v11Payload));
 
     const settings = readSettings();
-    expect(settings.detailedOptimizations['comparison.shortCircuit']).toBe(false);
-    // Other IDs default-on.
-    expect(settings.detailedOptimizations['edgeHat.sentinelElimination']).toBe(true);
+    expect(settings.detailedOptimizations['data.mapConversionEvaluation']).toBe(true);
+    // Other IDs default-on (the v14 map's opt-in IDs default to
+    // false — see `DEFAULT_DETAILED_OPTIMIZATIONS`).
+    expect(settings.detailedOptimizations['compatLayer.branchInfoReuse']).toBe(false);
   });
 
   it('round-trips v12 payload through write/read', () => {
@@ -275,11 +278,11 @@ describe('persistence: v11 → v12 migration (§Phase 1)', () => {
       userExplicitFps: null,
       detailedOptimizations: {
         ...DEFAULT_DETAILED_OPTIMIZATIONS,
-        'comparison.shortCircuit': false,
+        'data.mapConversionEvaluation': true,
       },
     });
     const settings = readSettings();
-    expect(settings.detailedOptimizations['comparison.shortCircuit']).toBe(false);
-    expect(settings.detailedOptimizations['edgeHat.sentinelElimination']).toBe(true);
+    expect(settings.detailedOptimizations['data.mapConversionEvaluation']).toBe(true);
+    expect(settings.detailedOptimizations['compatLayer.branchInfoReuse']).toBe(false);
   });
 });

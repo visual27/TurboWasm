@@ -93,7 +93,18 @@ output: `C:/files/memo/scratch-vm-optimization/phase-05-scheduler-analysis.md`.
 - `test/runtime/scratch-vm-patches-symbols.test.ts` is the
   fixed-probe that fails CI when a marker is removed without
   updating the registry.
-- `src/features/settings/constants.ts` is the UI-facing map of
-  feature area → detailed toggle. Each marker in this table maps 1:1
-  to a `DetailedOptimizationId` so a UI toggle, the source marker,
-  and the vendored runtime gate all live under the same namespace.
+- §Phase 14 — `src/features/settings/constants.ts` is the UI-facing
+  map of feature area → detailed toggle. After the
+  settings-dialog-refactor that retired cosmetic UI (= the IDs in
+  this table whose `setCompilerOptions` gate is unconditional /
+  non-existent), only three `DetailedOptimizationId`s remain in the
+  visible UI:
+    - `data.constantFolding`              → `constantFoldingEnabled` (Phase 3)
+    - `compatLayer.branchInfoReuse`       → `branchInfoPoolEnabled` (Phase 4A)
+    - `data.mapConversionEvaluation`      → `mapConversionEnabled` (Phase 4B)
+  The other markers in this table are still present in the
+  vendored scratch-vm source (= they affect runtime behaviour
+  unconditionally regardless of the UI toggle value), but they no
+  longer expose a `DetailedOptimizationId` slot, so the
+  `DetailedOptimizationMap` keys map 1:1 to vendored-runtime gates
+  rather than to the full marker table.

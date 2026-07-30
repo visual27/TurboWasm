@@ -28,7 +28,7 @@ describe('SettingsDialog — layout', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   });
 
-  it('renders the five categories in order', () => {
+  it('renders the categories in order', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const sections = screen.getAllByTestId(/^settings-section-/);
     expect(sections.map((el) => el.getAttribute('data-testid'))).toEqual([
@@ -36,20 +36,17 @@ describe('SettingsDialog — layout', () => {
       'settings-section-rendering',
       'settings-section-limits',
       'settings-section-turbowasm',
+      'settings-section-detailed',
       'settings-section-others',
     ]);
     expect(screen.getByText('Runtime')).toBeInTheDocument();
     expect(screen.getByText('Rendering')).toBeInTheDocument();
     expect(screen.getByText('Limits')).toBeInTheDocument();
-    // §Phase 0 — the breadcrumb span inside the DialogHeader also reads
-    // "TurboWasm" (root view label). Two matches are expected now;
-    // assert the section title is among them rather than the single
-    // match the pre-Phase-0 test relied on.
-    const turboWasmHeadings = screen.getAllByText('TurboWasm');
-    expect(turboWasmHeadings.length).toBeGreaterThanOrEqual(2);
-    expect(
-      turboWasmHeadings.some((el) => el.getAttribute('data-testid') === 'settings-section-turbowasm'),
-    ).toBe(true);
+    // §Phase 14 — the TurboWasm section header now reads only
+    // "TurboWasm" once (the master toggle row carries the
+    // "TurboWasm Acceleration" label).
+    expect(screen.getByText('TurboWasm')).toBeInTheDocument();
+    expect(screen.getByText('Detailed Settings')).toBeInTheDocument();
     expect(screen.getByText('Others')).toBeInTheDocument();
   });
 
@@ -110,21 +107,19 @@ describe('SettingsDialog — layout', () => {
     expect(screen.queryByLabelText('Performance mode')).toBeNull();
   });
 
-  it('renders the TurboWasm section with TurboWasm Acceleration, Enable WebGPU, Enable WASM, and Custom Block Inlining', () => {
+  it('renders the TurboWasm section with the master toggle only (§Phase 14)', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     const turboSection = screen
       .getByTestId('settings-section-turbowasm')
       .closest('section') as HTMLElement;
+    // The master switch lives in the dedicated TurboWasm section.
     expect(within(turboSection).getByText('TurboWasm Acceleration')).toBeInTheDocument();
-    expect(within(turboSection).getByText('Enable WebGPU')).toBeInTheDocument();
-    expect(within(turboSection).getByText('Enable WASM')).toBeInTheDocument();
-    // §Phase 5 — `Custom Block Inlining` opt-out for the new
-    // procedure-inliner (gpu-kernel-dsl-phase5-spec §5.5). It sits
-    // immediately below the Enable WASM row.
-    expect(within(turboSection).getByText('Custom Block Inlining')).toBeInTheDocument();
-    // §Phase 4 — the `Nested @compute (Experimental)` toggle was
-    // retired. It must NOT reappear alongside the Phase 5 toggle.
-    expect(within(turboSection).queryByText('Nested @compute (Experimental)')).toBeNull();
+    // §Phase 14 — the three runtime-toggle rows moved out of the
+    // master section and into the Detailed Settings → TurboWasm
+    // Pipeline sub-section.
+    expect(within(turboSection).queryByText('Enable WebGPU')).toBeNull();
+    expect(within(turboSection).queryByText('Enable WASM')).toBeNull();
+    expect(within(turboSection).queryByText('Custom Block Inlining')).toBeNull();
   });
 
   it('does NOT render the retired GPU Kernels row', () => {
@@ -135,14 +130,14 @@ describe('SettingsDialog — layout', () => {
     expect(screen.queryByText('GPU Kernels')).toBeNull();
   });
 
-  it('places the Enable WASM toggle immediately below Enable WebGPU', () => {
+  it('places the Enable WASM toggle immediately below Enable WebGPU inside the Pipeline sub-section', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const turboSection = screen
-      .getByTestId('settings-section-turbowasm')
+    const pipeline = screen
+      .getByTestId('detailed-subsection-pipeline')
       .closest('section') as HTMLElement;
-    // Compare the DOM order of the labels inside the TurboWasm
-    // section. The Enable WASM toggle must come AFTER Enable WebGPU.
-    const labels = Array.from(turboSection.querySelectorAll('label')).map((el) => el.textContent ?? '');
+    const labels = Array.from(pipeline.querySelectorAll('label')).map(
+      (el) => el.textContent ?? '',
+    );
     const webgpuIdx = labels.findIndex((l) => l === 'Enable WebGPU');
     const wasmIdx = labels.findIndex((l) => l === 'Enable WASM');
     expect(webgpuIdx).toBeGreaterThanOrEqual(0);
@@ -151,10 +146,10 @@ describe('SettingsDialog — layout', () => {
 
   it('places Custom Block Inlining immediately below Enable WASM (§Phase 5)', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const turboSection = screen
-      .getByTestId('settings-section-turbowasm')
+    const pipeline = screen
+      .getByTestId('detailed-subsection-pipeline')
       .closest('section') as HTMLElement;
-    const labels = Array.from(turboSection.querySelectorAll('label')).map(
+    const labels = Array.from(pipeline.querySelectorAll('label')).map(
       (el) => el.textContent ?? '',
     );
     const wasmIdx = labels.findIndex((l) => l === 'Enable WASM');
@@ -391,19 +386,20 @@ describe('SettingsDialog — Nested @compute toggle (§Phase 4 BREAKING: removed
     expect(screen.queryByLabelText('Nested @compute toggle')).toBeNull();
   });
 
-  it('the TurboWasm section ends with the Custom Block Inlining row', () => {
-    // §Phase 5 — the TurboWasm section now ends with the new
-    // `Custom Block Inlining` opt-out (below Enable WASM).
+  it('the Pipeline sub-section ends with the Custom Block Inlining row', () => {
+    // §Phase 14 — Custom Block Inlining now lives inside the
+    // Detailed Settings → TurboWasm Pipeline sub-section. The
+    // TurboWasm root section only hosts the master toggle.
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const turboSection = screen
-      .getByTestId('settings-section-turbowasm')
+    const pipeline = screen
+      .getByTestId('detailed-subsection-pipeline')
       .closest('section') as HTMLElement;
-    const labels = Array.from(turboSection.querySelectorAll('label')).map(
+    const labels = Array.from(pipeline.querySelectorAll('label')).map(
       (el) => el.textContent ?? '',
     );
     const cbiIdx = labels.findIndex((l) => l === 'Custom Block Inlining');
     expect(cbiIdx).toBeGreaterThanOrEqual(0);
-    // Last label in the section must be Custom Block Inlining.
+    // Last label in the Pipeline sub-section must be Custom Block Inlining.
     expect(labels.at(-1)).toBe('Custom Block Inlining');
     // No "Nested @compute" row anywhere.
     const nestedIdx = labels.findIndex((l) => l?.startsWith('Nested @compute'));
@@ -616,7 +612,7 @@ describe('SettingsDialog — twconfig overrides propagation', () => {
   });
 });
 
-describe('SettingsDialog — Detailed Settings screen (§Phase 0)', () => {
+describe('SettingsDialog — Detailed Settings section (§Phase 14)', () => {
   beforeEach(() => {
     useSettingsStore.setState({
       theme: 'system',
@@ -633,30 +629,72 @@ describe('SettingsDialog — Detailed Settings screen (§Phase 0)', () => {
     });
   });
 
-  it('renders a "Detailed Settings" navigation row inside the TurboWasm section', () => {
+  it('renders the "Detailed Settings" section directly inside the dialog (no drill-down)', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    expect(screen.getByTestId('settings-detailed-row')).toBeInTheDocument();
-  });
-
-  it('clicking the row pushes a detailed view and shows a back button', async () => {
-    const user = userEvent.setup();
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    await user.click(screen.getByTestId('settings-detailed-row'));
-    expect(screen.getByTestId('settings-back')).toBeInTheDocument();
-    // The detailed screen lists every category.
     expect(screen.getByTestId('settings-section-detailed')).toBeInTheDocument();
+    // §Phase 14 — the "Detailed Settings" navigation row used in
+    // Phase 0 is gone; the user no longer pushes a view onto a stack
+    // to inspect the detailed toggles.
+    expect(screen.queryByTestId('settings-detailed-row')).toBeNull();
+    // Back / forward controls are gone too.
+    expect(screen.queryByTestId('settings-back')).toBeNull();
   });
 
-  it('the back button pops back to the root section view', async () => {
+  it('renders the TurboWasm Pipeline, Compatibility Layer, and Data Structures sub-sections inline', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(screen.getByTestId('detailed-subsection-pipeline')).toBeInTheDocument();
+    expect(screen.getByTestId('detailed-subsection-compat-layer')).toBeInTheDocument();
+    expect(screen.getByTestId('detailed-subsection-data-structures')).toBeInTheDocument();
+  });
+
+  it('renders the Enable WebGPU / Enable WASM / Custom Block Inlining rows under the Pipeline sub-section', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(screen.getByTestId('detailed-toggle-row-enable-webgpu')).toBeInTheDocument();
+    expect(screen.getByTestId('detailed-toggle-row-enable-wasm')).toBeInTheDocument();
+    expect(screen.getByTestId('detailed-toggle-row-custom-block-inlining')).toBeInTheDocument();
+  });
+
+  it('renders the three surviving wired detailed-optimization rows', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(screen.getByTestId('detailed-toggle-row-compatLayer.branchInfoReuse')).toBeInTheDocument();
+    expect(screen.getByTestId('detailed-toggle-row-data.mapConversionEvaluation')).toBeInTheDocument();
+    expect(screen.getByTestId('detailed-toggle-row-data.constantFolding')).toBeInTheDocument();
+  });
+
+  it('does NOT render any of the retired cosmetic detailed-optimization rows', () => {
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(
+      screen.queryByTestId('detailed-toggle-row-comparison.shortCircuit'),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId('detailed-toggle-row-comparison.infinityBranchRemoval'),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId('detailed-toggle-row-edgeHat.sentinelElimination'),
+    ).toBeNull();
+    expect(screen.queryByTestId('detailed-toggle-row-compatLayer.closureReuse')).toBeNull();
+    expect(screen.queryByTestId('detailed-toggle-row-compatLayer.procedureCache')).toBeNull();
+    expect(
+      screen.queryByTestId('detailed-toggle-row-compatLayer.procedureCacheThreadCompaction'),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId('detailed-toggle-row-compiler.generatorGranularityResearch'),
+    ).toBeNull();
+  });
+
+  it('toggling the Branch Info Reuse switch updates the store', async () => {
     const user = userEvent.setup();
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    await user.click(screen.getByTestId('settings-detailed-row'));
-    await user.click(screen.getByTestId('settings-back'));
-    expect(screen.queryByTestId('settings-back')).toBeNull();
-    expect(screen.getByTestId('settings-section-runtime')).toBeInTheDocument();
+    const toggle = screen.getByLabelText(
+      'Branch Info Reuse toggle',
+    ) as HTMLButtonElement;
+    await user.click(toggle);
+    expect(
+      useSettingsStore.getState().detailedOptimizations['compatLayer.branchInfoReuse'],
+    ).toBe(true);
   });
 
-  it('disables the row when TurboWasm Acceleration master toggle is OFF', () => {
+  it('disables every Detailed Settings row when the master is off', () => {
     useSettingsStore.setState({
       advanced: {
         ...DEFAULT_ADVANCED_SETTINGS,
@@ -664,58 +702,80 @@ describe('SettingsDialog — Detailed Settings screen (§Phase 0)', () => {
       },
     });
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const row = screen.getByTestId('settings-detailed-row') as HTMLButtonElement;
-    expect(row.disabled).toBe(true);
+    expect(
+      (screen.getByLabelText('Enable WebGPU toggle') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText('Enable WASM toggle') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText('Custom Block Inlining toggle') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText('Branch Info Reuse toggle') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText('Open semantics settings') as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+});
+
+describe('SettingsDialog — Semantics inline expansion (§Phase 14)', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      theme: 'system',
+      volume: 100,
+      lastNonMuteVolume: 100,
+      advanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
+      allowedExtensionUrls: [],
+      enableWasm: true,
+      detailedOptimizations: { ...DEFAULT_DETAILED_OPTIMIZATIONS },
+    });
   });
 
-  it('opens a category screen and shows every toggle for that category', async () => {
-    const user = userEvent.setup();
+  it('does NOT render the Semantics screen until the user clicks the row', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    await user.click(screen.getByTestId('settings-detailed-row'));
-    await user.click(screen.getByTestId('detailed-category-row-comparison'));
-    // The comparison category ships two IDs.
-    expect(screen.getByTestId('detailed-toggle-row-comparison.shortCircuit')).toBeInTheDocument();
-    expect(screen.getByTestId('detailed-toggle-row-comparison.infinityBranchRemoval')).toBeInTheDocument();
+    expect(screen.queryByTestId('semantics-screen')).toBeNull();
   });
 
-  it('toggling a detailed switch updates the store', async () => {
-    const user = userEvent.setup();
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    await user.click(screen.getByTestId('settings-detailed-row'));
-    await user.click(screen.getByTestId('detailed-category-row-comparison'));
-    const toggle = screen.getByLabelText('Comparison Short-Circuit toggle') as HTMLButtonElement;
-    await user.click(toggle);
-    expect(useSettingsStore.getState().detailedOptimizations['comparison.shortCircuit']).toBe(
-      false,
-    );
-  });
-
-  it('§Phase 7 — opens the Semantics screen and flips a flag through patchSemantic', async () => {
+  it('clicking the Semantics row expands the Semantics screen inline', async () => {
     const user = userEvent.setup();
     render(<SettingsDialog open onOpenChange={() => undefined} />);
     await user.click(screen.getByTestId('settings-semantics-row'));
     expect(screen.getByTestId('semantics-screen')).toBeInTheDocument();
-    // Selecting the 'custom' preset un-locks the per-flag toggles.
+  });
+
+  it('the Close button collapses the Semantics screen', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-semantics-row'));
+    expect(screen.getByTestId('semantics-screen')).toBeInTheDocument();
+    await user.click(screen.getByTestId('semantics-close'));
+    expect(screen.queryByTestId('semantics-screen')).toBeNull();
+  });
+
+  it('opening a fresh dialog starts with the Semantics screen collapsed', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-semantics-row'));
+    expect(screen.getByTestId('semantics-screen')).toBeInTheDocument();
+    // Close + reopen. The new session must start collapsed (= the
+    // dialog's `useEffect(() => { if (open) setSemanticsOpen(false); }, [open])`
+    // invariant).
+    rerender(<SettingsDialog open={false} onOpenChange={() => undefined} />);
+    rerender(<SettingsDialog open onOpenChange={() => undefined} />);
+    expect(screen.queryByTestId('semantics-screen')).toBeNull();
+  });
+
+  it('flipping a per-flag through patchSemantic auto-flips the preset to "custom"', async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog open onOpenChange={() => undefined} />);
+    await user.click(screen.getByTestId('settings-semantics-row'));
     await user.click(screen.getByTestId('semantics-preset-custom'));
     const toggle = screen.getByLabelText('Truncated Modulo toggle') as HTMLButtonElement;
     await user.click(toggle);
     expect(useSettingsStore.getState().advanced.semantics.truncatedModulo).toBe(true);
     expect(useSettingsStore.getState().advanced.semantics.preset).toBe('custom');
-  });
-
-  it('disables every toggle when the master is off', () => {
-    useSettingsStore.setState({
-      advanced: {
-        ...DEFAULT_ADVANCED_SETTINGS,
-        turboWasmAccelerationEnabled: false,
-      },
-    });
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    // The detail-row gate is the user-facing control point; when the
-    // master is off the row is disabled so the user cannot navigate
-    // into a screen whose every leaf would be locked-off anyway. The
-    // store-level guard (snapshot capture + forced-false) is covered
-    // in `useSettingsStore.test.ts`.
-    expect((screen.getByTestId('settings-detailed-row') as HTMLButtonElement).disabled).toBe(true);
   });
 });

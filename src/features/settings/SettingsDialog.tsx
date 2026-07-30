@@ -17,21 +17,8 @@ import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger
 import type { AdvancedSettings } from '@/types/settings';
 import { Button } from '@/components/ui/button';
 import { FPS_MAX, FPS_MIN } from '@/utils/constants';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import {
-  canPop,
-  createInitialStack,
-  currentView,
-  popView,
-  pushView,
-  stackToBreadcrumb,
-} from '@/features/settings/navigation-state';
-import type {
-  SettingsViewEntry,
-  SettingsViewStack,
-} from '@/features/settings/types';
+import { ChevronRight } from 'lucide-react';
 import { DetailedSettingsScreen } from '@/features/settings/DetailedSettingsScreen';
-import { DetailedCategoryScreen } from '@/features/settings/DetailedCategoryScreen';
 import { SemanticsScreen } from '@/features/settings/SemanticsScreen';
 
 export interface SettingsDialogProps {
@@ -74,17 +61,18 @@ interface ClickableFieldRowProps {
 }
 
 /**
- * Phase 0 — Foundation. FieldRow-shaped row that delegates activation
- * to `onClick` instead of a child. Used for navigation rows (e.g.
- * "Detailed Settings"). The wrapper button has `pointer-events: auto`
- * inline because Radix Dialog applies `pointer-events: none` to
- * `<body>` while open — that CSS is inherited by all descendants,
- * including the portal-mounted row, and would otherwise swallow
- * clicks. See AGENTS.md §「症状 → 見るべき場所」for the historical
- * context.
+ * Phase 14 — Settings-dialog refactor. FieldRow-shaped row that
+ * delegates activation to `onClick` instead of a child. Used for
+ * navigation rows (e.g. the "Semantics" inline toggle). The wrapper
+ * button has `pointer-events: auto` inline because Radix Dialog
+ * applies `pointer-events: none` to `<body>` while open — that CSS
+ * is inherited by all descendants, including the portal-mounted row,
+ * and would otherwise swallow clicks. See AGENTS.md §「症状 → 見る
+ * べき場所」 for the historical context.
  *
  * Optional `children` are rendered just before the chevron icon so a
- * caller can decorate the trailing area (e.g. a "0/5 off" count).
+ * caller can decorate the trailing area (e.g. a "scratch" preset
+ * badge).
  */
 function ClickableFieldRow({
   id,
@@ -331,7 +319,7 @@ const RuntimeSection = React.memo(function RuntimeSection({
       <FieldRow
         id="warpTimer"
         label="Warp Timer"
-        description="Run custom blocks without screen refresh."
+        description="Prevents scripts from freezing by slowing execution when they get stuck in long or infinite loops."
       >
         <SwitchField
           id="warpTimer"
@@ -349,7 +337,7 @@ const RenderingSection = React.memo(function RenderingSection({
 }: RuntimeSectionProps): React.JSX.Element {
   return (
     <SettingsSection id="rendering" title="Rendering">
-      <FieldRow id="hq-pen" label="High Quality Pen" description="Smoother pen rendering (slower).">
+      <FieldRow id="hq-pen" label="High Quality Pen" description="Smoother pen rendering.">
         <SwitchField
           id="hq-pen"
           checked={advanced.highQualityPen}
@@ -428,29 +416,19 @@ const LimitsSection = React.memo(function LimitsSection({
   );
 });
 
-const TurboWasmSection = React.memo(function TurboWasmSection({
+const TurboWasmMasterSection = React.memo(function TurboWasmMasterSection({
   advanced,
-  patch,
-  onOpenDetailed,
-  onOpenSemantics,
-}: RuntimeSectionProps & { onOpenDetailed?: () => void; onOpenSemantics?: () => void }): React.JSX.Element {
-  const enableWasm = useSettingsStore((s) => s.enableWasm);
-  const setEnableWasm = useSettingsStore((s) => s.setEnableWasm);
-  // §Phase 1 — the master switch drives `toggleTurboWasmMaster(value)`
-  // (= snapshot + force-all-false + clear-on-reset), not a bare
-  // `patch` call. Going through the dedicated action guarantees that
-  // a user who toggles the master off captures a snapshot of the
-  // detailed-optimization map and restores it on the next ON. A
-  // bare `patch({ turboWasmAccelerationEnabled: false })` would
-  // leave the detailed toggles untouched (= UI lie: the master is
-  // off but the leaf switches still render as ON).
-  const toggleMaster = useSettingsStore((s) => s.toggleTurboWasmMaster);
+  toggleMaster,
+}: {
+  advanced: AdvancedSettings;
+  toggleMaster: (value: boolean) => void;
+}): React.JSX.Element {
   return (
     <SettingsSection id="turbowasm" title="TurboWasm">
       <FieldRow
         id="turbo-wasm-acceleration"
         label="TurboWasm Acceleration"
-        description="Offload collision detection to a WebAssembly SIMD module. Falls back to the JS path automatically when SIMD is unavailable, when a sprite has a shape-changing visual effect (mosaic, pixelate, whirl, fisheye) active, or when the color-matching path is exercised under a color/brightness effect. When the WASM toggle below is off this master switch is ignored."
+        description="Master toggle for the TurboWasm acceleration pipeline (= WebGPU compute kernels + WASM SIMD collision detection + procedure inlining + detailed optimization toggles + semantics). When off, the runtime falls back to the JS path and every related flag in the Detailed Settings section is locked to off. The runtime is restored to its previous state the next time you turn this back on."
       >
         <SwitchField
           id="turbo-wasm-acceleration"
@@ -459,96 +437,6 @@ const TurboWasmSection = React.memo(function TurboWasmSection({
           ariaLabel="TurboWasm Acceleration toggle"
         />
       </FieldRow>
-      <FieldRow
-        id="enable-webgpu"
-        label="Enable WebGPU"
-        description="Offload @compute regions (marked in a project via the // @compute comment DSL) to WebGPU compute shaders. Falls back to the JS path when WebGPU is unavailable or when a region is unsupported (D1/D2/D3 demote). Independent of the WASM toggle above — turning this off disables the GPU compute kernel pipeline without affecting WASM SIMD collision detection."
-      >
-        <SwitchField
-          id="enable-webgpu"
-          checked={advanced.enableWebgpu}
-          onChange={(v) => patch({ enableWebgpu: v })}
-          ariaLabel="Enable WebGPU toggle"
-        />
-      </FieldRow>
-      <FieldRow
-        id="enable-wasm"
-        label="Enable WASM"
-        description="Install the WASM-SIMD collision-detection hooks on the renderer. Off clears every TurboWasm hook so the runtime behaves identically to unmodified scratch-render (the Definition-of-Done parity mode). On uses WASM SIMD when it has initialised and falls back to the JS path otherwise. Independent of the WebGPU toggle above."
-      >
-        <SwitchField
-          id="enable-wasm"
-          checked={enableWasm}
-          onChange={(v) => setEnableWasm(v)}
-          ariaLabel="Enable WASM toggle"
-        />
-      </FieldRow>
-      {/* §Phase 5 — `Custom Block Inlining` opt-out for the procedure-inliner
-          (gpu-kernel-dsl-phase5-spec §5.5). Off re-treats `procedure_call`
-          and `argument_reporter_*` as D1-unsafe so any `@compute` region
-          that uses them demotes to the JS path. On (default) the
-          inliner pre-expands custom blocks so canonical keys collapse
-          across call sites. Unlike the WebGPU / WASM toggles this one
-          is a power-user escape hatch — `Set as default` preserves the
-          current value rather than forcing it on. */}
-      <FieldRow
-        id="custom-block-inlining"
-        label="Custom Block Inlining"
-        description="When enabled, GPU compute regions can call custom blocks (pre-parse inline expansion). Disable to treat procedure_call as D1-unsafe so regions that use custom blocks fall back to the JS path instead of the GPU pipeline. Power-user toggle: 'Set as default' preserves the current value rather than forcing it on."
-      >
-        <SwitchField
-          id="custom-block-inlining"
-          checked={advanced.customBlockInliningEnabled}
-          onChange={(v) => patch({ customBlockInliningEnabled: v })}
-          ariaLabel="Custom Block Inlining toggle"
-        />
-      </FieldRow>
-      {/* §Phase 7 — entry point to the Semantics settings panel. The
-          row shows the current preset so the user knows the active
-          semantics at a glance without having to navigate. Disabled
-          when the master toggle is off (= runtime gate is skipped,
-          so toggling presets would be a UI lie). */}
-      <ClickableFieldRow
-        id="semantics-settings"
-        label="Semantics"
-        description={`Comparison / modulo / NaN / truthy semantics. Active preset: ${advanced.semantics.preset}. Disabled when TurboWasm Acceleration is OFF.`}
-        onClick={() => onOpenSemantics?.()}
-        disabled={!advanced.turboWasmAccelerationEnabled}
-        ariaLabel="Open semantics settings"
-        testId="settings-semantics-row"
-      >
-        <span
-          aria-hidden="true"
-          className="text-xs uppercase tracking-[0.2em] text-muted-foreground"
-        >
-          {advanced.semantics.preset}
-        </span>
-      </ClickableFieldRow>
-      {/* §Phase 4 BREAKING — the `Nested @compute (Experimental)` toggle
-          was retired alongside the v9 nested-parallelization feature.
-          The new loose-position DSL (`@compute` on `control_repeat`
-          itself, with explicit `@repeat …, repeatPath="…"` directives)
-          makes the toggle redundant; the kernel container always
-          matches the marker host. */}
-      {/*
-        Phase 0 — Foundation. Power-user entry point into the detailed
-        settings screen. The row renders as a clickable FieldRow that
-        delegates navigation to the parent (so the section component
-        stays storage-free). Disabled when the master toggle is off so
-        a user who turned everything off can't poke toggles that have
-        no observable effect anyway — the runtime guard in
-        `useSettingsStore.toggleTurboWasmMaster(false)` forces every
-        detailed flag to false, so an enabled row would be a UI lie.
-      */}
-      <ClickableFieldRow
-        id="detailed-settings"
-        label="Detailed Settings"
-        description="Power-user experimental optimization toggles. Disabled when TurboWasm Acceleration is OFF."
-        onClick={() => onOpenDetailed?.()}
-        disabled={!advanced.turboWasmAccelerationEnabled}
-        ariaLabel="Open detailed settings"
-        testId="settings-detailed-row"
-      />
     </SettingsSection>
   );
 });
@@ -601,7 +489,7 @@ const OthersSection = React.memo(function OthersSection({
       <FieldRow
         id="disable-compiler"
         label="Disable Compiler"
-        description="Force the VM to interpret scripts (slower but more compatible). 'Set as default' always re-enables the compiler, so this toggle is session-only."
+        description="Force the VM to interpret scripts. Session-only — 'Set as default' always re-enables the compiler so the choice cannot lock future sessions into the interpreter path."
       >
         <SwitchField
           id="disable-compiler"
@@ -620,29 +508,33 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
   const saveAdvancedAsDefault = useSettingsStore((s) => s.saveAdvancedAsDefault);
   const detailedOptimizations = useSettingsStore((s) => s.detailedOptimizations);
   const setDetailedOptimization = useSettingsStore((s) => s.setDetailedOptimization);
+  const enableWasm = useSettingsStore((s) => s.enableWasm);
+  const setEnableWasm = useSettingsStore((s) => s.setEnableWasm);
+  const toggleMaster = useSettingsStore((s) => s.toggleTurboWasmMaster);
+  const patchSemantic = useSettingsStore((s) => s.patchSemantic);
+  const applySemanticPreset = useSettingsStore((s) => s.applySemanticPreset);
   const onResetClick = React.useCallback(() => resetAdvanced(), [resetAdvanced]);
   const onSetDefaultClick = React.useCallback(() => saveAdvancedAsDefault(), [saveAdvancedAsDefault]);
 
-  // Phase 0 — Foundation. Push/pop navigation state for the detailed
-  // settings screen. Reset to the root whenever the dialog re-opens
-  // so a user who opened the dialog last week and clicked around
-  // doesn't land back on the deep category they were inspecting.
-  const [stack, setStack] = React.useState<SettingsViewStack>(() => createInitialStack());
+  // Phase 14 — Settings-dialog refactor. There is no longer a view
+  // stack; the dialog opens straight onto the full category listing.
+  // The Semantics screen is exposed inline (= `SemanticsScreen`
+  // renders below its ClickableFieldRow) and toggled via a boolean
+  // `semanticsOpen` so the dialog never spawns a push/pop history.
+  const [semanticsOpen, setSemanticsOpen] = React.useState<boolean>(false);
+  // Reset to "closed" each time the dialog re-opens so a stale open
+  // state from a prior session does not leak through.
   React.useEffect(() => {
-    if (open) setStack(createInitialStack());
+    if (open) setSemanticsOpen(false);
   }, [open]);
-  const push = React.useCallback(
-    (entry: SettingsViewEntry) => setStack((prev) => pushView(prev, entry)),
-    [],
-  );
-  const pop = React.useCallback(() => setStack((prev) => popView(prev)), []);
-  const view = currentView(stack);
+  const onOpenSemantics = React.useCallback(() => setSemanticsOpen(true), []);
+  const onCloseSemantics = React.useCallback(() => setSemanticsOpen(false), []);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/*
         Layout:
-          - Header (title + back button + breadcrumb) pinned to the top.
+          - Header (title) pinned to the top.
           - ScrollArea fills the rest of the dialog, holding the
             vertically-stacked SettingsSection blocks separated by
             horizontal rules.
@@ -652,25 +544,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
       */}
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="flex-row items-center gap-3 px-8 pb-3 pt-8">
-          {canPop(stack) && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={pop}
-              aria-label="Back"
-              data-testid="settings-back"
-              style={{ pointerEvents: 'auto' }}
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-          )}
           <DialogTitle>Settings</DialogTitle>
-          <span
-            aria-hidden="true"
-            className="ml-auto text-[10px] uppercase tracking-[0.25em] text-muted-foreground"
-          >
-            {stackToBreadcrumb(stack)}
-          </span>
         </DialogHeader>
         <Separator />
 
@@ -687,45 +561,32 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
         */}
         <ScrollArea className="min-h-0 h-0 flex-1" data-testid="settings-scroll-area">
           <div className="flex flex-col gap-7 px-8 py-6">
-            {view.kind === 'section' && (
-              <>
-                <RuntimeSection advanced={advanced} patch={patch} />
-                <RenderingSection advanced={advanced} patch={patch} />
-                <LimitsSection advanced={advanced} patch={patch} />
-                <TurboWasmSection
-                  advanced={advanced}
-                  patch={patch}
-                  onOpenDetailed={() => push({ kind: 'detailed' })}
-                  onOpenSemantics={() => push({ kind: 'semantics' })}
-                />
-                <OthersSection advanced={advanced} patch={patch} />
-              </>
-            )}
-            {view.kind === 'detailed' && (
-              <DetailedSettingsScreen
-                masterOn={advanced.turboWasmAccelerationEnabled}
-                detailed={detailedOptimizations}
-                onOpenCategory={(categoryId) =>
-                  push({ kind: 'detailed-category', categoryId })
-                }
-              />
-            )}
-            {view.kind === 'detailed-category' && (
-              <DetailedCategoryScreen
-                categoryId={view.categoryId}
-                masterOn={advanced.turboWasmAccelerationEnabled}
-                detailed={detailedOptimizations}
-                onToggle={setDetailedOptimization}
-              />
-            )}
-            {view.kind === 'semantics' && (
+            <RuntimeSection advanced={advanced} patch={patch} />
+            <RenderingSection advanced={advanced} patch={patch} />
+            <LimitsSection advanced={advanced} patch={patch} />
+            <TurboWasmMasterSection advanced={advanced} toggleMaster={toggleMaster} />
+            <DetailedSettingsScreen
+              masterOn={advanced.turboWasmAccelerationEnabled}
+              detailed={detailedOptimizations}
+              semantics={advanced.semantics}
+              enableWebgpu={advanced.enableWebgpu}
+              enableWasm={enableWasm}
+              customBlockInliningEnabled={advanced.customBlockInliningEnabled}
+              patchAdvanced={patch}
+              setEnableWasm={setEnableWasm}
+              onToggleDetailed={setDetailedOptimization}
+              onOpenSemantics={onOpenSemantics}
+            />
+            {semanticsOpen && (
               <SemanticsScreen
                 masterOn={advanced.turboWasmAccelerationEnabled}
                 semantics={advanced.semantics}
-                onPatch={useSettingsStore.getState().patchSemantic}
-                onApplyPreset={useSettingsStore.getState().applySemanticPreset}
+                onPatch={patchSemantic}
+                onApplyPreset={applySemanticPreset}
+                onClose={onCloseSemantics}
               />
             )}
+            <OthersSection advanced={advanced} patch={patch} />
           </div>
         </ScrollArea>
 
@@ -756,7 +617,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
 }
 
 // Re-exported for unit tests and for downstream code that wants to
-// drive the navigation stack without going through the dialog (e.g.
+// drive the clickable field row without going through the dialog (e.g.
 // a future command palette). Keep the surface minimal.
 export { ClickableFieldRow };
-export type { DetailedOptimizationMap } from '@/features/settings/types';

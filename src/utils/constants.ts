@@ -157,7 +157,28 @@ export const STORAGE_KEYS = {
 // (= those were cosmetic UI-only toggles with no runtime gate) so the
 // `detailedOptimizations` map's keys map 1:1 to compiler-options
 // toggles with a vendored runtime gate.
-export const STORAGE_VERSION = 13;
+// Bumped to 14 alongside the settings-dialog refactor. The
+// `DetailedOptimizationMap` is reduced to the three IDs that actually
+// have a `setCompilerOptions` runtime gate:
+//   - `data.constantFolding`          → `constantFoldingEnabled` (Phase 3)
+//   - `compatLayer.branchInfoReuse`   → `branchInfoPoolEnabled`  (Phase 4A)
+//   - `data.mapConversionEvaluation`  → `mapConversionEnabled`   (Phase 4B)
+// All other IDs are silently dropped on the v13 → v14 read via
+// `sanitizeDetailedOptimizations` (= it iterates the new keys only)
+// because each was either (a) a cosmetic UI toggle with no runtime
+// gate (= Phase 1-A/B/C and Phase 2-A/B), (b) an unwired research row
+// (= `compatLayer.procedureCacheThreadCompaction` /
+// `compiler.generatorGranularityResearch`), or (c) a vendored-runtime
+// patch that applies unconditionally regardless of the toggle value.
+// Stale v13 payloads still carry the dropped keys after migration; the
+// read filters them so the in-memory `detailedOptimizations` map is
+// always a strict superset of the v14 keys. No runtime behaviour
+// changes — every cosmetic toggle the user could flip was a no-op at
+// the vendored runtime, so dropping the keys does not re-enable
+// anything. v14 itself writes the trimmed map via
+// `src/lib/persistence.ts:writeSettings` (= `schedulePersist` after
+// each `setDetailedOptimization` call).
+export const STORAGE_VERSION = 14;
 
 /**
  * §Phase 5 (gpu-kernel-dsl-phase5-spec §5.1) — maximum recursion depth

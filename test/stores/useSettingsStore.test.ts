@@ -52,10 +52,10 @@ describe('useSettingsStore — basic', () => {
     const raw = localStorage.getItem('tw-viewer:settings:v1');
     expect(raw).toBeTruthy();
     expect(JSON.parse(raw as string).state.theme).toBe('dark');
-    // The persisted payload is tagged with the v13 schema (= Phase 7
-    // semantics bump) so future schema bumps can read it back
-    // correctly.
-    expect(JSON.parse(raw as string).version).toBe(13);
+    // The persisted payload is tagged with the v14 schema
+    // (= settings-dialog refactor) so future schema bumps can read it
+    // back correctly.
+    expect(JSON.parse(raw as string).version).toBe(14);
   });
 
   it('clamps volume on setVolume', () => {
@@ -213,10 +213,10 @@ describe('useSettingsStore — enableWasm', () => {
       version: number;
     };
     expect(parsed.state.enableWasm).toBe(false);
-    // The persisted payload is tagged with the v13 schema (= Phase 7
-    // semantics bump) so future schema bumps can read it back
-    // correctly.
-    expect(parsed.version).toBe(13);
+    // The persisted payload is tagged with the v14 schema
+    // (= settings-dialog refactor) so future schema bumps can read it
+    // back correctly.
+    expect(parsed.version).toBe(14);
   });
 
   it('setEnableWasm toggles both directions', () => {
@@ -576,7 +576,7 @@ describe('useSettingsStore.cycleFpsShortcut', () => {
       version: number;
     };
     expect(parsed.state.userExplicitFps).toBe(60);
-    expect(parsed.version).toBe(13);
+    expect(parsed.version).toBe(14);
   });
 
 it('patchAdvanced with a non-30 fps updates the latch even when advanced.fps matches defaultAdvanced.fps', () => {
@@ -617,20 +617,20 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
   });
 
   it('setDetailedOptimization updates a single ID and leaves the rest untouched', () => {
-    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
+    useSettingsStore.getState().setDetailedOptimization('data.constantFolding', false);
     const map = useSettingsStore.getState().detailedOptimizations;
-    expect(map['comparison.shortCircuit']).toBe(false);
-    // Neighbouring ID stays default-on.
-    expect(map['comparison.infinityBranchRemoval']).toBe(true);
+    expect(map['data.constantFolding']).toBe(false);
+    // Neighbouring ID stays default-on (the surviving wired IDs).
+    expect(map['data.mapConversionEvaluation']).toBe(false);
   });
 
   it('setDetailedOptimization is a no-op when the value already matches', () => {
     // The console.log call must not fire — but we only assert the
     // state stays identical (the no-op detection lives inside the
     // setter).
-    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', true);
+    useSettingsStore.getState().setDetailedOptimization('data.constantFolding', true);
     const before = useSettingsStore.getState().detailedOptimizations;
-    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', true);
+    useSettingsStore.getState().setDetailedOptimization('data.constantFolding', true);
     expect(useSettingsStore.getState().detailedOptimizations).toBe(before);
   });
 
@@ -660,11 +660,11 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
     };
     expect(snap.advanced.enableWebgpu).toBe(true);
     expect(snap.enableWasm).toBe(true);
-    expect(snap.detailed['comparison.shortCircuit']).toBe(true);
+    expect(snap.detailed['data.constantFolding']).toBe(true);
   });
 
   it('toggleTurboWasmMaster(true) restores from the snapshot and clears it', () => {
-    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
+    useSettingsStore.getState().setDetailedOptimization('data.constantFolding', false);
     useSettingsStore.getState().patchAdvanced({ enableWebgpu: false });
     useSettingsStore.getState().toggleTurboWasmMaster(false);
     // We are now in the "all-off" state with a snapshot.
@@ -677,21 +677,21 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
     expect(after.advanced.enableWebgpu).toBe(false); // restored from snapshot
     expect(after.advanced.customBlockInliningEnabled).toBe(true);
     expect(after.enableWasm).toBe(true);
-    expect(after.detailedOptimizations['comparison.shortCircuit']).toBe(false); // restored
+    expect(after.detailedOptimizations['data.constantFolding']).toBe(false); // restored
     expect(after.beforeTurboWasmMasterOffSnapshot).toBeNull();
   });
 
   it('toggleTurboWasmMaster(true) without a snapshot is a no-op (idempotent)', () => {
     // No prior off-flip in this test. Flipping to true must leave the
     // runtime state intact.
-    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
+    useSettingsStore.getState().setDetailedOptimization('data.constantFolding', false);
     const before = useSettingsStore.getState().advanced;
 
     useSettingsStore.getState().toggleTurboWasmMaster(true);
 
     const after = useSettingsStore.getState();
     expect(after.advanced).toBe(before);
-    expect(after.detailedOptimizations['comparison.shortCircuit']).toBe(false);
+    expect(after.detailedOptimizations['data.constantFolding']).toBe(false);
     expect(after.beforeTurboWasmMasterOffSnapshot).toBeNull();
   });
 
@@ -705,12 +705,12 @@ describe('useSettingsStore — detailedOptimizations + master toggle (Phase 0)',
     expect(useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot).toBeNull();
 
     // Edit detailed map to a recognisable value, then off again.
-    useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
+    useSettingsStore.getState().setDetailedOptimization('data.constantFolding', false);
     useSettingsStore.getState().toggleTurboWasmMaster(false);
     const secondSnap = useSettingsStore.getState().beforeTurboWasmMasterOffSnapshot;
 
     expect(secondSnap).not.toBe(firstSnap);
-    expect(secondSnap?.detailed['comparison.shortCircuit']).toBe(false);
+    expect(secondSnap?.detailed['data.constantFolding']).toBe(false);
   });
 
   it('saveAdvancedAsDefault clears the snapshot and keeps the forced-on invariant', () => {
@@ -768,7 +768,7 @@ describe('useSettingsStore — [tw-optimization] log prefix (Phase 0)', () => {
   it('setDetailedOptimization(false) emits a [tw-optimization] log line', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
-      useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', false);
+      useSettingsStore.getState().setDetailedOptimization('data.constantFolding', false);
       const calls = spy.mock.calls.map((c) => String(c[0]));
       const matched = calls.some((msg) => msg.startsWith('[tw-optimization]'));
       expect(matched, `expected [tw-optimization] log, got ${JSON.stringify(calls)}`).toBe(true);
@@ -781,7 +781,7 @@ describe('useSettingsStore — [tw-optimization] log prefix (Phase 0)', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       // Default is true; setting it to true again is the no-op short-circuit.
-      useSettingsStore.getState().setDetailedOptimization('comparison.shortCircuit', true);
+      useSettingsStore.getState().setDetailedOptimization('data.constantFolding', true);
       const calls = spy.mock.calls.map((c) => String(c[0]));
       const matched = calls.some((msg) => msg.startsWith('[tw-optimization]'));
       expect(matched, 'no-op should not emit any log').toBe(false);
