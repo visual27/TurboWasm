@@ -654,9 +654,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
               <ChevronLeft className="h-4 w-4" />
             </Button>
           ) : (
-            <span aria-hidden="true" className="-ml-2 h-8 w-8 shrink-0" />
+            <span aria-hidden="true" className="-ml-2 h-8 w-0 shrink-0" />
           )}
-          <DialogTitle>Settings</DialogTitle>
+          <DialogTitle className="pb-2">Settings</DialogTitle>
         </DialogHeader>
         <Separator />
 
