@@ -142,12 +142,6 @@ export function DetailedSettingsScreen({
           {semantics.preset}
         </span>
       </ClickableFieldRow>
-      <Separator className="mt-4" />
-      <p className="pt-4 text-[11px] uppercase tracking-[0.25em] text-muted-foreground">
-        {disabled
-          ? 'Master off — every row is locked to off until TurboWasm Acceleration is turned back on.'
-          : 'Master on — every row above is wired to a runtime gate.'}
-      </p>
     </section>
   );
 }

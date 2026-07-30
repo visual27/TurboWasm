@@ -111,12 +111,6 @@ export function SemanticsScreen({
           );
         })}
       </div>
-      <Separator className="mt-4" />
-      <p className="pt-4 text-[11px] uppercase tracking-[0.25em] text-muted-foreground">
-        {semantics.preset === 'custom'
-          ? 'Custom preset — edits to the per-flag toggles above apply directly.'
-          : `Preset '${semantics.preset}' is active — per-flag toggles are read-only. Switch to 'Custom' to edit.`}
-      </p>
     </section>
   );
 }
