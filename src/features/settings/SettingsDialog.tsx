@@ -28,7 +28,6 @@ import {
 import type { SettingsViewStack } from '@/features/settings/types';
 import { DetailedSettingsScreen } from '@/features/settings/DetailedSettingsScreen';
 import { SemanticsScreen } from '@/features/settings/SemanticsScreen';
-import { cn } from '@/lib/utils';
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -622,10 +621,11 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/*
         Layout:
-          - Header (Back button slot always reserved, visible only
-            when the stack can pop; then title). The slot is rendered
-            unconditionally so the header height does not change when
-            the user navigates into / out of a drilled view.
+          - Header (Back button when the stack can pop, else a
+            height-preserving placeholder of the same box dimensions;
+            then title). The placeholder keeps the header height
+            constant across root / detailed / semantics views (= no
+            jump when the Back button swaps in or out of the layout).
           - ScrollArea fills the rest of the dialog, holding the
             current view body.
           - Footer (Reset / Set as default) pinned to the bottom.
@@ -635,33 +635,27 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="flex-row items-center gap-3 px-8 pb-4 pt-6">
           {/*
-            Back button slot is always rendered so the dialog header
-            height stays constant across root / detailed / semantics
-            views (= no jump when the Back button toggles in or out
-            of the layout). When the stack is at the root we keep the
-            DOM node but hide it visually via `visibility: hidden` —
-            this preserves the flex item's box (same `h-8 w-8`) so the
-            row's content height is locked to the back-button size
-            regardless of `showBack`. Pointer events and tab focus are
-            also suppressed so the hidden button is unreachable.
+            At the root the Back button is removed from the DOM (no
+            hidden slot left behind) so the title sits flush with the
+            dialog's left edge. To keep the header height locked we
+            render a placeholder span with the same `-ml-2 h-8 w-8`
+            box the Button would have occupied.
           */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={onBack}
-            aria-label="Back"
-            data-testid="settings-back"
-            aria-hidden={!showBack}
-            tabIndex={showBack ? 0 : -1}
-            style={{ pointerEvents: showBack ? 'auto' : 'none' }}
-            className={cn(
-              '-ml-2 h-8 w-8',
-              !showBack && 'invisible',
-            )}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
+          {showBack ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={onBack}
+              aria-label="Back"
+              data-testid="settings-back"
+              className="-ml-2 h-8 w-8"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+          ) : (
+            <span aria-hidden="true" className="-ml-2 h-8 w-8 shrink-0" />
+          )}
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
         <Separator />

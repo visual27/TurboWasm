@@ -51,20 +51,26 @@ describe('SettingsDialog — layout', () => {
     expect(screen.getByText('Others')).toBeInTheDocument();
   });
 
-  it('keeps the Back button slot in the DOM at the root but hides it visually (= canPop is false)', () => {
+  it('does NOT render the Back button at the root (= canPop is false) and still locks the header height via a placeholder', () => {
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const back = screen.getByTestId('settings-back');
-    expect(back).toBeInTheDocument();
-    // The slot is rendered with `visibility: hidden` so it preserves
-    // its flex box (= `h-8 w-8`) and the dialog header height stays
-    // constant when the user pushes a view onto the stack.
-    expect(back.className).toContain('invisible');
-    expect(back.getAttribute('aria-hidden')).toBe('true');
-    expect(back.getAttribute('tabindex')).toBe('-1');
-    // Interaction is suppressed so the hidden button is unreachable.
-    expect((back as HTMLButtonElement).disabled).toBe(false);
-    const styles = (back as HTMLButtonElement).style;
-    expect(styles.pointerEvents).toBe('none');
+    // The Back button is removed from the DOM at the root so the title
+    // sits flush with the dialog's left edge (no hidden slot left
+    // behind in the box model).
+    expect(screen.queryByTestId('settings-back')).toBeNull();
+    // A height-preserving placeholder holds the same `-ml-2 h-8 w-8`
+    // box the Button would have occupied, so the header height stays
+    // constant when the user pushes a view onto the stack. We locate
+    // it via the DialogTitle heading, then walk up to the DialogHeader
+    // (= the heading's parent) and assert the placeholder inside.
+    const title = screen.getByRole('heading', { name: 'Settings' });
+    const header = title.parentElement as HTMLElement | null;
+    expect(header).not.toBeNull();
+    const placeholder = header?.querySelector('span[aria-hidden="true"]') as HTMLElement | null;
+    expect(placeholder).not.toBeNull();
+    const classAttr = placeholder?.getAttribute('class') ?? '';
+    expect(classAttr).toContain('h-8');
+    expect(classAttr).toContain('w-8');
+    expect(classAttr).toContain('-ml-2');
   });
 
   it('renders the Runtime rows in the requested order', () => {
@@ -638,14 +644,12 @@ describe('SettingsDialog — Detailed Settings screen (view stack push/pop)', ()
   it('clicking the navigation row pushes the Detailed Settings screen (= canPop becomes true, Back button appears)', async () => {
     const user = userEvent.setup();
     render(<SettingsDialog open onOpenChange={() => undefined} />);
-    // At the root the Back slot is in the DOM but visually hidden so
-    // the header height is locked (= the visible "appears" change is
-    // `visibility: hidden` → visible, not mount/unmount).
-    expect(screen.getByTestId('settings-back').className).toContain('invisible');
+    // At the root the Back button is not in the DOM (= a height
+    // preserving placeholder takes its place).
+    expect(screen.queryByTestId('settings-back')).toBeNull();
     await user.click(screen.getByTestId('settings-detailed-row'));
     expect(screen.getByTestId('settings-section-detailed')).toBeInTheDocument();
     expect(screen.getByTestId('settings-back')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-back').className).not.toContain('invisible');
     // The root categories are gone (= the screen replaced the dialog
     // body, not appended inline).
     expect(screen.queryByTestId('settings-section-runtime')).toBeNull();
@@ -659,9 +663,8 @@ describe('SettingsDialog — Detailed Settings screen (view stack push/pop)', ()
     expect(screen.getByTestId('settings-section-detailed')).toBeInTheDocument();
     await user.click(screen.getByTestId('settings-back'));
     expect(screen.queryByTestId('settings-section-detailed')).toBeNull();
-    // Back slot is still in the DOM but re-hidden so the header
-    // height stays constant.
-    expect(screen.getByTestId('settings-back').className).toContain('invisible');
+    // Back button is removed from the DOM again at the root.
+    expect(screen.queryByTestId('settings-back')).toBeNull();
     expect(screen.getByTestId('settings-section-runtime')).toBeInTheDocument();
   });
 
@@ -806,7 +809,7 @@ describe('SettingsDialog — Semantics screen (view stack push/pop)', () => {
     rerender(<SettingsDialog open onOpenChange={() => undefined} />);
     expect(screen.queryByTestId('semantics-screen')).toBeNull();
     expect(screen.queryByTestId('settings-section-detailed')).toBeNull();
-    expect(screen.getByTestId('settings-back').className).toContain('invisible');
+    expect(screen.queryByTestId('settings-back')).toBeNull();
     expect(screen.getByTestId('settings-section-runtime')).toBeInTheDocument();
   });
 
