@@ -89,11 +89,15 @@ export interface SettingsState {
    */
   userExplicitFps: number | null;
   /**
-   * Phase 0 — Foundation. Current effective detailed-optimization
-   * toggle map. Phase 0 keeps this in-memory only (the v11 schema
-   * bump that will introduce persistence lands in Phase 1+). The map
-   * shape matches {@link DEFAULT_DETAILED_OPTIMIZATIONS} so a deep-
-   * equal compare can confirm "everything is default".
+   * §Phase 1 — Persistent detailed-optimization toggle map. Persisted
+   * via `src/lib/persistence.ts:writeSettings` (= `STORAGE_VERSION = 12`
+   * added the top-level field). Sanitised on read by
+   * `sanitizeDetailedOptimizations` so a fresh payload (= missing
+   * IDs) seeds from `DEFAULT_DETAILED_OPTIMIZATIONS` rather than
+   * throwing. The in-memory setter `setDetailedOptimization`
+   * schedules a debounced persist (= `schedulePersist`) so a
+   * rapid burst of flips does not stall the main thread on localStorage
+   * writes.
    */
   detailedOptimizations: DetailedOptimizationMap;
   /**
@@ -227,11 +231,11 @@ export interface SettingsState {
    */
   toggleTurboWasmMaster: (value: boolean) => void;
   /**
-   * Phase 0 — Foundation. Set a single detailed-optimization toggle.
-   * In-memory only; the change is observable by the runtime via
-   * `useSettingsStore.subscribe` but does not touch `localStorage`.
-   * Phase 1+ will introduce persistence behind a `STORAGE_VERSION`
-   * bump; the surface here is stable.
+   * §Phase 1 — Set a single detailed-optimization toggle. Mutates the
+   * runtime map synchronously (= Settings dialog reflects the change
+   * immediately) then schedules a debounced localStorage write via
+   * `schedulePersist` so the choice survives a reload. Coalesces a
+   * rapid burst of flips into one `writeSettings` call.
    */
   setDetailedOptimization: (id: DetailedOptimizationId, enabled: boolean) => void;
   /**
@@ -742,12 +746,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     console.log(`${OPTIMIZATION_TOGGLE_LOG_PREFIX} toggleTurboWasmMaster off (snapshot captured)`);
   },
   setDetailedOptimization: (id, enabled) => {
-    // Phase 0 — Foundation. Update a single ID in the
-    // `detailedOptimizations` map. The map is a plain
-    // `Record<id, boolean>` (not a frozen object) so the replacement
-    // is the cheapest possible. We do NOT persist here: the
-    // map is in-memory only until Phase 1+ introduces persistence
-    // (the `STORAGE_VERSION` bump lives in the persistence layer).
+    // §Phase 1 — Detailed-optimization toggles are persisted in
+    // `STORAGE_VERSION = 12`'s `detailedOptimizations` map (see
+    // `src/lib/persistence.ts:writeSettings` and the
+    // `v11 → v12` migration test). The setter mirrors the
+    // `schedulePersist` pattern used by `setVolume` /
+    // `setExtensionSandboxMode`: the runtime map mutates synchronously
+    // (= Settings dialog reflects the change immediately), then the
+    // debounced writer coalesces the localStorage write so a rapid
+    // burst of flips doesn't stall the main thread.
     const prev = get().detailedOptimizations[id];
     if (prev === enabled) return;
     set({
@@ -756,6 +763,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         [id]: enabled,
       },
     });
+    schedulePersist(get());
     // eslint-disable-next-line no-console
     console.log(
       `${OPTIMIZATION_TOGGLE_LOG_PREFIX} setDetailedOptimization ${id}=${enabled}`,

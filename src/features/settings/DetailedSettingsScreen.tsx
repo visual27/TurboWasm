@@ -33,25 +33,26 @@ export function DetailedSettingsScreen({
   detailed,
   onOpenCategory,
 }: DetailedSettingsScreenProps): React.JSX.Element {
-  // Count the disabled-by-master leaf toggles per category so the
-  // row can show a "(0/N off)" hint. Phase 0 keeps the visual
-  // minimal: just the active / total counts in a muted suffix.
+  // Count the per-category leaf toggles. Master ON → "off" is the
+  // number of detailed-optimization IDs the user has flipped to
+  // false. Master OFF → every leaf is locked to false by
+  // `useSettingsStore.toggleTurboWasmMaster(false)`, so we report
+  // `off = total` for every category.
   const summaryByCategory = React.useMemo(() => {
     const map = new Map<DetailedCategoryId, { off: number; total: number }>();
     for (const categoryId of DETAILED_CATEGORY_ORDER) {
-      // §Phase 7 — DRY: derive the row count from the constants map
-      // rather than a hand-written switch. Adding a new optimization
-      // ID no longer requires updating this switch in lockstep.
-      const total = DETAILED_OPTIMIZATIONS_BY_CATEGORY[categoryId].length;
-      map.set(categoryId, { off: 0, total });
+      const ids = DETAILED_OPTIMIZATIONS_BY_CATEGORY[categoryId];
+      let off = 0;
+      for (const id of ids) {
+        if (detailed[id] === false) off += 1;
+      }
+      map.set(categoryId, { off, total: ids.length });
     }
-    // Count off-by-master rows: master OFF flips every leaf to false.
     if (!masterOn) {
       for (const [categoryId, entry] of map) {
         map.set(categoryId, { off: entry.total, total: entry.total });
       }
     }
-    void detailed;
     return map;
   }, [masterOn, detailed]);
 
