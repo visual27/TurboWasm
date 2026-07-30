@@ -4,22 +4,12 @@ import type { AdvancedSettings } from '@/types/settings';
  * Phase 0 — Foundation.
  *
  * Detailed optimization toggle identifiers. After the v14 settings-dialog
- * refactor (= navigation-state retired + Settings accordion restructured),
- * only the IDs that are actually wired into a runtime gate survive in
- * the `DetailedOptimizationMap`. The Phase 1 cosmetic IDs
- * (= `comparison.shortCircuit` / `comparison.infinityBranchRemoval` /
- * `edgeHat.sentinelElimination`) are unconditionally applied by the
- * vendored runtime patch and never read from the map, so removing the
- * UI toggles does not affect runtime behaviour — but the toggle keys
- * are also dropped so a stale localStorage payload does not carry a
- * dangling key. The Phase 2 cosmetic IDs (= `compatLayer.closureReuse`
- * / `compatLayer.procedureCache`), the unwired
- * `compatLayer.procedureCacheThreadCompaction`, and the research-only
- * `compiler.generatorGranularityResearch` row all fall under the same
- * "no runtime gate" rationale. See
- * `scripts/patches/scratch-vm-symbols.md` for the marker-by-marker
- * rationale and `src/lib/persistence.ts:migrateV13ToV14` for the
- * localStorage silent drop.
+ * refactor only the IDs that are actually wired into a runtime gate
+ * (= `setCompilerOptions` key in `src/runtime/settings-bridge.ts`)
+ * survive in the `DetailedOptimizationMap`. The previously exposed
+ * categories `edge-detection` / `comparison` / `compiler` were removed
+ * because every ID they contained was cosmetic (= no vendored runtime
+ * gate, see `scripts/patches/scratch-vm-symbols.md`).
  *
  * The remaining IDs map 1:1 to `runtime.setCompilerOptions` keys:
  * `data.constantFolding` → `constantFoldingEnabled` (Phase 3),
@@ -48,6 +38,22 @@ export interface DetailedOptimizationState {
 }
 
 export type DetailedOptimizationMap = Readonly<Record<DetailedOptimizationId, boolean>>;
+
+/**
+ * Phase 14 (revised) — SettingsDialog view stack. The dialog maintains
+ * a tiny history stack and swaps its body when the user drills into a
+ * sub-screen (`Detailed Settings`, `Semantics`). Push replaces the
+ * dialog body rather than spawning a nested Dialog (which would fight
+ * Radix's `pointer-events: none` body lock). The stack is always
+ * non-empty; the bottom entry is the section picker that the master
+ * SettingsDialog manages.
+ */
+export type SettingsViewEntry =
+  | { kind: 'section' }
+  | { kind: 'detailed' }
+  | { kind: 'semantics' };
+
+export type SettingsViewStack = readonly SettingsViewEntry[];
 
 /**
  * Master-toggle polarity. Mirrors `advanced.turboWasmAccelerationEnabled`

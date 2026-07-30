@@ -148,23 +148,4 @@ describe('DetailedSettingsScreen (Phase 14)', () => {
     renderScreen({ masterOn: true });
     expect(screen.getByText(/Master on/i)).toBeInTheDocument();
   });
-
-  it('renders a Close button when onClose is provided (= the dialog-mounted style)', () => {
-    const onClose = vi.fn();
-    renderScreen({ onClose });
-    expect(screen.getByTestId('detailed-close')).toBeInTheDocument();
-  });
-
-  it('invokes onClose when the Close button is clicked', async () => {
-    const user = userEvent.setup();
-    const onClose = vi.fn();
-    renderScreen({ onClose });
-    await user.click(screen.getByTestId('detailed-close'));
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('does NOT render a Close button when onClose is absent (= legacy mount style)', () => {
-    renderScreen();
-    expect(screen.queryByTestId('detailed-close')).toBeNull();
-  });
 });

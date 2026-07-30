@@ -7,10 +7,6 @@ import type { SemanticOptions, SemanticPreset } from '@/types/settings';
  * component to know about the store surface. The master toggle is
  * read separately (= the dialog owns the master-on prop) so this
  * hook does not subscribe to the master field.
- *
- * §Phase 14 — the binding no longer surfaces `onClose`: the dialog
- * owns the inline-expansion boolean and wires `onClose` itself, so
- * the binding stays purely store-driven.
  */
 export function useSemanticsScreenBinding(): {
   semantics: SemanticOptions;

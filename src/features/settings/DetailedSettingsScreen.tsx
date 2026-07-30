@@ -2,7 +2,6 @@ import * as React from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { Button } from '@/components/ui/button';
 import { ClickableFieldRow } from './SettingsDialog';
 import {
   DETAILED_CATEGORY_LABELS,
@@ -21,33 +20,27 @@ export interface DetailedSettingsScreenProps {
   masterOn: boolean;
   detailed: DetailedOptimizationMap;
   semantics: SemanticOptions;
-  /** FieldRow-shaped row that toggles `advanced.enableWebgpu`. */
   enableWebgpu: boolean;
-  /** FieldRow-shaped row that toggles the global `enableWasm`. */
   enableWasm: boolean;
-  /** FieldRow-shaped row that toggles `advanced.customBlockInliningEnabled`. */
   customBlockInliningEnabled: boolean;
   patchAdvanced: (patch: Partial<AdvancedSettings>) => void;
   setEnableWasm: (value: boolean) => void;
   onToggleDetailed: (id: DetailedOptimizationId, enabled: boolean) => void;
   onOpenSemantics: () => void;
-  /**
-   * Phase 14 — optional close callback. When provided, the screen
-   * renders a top-row Close button so the user can return to the
-   * Settings dialog root (= the `TurboWasm` section that hosts the
-   * `Detailed Settings` navigation row). When absent the screen omits
-   * the Close button (legacy mount style).
-   */
-  onClose?: () => void;
 }
 
 /**
- * Phase 14 — Settings-dialog refactor. Renders the entire "Detailed
- * Settings" category inline (= no drill-down): a single h3 + three
- * nested sub-sections (`TurboWasm Pipeline` / `Compatibility Layer` /
- * `Data Structures`) plus a `Semantics` ClickableFieldRow at the
- * bottom. There is no back button, no view-stack, and no push/pop —
- * the user navigates by scrolling.
+ * Phase 14 (revised) — Detailed Settings screen. Reachable from the
+ * dialog root via the `Detailed Settings` navigation row (= a
+ * `ClickableFieldRow` in the TurboWasm section). The dialog's view
+ * stack pushes `{ kind: 'detailed' }` to mount this screen and pops
+ * back to the root when the user presses the `Back` button in the
+ * dialog header.
+ *
+ * Layout: a single h3 + three nested sub-sections (`TurboWasm
+ * Pipeline` / `Compatibility Layer` / `Data Structures`) plus a
+ * `Semantics` ClickableFieldRow at the bottom. The row invokes
+ * `onOpenSemantics` (= the dialog pushes `{ kind: 'semantics' }`).
  *
  * Master-off behaviour: when `masterOn === false` every leaf toggle
  * (= the 3 `TurboWasm Pipeline` rows + the surviving detailed
@@ -55,11 +48,6 @@ export interface DetailedSettingsScreenProps {
  * guard in `useSettingsStore.toggleTurboWasmMaster(false)` already
  * forces every related flag to false, so an interactive control here
  * would be a UI lie.
- *
- * Layout: each sub-section uses the shared `SettingsSection`-style
- * heading + divide-y border so the dialog reads as a single scroll
- * of category listings (per the user's accordion-常時展開
- * preference).
  */
 export function DetailedSettingsScreen({
   masterOn,
@@ -72,7 +60,6 @@ export function DetailedSettingsScreen({
   setEnableWasm,
   onToggleDetailed,
   onOpenSemantics,
-  onClose,
 }: DetailedSettingsScreenProps): React.JSX.Element {
   const disabled = !masterOn;
   return (
@@ -81,27 +68,12 @@ export function DetailedSettingsScreen({
       data-testid="settings-section-detailed"
       className="flex flex-col"
     >
-      <div className="flex items-center justify-between gap-3 pb-3 pt-2">
-        <h3
-          id="settings-section-detailed"
-          className="text-[11px] font-semibold uppercase tracking-[0.35em] text-muted-foreground"
-        >
-          Detailed Settings
-        </h3>
-        {onClose && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            data-testid="detailed-close"
-            style={{ pointerEvents: 'auto' }}
-            aria-label="Close detailed settings"
-          >
-            Close
-          </Button>
-        )}
-      </div>
+      <h3
+        id="settings-section-detailed"
+        className="pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.35em] text-muted-foreground"
+      >
+        Detailed Settings
+      </h3>
 
       <Subsection id="pipeline" title="TurboWasm Pipeline">
         <FieldRow

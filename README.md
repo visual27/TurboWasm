@@ -152,41 +152,53 @@ The Settings dialog maps directly to the TurboWarp VM/Runtime APIs:
 | `data.mapConversionEvaluation` (Detailed Settings → Data Structures) | `vm.runtime.setCompilerOptions({mapConversionEnabled})` |
 | Semantics (Detailed Settings → Semantics) | `vm.runtime.setCompilerOptions({semantics})` — preset + 5 per-flag booleans |
 
-### Layout (Phase 14)
+### Layout (Phase 14, revised)
 
-The Settings dialog uses a single-level navigation layout (= the
-root lists the visible categories, the user drills into a screen
-to inspect the detailed optimization toggles). The visible root
-categories are:
+The Settings dialog uses a drill-down view stack (= the root
+lists the visible categories; clicking `Detailed Settings` or
+`Semantics` pushes a new view onto the stack that replaces the
+dialog body). The state machine lives in
+`src/features/settings/navigation-state.ts` (push / pop /
+`canPop` / `currentView`). A `Back` button (chevron) appears in
+the dialog header whenever the stack depth exceeds 1.
+
+The visible root categories are:
 
 1. **Runtime** — FPS, Turbo Mode, Interpolation, Warp Timer
 2. **Rendering** — High Quality Pen, Stage Size
 3. **Limits** — Infinity Clones, Remove Fencing, Remove Misc Limits
 4. **TurboWasm** — TurboWasm Acceleration master toggle +
    `Detailed Settings` navigation row (= `ClickableFieldRow`).
-   Clicking the row reveals the Detailed Settings screen below
-   the TurboWasm section (= the same pattern the Semantics screen
-   used pre-§Phase 14). Master-off locks the row (= the user
-   cannot reach a screen whose every leaf would be forced off
-   anyway).
-5. **Detailed Settings screen** (= hidden until the user clicks
-   the row above) — `TurboWasm Pipeline` sub-section (Enable
-   WebGPU / Enable WASM / Custom Block Inlining) +
-   `Compatibility Layer` sub-section (`Branch Info Reuse`) +
-   `Data Structures` sub-section (`Map Conversion Evaluation`,
-   `Constant Folding`) + `Semantics` row that expands inline
-   below the row when clicked. A `Close` button in the section
-   header returns the user to the dialog root.
-6. **Others** — Volume, Disable Compiler
+   Clicking the row pushes the Detailed Settings screen onto the
+   stack (= replaces the dialog body). Master-off locks the row
+   (= the user cannot reach a screen whose every leaf would be
+   forced off anyway).
+5. **Detailed Settings screen** (= pushed via the row above) —
+   `TurboWasm Pipeline` sub-section (Enable WebGPU / Enable WASM
+   / Custom Block Inlining) + `Compatibility Layer` sub-section
+   (`Branch Info Reuse`) + `Data Structures` sub-section
+   (`Map Conversion Evaluation`, `Constant Folding`) +
+   `Semantics` row at the bottom. The Semantics row pushes the
+   Semantics screen onto the stack.
+6. **Semantics screen** (= pushed from the Detailed Settings
+   screen) — `Semantics` heading + 4 preset radio buttons +
+   5 per-flag toggles.
+7. **Others** — Volume, Disable Compiler (visible only at the
+   root; not reachable from a pushed screen)
+
+Pressing the `Back` button in the dialog header pops one entry
+from the stack (= Semantics → Detailed Settings → root). The
+stack is reset to the root entry every time the dialog re-opens.
 
 When the master toggle is `off`, the `Detailed Settings`
-navigation row is `disabled` (= the user cannot drill in), and
-once inside the screen every leaf (= the three pipeline rows,
-the three surviving detailed-optimization toggles, and the
-Semantics row + its inline-expanded content) is also `disabled`.
-The runtime-side `useSettingsStore.toggleTurboWasmMaster(false)`
-guard snapshots the previous state and forces every related flag
-to `false`, so the `disabled` UI matches the runtime.
+navigation row is `disabled` (= the user cannot push the
+Detailed Settings screen), and once inside the screen every
+leaf (= the three pipeline rows, the three surviving
+detailed-optimization toggles, and the Semantics row) is also
+`disabled`. The runtime-side
+`useSettingsStore.toggleTurboWasmMaster(false)` guard snapshots
+the previous state and forces every related flag to `false`, so
+the `disabled` UI matches the runtime.
 
 ### Performance Mode
 

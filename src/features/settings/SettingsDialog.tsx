@@ -17,9 +17,18 @@ import { clampFps, clampStageHeight, clampStageWidth, clampVolume, formatInteger
 import type { AdvancedSettings } from '@/types/settings';
 import { Button } from '@/components/ui/button';
 import { FPS_MAX, FPS_MIN } from '@/utils/constants';
-import { ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+  canPop,
+  createInitialStack,
+  currentView,
+  popView,
+  pushView,
+} from '@/features/settings/navigation-state';
+import type { SettingsViewStack } from '@/features/settings/types';
 import { DetailedSettingsScreen } from '@/features/settings/DetailedSettingsScreen';
 import { SemanticsScreen } from '@/features/settings/SemanticsScreen';
+import { cn } from '@/lib/utils';
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -61,18 +70,18 @@ interface ClickableFieldRowProps {
 }
 
 /**
- * Phase 14 — Settings-dialog refactor. FieldRow-shaped row that
- * delegates activation to `onClick` instead of a child. Used for
- * navigation rows (e.g. the "Semantics" inline toggle). The wrapper
- * button has `pointer-events: auto` inline because Radix Dialog
- * applies `pointer-events: none` to `<body>` while open — that CSS
- * is inherited by all descendants, including the portal-mounted row,
- * and would otherwise swallow clicks. See AGENTS.md §「症状 → 見る
- * べき場所」 for the historical context.
+ * Phase 0 — Foundation. FieldRow-shaped row that delegates activation
+ * to `onClick` instead of a child. Used for navigation rows (e.g.
+ * "Detailed Settings" and "Semantics"). The wrapper button has
+ * `pointer-events: auto` inline because Radix Dialog applies
+ * `pointer-events: none` to `<body>` while open — that CSS is inherited
+ * by all descendants, including the portal-mounted row, and would
+ * otherwise swallow clicks. See AGENTS.md §「症状 → 見るべき場所」
+ * for the historical context.
  *
  * Optional `children` are rendered just before the chevron icon so a
- * caller can decorate the trailing area (e.g. a "scratch" preset
- * badge).
+ * caller can decorate the trailing area (e.g. the active-semantic-preset
+ * badge on the Semantics row).
  */
 function ClickableFieldRow({
   id,
@@ -430,7 +439,7 @@ const TurboWasmMasterSection = React.memo(function TurboWasmMasterSection({
       <FieldRow
         id="turbo-wasm-acceleration"
         label="TurboWasm Acceleration"
-        description="Master toggle for the TurboWasm acceleration pipeline (= WebGPU compute kernels + WASM SIMD collision detection + procedure inlining + detailed optimization toggles + semantics). When off, the runtime falls back to the JS path and every related flag in the Detailed Settings section is locked to off. The runtime is restored to its previous state the next time you turn this back on."
+        description="Master toggle for the TurboWasm acceleration pipeline (= WebGPU compute kernels + WASM SIMD collision detection + procedure inlining + detailed optimization toggles + semantics). When off, the runtime falls back to the JS path and every related flag in the Detailed Settings screen is locked to off. The runtime is restored to its previous state the next time you turn this back on."
       >
         <SwitchField
           id="turbo-wasm-acceleration"
@@ -439,16 +448,6 @@ const TurboWasmMasterSection = React.memo(function TurboWasmMasterSection({
           ariaLabel="TurboWasm Acceleration toggle"
         />
       </FieldRow>
-      {/* Phase 14 — the Detailed Settings entry point. The detailed
-          optimization toggles + the Semantics screen now live behind
-          a separate screen (= the dialog root lists the categories
-          and the user drills into `Detailed Settings` to inspect
-          them). Mirrors the old Semantics entry-point pattern: a
-          `ClickableFieldRow` (= chevron + trailing count badge) that
-          sets `detailedOpen = true` in the dialog. Disabled when
-          the master toggle is off so a user who flipped every
-          related flag to `false` cannot poke toggles that have no
-          observable effect anyway. */}
       <ClickableFieldRow
         id="detailed-settings-row"
         label="Detailed Settings"
@@ -537,61 +536,48 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
   const onResetClick = React.useCallback(() => resetAdvanced(), [resetAdvanced]);
   const onSetDefaultClick = React.useCallback(() => saveAdvancedAsDefault(), [saveAdvancedAsDefault]);
 
-  // Phase 14 — Settings-dialog refactor. There is no longer a view
-  // stack; the dialog opens straight onto the full category listing.
-  // The `Detailed Settings` and `Semantics` screens are exposed
-  // inline (each is a single boolean toggle) so the dialog never
-  // spawns a push/pop history. The two booleans are independent
-  // (= the user can be inside `Detailed Settings` with the
-  // Semantics screen expanded), but in practice `detailedOpen`
-  // gates `DetailedSettingsScreen` and `semanticsOpen` is read by
-  // the Semantics row inside it.
-  const [detailedOpen, setDetailedOpen] = React.useState<boolean>(false);
-  const [semanticsOpen, setSemanticsOpen] = React.useState<boolean>(false);
-  // Reset to "closed" each time the dialog re-opens so a stale open
-  // state from a prior session does not leak through.
+  /**
+   * Phase 14 (revised) — SettingsDialog view stack. The dialog body
+   * is driven by `currentView(stack)`:
+   *
+   *   - `kind: 'section'`  → root (Runtime / Rendering / Limits /
+   *                          TurboWasm / Others, including the
+   *                          "Detailed Settings" navigation row).
+   *   - `kind: 'detailed'` → `DetailedSettingsScreen` (Pipeline +
+   *                          Compatibility Layer + Data Structures
+   *                          sub-sections + a "Semantics" navigation
+   *                          row at the bottom).
+   *   - `kind: 'semantics'`→ `SemanticsScreen` (presets + 5 per-flag
+   *                          toggles).
+   *
+   * Push replaces the dialog body (no nested Dialog — Radix's
+   * `<body>` pointer-events lock would swallow the click). A `Back`
+   * button in the DialogHeader pops one step. The stack is reset to
+   * the root entry every time the dialog re-opens.
+   */
+  const [stack, setStack] = React.useState<SettingsViewStack>(() => createInitialStack());
+  const view = currentView(stack);
+  const showBack = canPop(stack);
+
   React.useEffect(() => {
-    if (open) {
-      setDetailedOpen(false);
-      setSemanticsOpen(false);
-    }
+    if (open) setStack(createInitialStack());
   }, [open]);
-  const onOpenDetailed = React.useCallback(() => setDetailedOpen(true), []);
-  const onCloseDetailed = React.useCallback(() => setDetailedOpen(false), []);
-  const onOpenSemantics = React.useCallback(() => setSemanticsOpen(true), []);
-  const onCloseSemantics = React.useCallback(() => setSemanticsOpen(false), []);
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      {/*
-        Layout:
-          - Header (title) pinned to the top.
-          - ScrollArea fills the rest of the dialog, holding the
-            vertically-stacked SettingsSection blocks separated by
-            horizontal rules.
-          - Footer (Reset / Set as default) pinned to the bottom.
-        Padding on the header / footer is supplied by the section itself;
-        the ScrollArea only provides vertical scrolling.
-      */}
-      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
-        <DialogHeader className="flex-row items-center gap-3 px-8 pb-3 pt-8">
-          <DialogTitle>Settings</DialogTitle>
-        </DialogHeader>
-        <Separator />
+  const onOpenDetailed = React.useCallback(() => {
+    setStack((s) => pushView(s, { kind: 'detailed' }));
+  }, []);
+  const onOpenSemantics = React.useCallback(() => {
+    setStack((s) => pushView(s, { kind: 'semantics' }));
+  }, []);
+  const onBack = React.useCallback(() => {
+    setStack((s) => popView(s));
+  }, []);
 
-        {/*
-          Same flex pattern as the Extension Permission dialog: pair the
-          Radix primitive with explicit `min-h-0 h-0 flex-1` so the
-          scroll container can both shrink below its content height and
-          grow to fill the parent. The Radix Viewport inside the
-          ScrollArea handles vertical scrolling — we deliberately do
-          NOT also put `overflow-y-auto` on the inner div, because the
-          double-scrollbar pattern fights Radix's own height calculation
-          and previously left both layers un-scrollable. Padding now
-          lives on the inner div only.
-        */}
-        <ScrollArea className="min-h-0 h-0 flex-1" data-testid="settings-scroll-area">
-          <div className="flex flex-col gap-7 px-8 py-6">
+  const body = ((): React.JSX.Element => {
+    switch (view.kind) {
+      case 'section':
+        return (
+          <>
             <RuntimeSection advanced={advanced} patch={patch} />
             <RenderingSection advanced={advanced} patch={patch} />
             <LimitsSection advanced={advanced} patch={patch} />
@@ -600,32 +586,88 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
               toggleMaster={toggleMaster}
               onOpenDetailed={onOpenDetailed}
             />
-            {detailedOpen && (
-              <DetailedSettingsScreen
-                masterOn={advanced.turboWasmAccelerationEnabled}
-                detailed={detailedOptimizations}
-                semantics={advanced.semantics}
-                enableWebgpu={advanced.enableWebgpu}
-                enableWasm={enableWasm}
-                customBlockInliningEnabled={advanced.customBlockInliningEnabled}
-                patchAdvanced={patch}
-                setEnableWasm={setEnableWasm}
-                onToggleDetailed={setDetailedOptimization}
-                onOpenSemantics={onOpenSemantics}
-                onClose={onCloseDetailed}
-              />
-            )}
-            {semanticsOpen && (
-              <SemanticsScreen
-                masterOn={advanced.turboWasmAccelerationEnabled}
-                semantics={advanced.semantics}
-                onPatch={patchSemantic}
-                onApplyPreset={applySemanticPreset}
-                onClose={onCloseSemantics}
-              />
-            )}
             <OthersSection advanced={advanced} patch={patch} />
-          </div>
+          </>
+        );
+      case 'detailed':
+        return (
+          <DetailedSettingsScreen
+            masterOn={advanced.turboWasmAccelerationEnabled}
+            detailed={detailedOptimizations}
+            semantics={advanced.semantics}
+            enableWebgpu={advanced.enableWebgpu}
+            enableWasm={enableWasm}
+            customBlockInliningEnabled={advanced.customBlockInliningEnabled}
+            patchAdvanced={patch}
+            setEnableWasm={setEnableWasm}
+            onToggleDetailed={setDetailedOptimization}
+            onOpenSemantics={onOpenSemantics}
+          />
+        );
+      case 'semantics':
+        return (
+          <SemanticsScreen
+            masterOn={advanced.turboWasmAccelerationEnabled}
+            semantics={advanced.semantics}
+            onPatch={patchSemantic}
+            onApplyPreset={applySemanticPreset}
+          />
+        );
+      default:
+        return <></>;
+    }
+  })();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {/*
+        Layout:
+          - Header (Back button slot always reserved, visible only
+            when the stack can pop; then title). The slot is rendered
+            unconditionally so the header height does not change when
+            the user navigates into / out of a drilled view.
+          - ScrollArea fills the rest of the dialog, holding the
+            current view body.
+          - Footer (Reset / Set as default) pinned to the bottom.
+        Padding on the header / footer is supplied by the section itself;
+        the ScrollArea only provides vertical scrolling.
+      */}
+      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="flex-row items-center gap-3 px-8 pb-4 pt-6">
+          {/*
+            Back button slot is always rendered so the dialog header
+            height stays constant across root / detailed / semantics
+            views (= no jump when the Back button toggles in or out
+            of the layout). When the stack is at the root we keep the
+            DOM node but hide it visually via `visibility: hidden` —
+            this preserves the flex item's box (same `h-8 w-8`) so the
+            row's content height is locked to the back-button size
+            regardless of `showBack`. Pointer events and tab focus are
+            also suppressed so the hidden button is unreachable.
+          */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onBack}
+            aria-label="Back"
+            data-testid="settings-back"
+            aria-hidden={!showBack}
+            tabIndex={showBack ? 0 : -1}
+            style={{ pointerEvents: showBack ? 'auto' : 'none' }}
+            className={cn(
+              '-ml-2 h-8 w-8',
+              !showBack && 'invisible',
+            )}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <DialogTitle>Settings</DialogTitle>
+        </DialogHeader>
+        <Separator />
+
+        <ScrollArea className="min-h-0 h-0 flex-1" data-testid="settings-scroll-area">
+          <div className="flex flex-col gap-7 px-8 py-6">{body}</div>
         </ScrollArea>
 
         <Separator />
@@ -654,7 +696,4 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps): Rea
   );
 }
 
-// Re-exported for unit tests and for downstream code that wants to
-// drive the clickable field row without going through the dialog (e.g.
-// a future command palette). Keep the surface minimal.
 export { ClickableFieldRow };

@@ -18,21 +18,18 @@ export interface SemanticsScreenProps {
   semantics: SemanticOptions;
   onPatch: (options: Partial<SemanticOptions>) => void;
   onApplyPreset: (preset: SemanticPreset) => void;
-  /**
-   * Phase 14 — optional close callback. When provided, the screen
-   * renders a top-row close button so the inline expansion inside
-   * the Detailed Settings category can collapse back to the row.
-   * When absent (e.g. legacy direct mounts) the screen omits the
-   * close button.
-   */
-  onClose?: () => void;
 }
 
 /**
- * §Phase 7 — Semantics settings panel. Reachable from the root
- * settings list via the `Semantics` ClickableFieldRow. Shows the four
- * presets (= `scratch` / `low-risk-js` / `full-js` / `custom`) as a
- * radio group at the top, then the five per-flag switches below.
+ * §Phase 7 — Semantics settings panel. Reachable from the Detailed
+ * Settings screen via the `Semantics` ClickableFieldRow. The dialog's
+ * view stack pushes `{ kind: 'semantics' }` to mount this screen and
+ * pops back to the Detailed Settings view when the user presses the
+ * `Back` button in the dialog header.
+ *
+ * Shows the four presets (= `scratch` / `low-risk-js` / `full-js` /
+ * `custom`) as a radio group at the top, then the five per-flag
+ * switches below.
  *
  * Master-off behaviour: when `masterOn === false` (= the user turned
  * the TurboWasm Acceleration master toggle off) every preset button
@@ -49,7 +46,6 @@ export function SemanticsScreen({
   semantics,
   onPatch,
   onApplyPreset,
-  onClose,
 }: SemanticsScreenProps): React.JSX.Element {
   return (
     <section
@@ -57,27 +53,12 @@ export function SemanticsScreen({
       data-testid="semantics-screen"
       className="flex flex-col"
     >
-      <div className="flex items-center justify-between gap-3 pb-3 pt-2">
-        <h3
-          id="semantics-screen-title"
-          className="text-[11px] font-semibold uppercase tracking-[0.35em] text-muted-foreground"
-        >
-          Semantics
-        </h3>
-        {onClose && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            data-testid="semantics-close"
-            style={{ pointerEvents: 'auto' }}
-            aria-label="Close semantics settings"
-          >
-            Close
-          </Button>
-        )}
-      </div>
+      <h3
+        id="semantics-screen-title"
+        className="pb-3 pt-2 text-[11px] font-semibold uppercase tracking-[0.35em] text-muted-foreground"
+      >
+        Semantics
+      </h3>
       <p className="pb-4 text-xs leading-relaxed text-muted-foreground">
         Select a preset to bundle the comparison / modulo / NaN / truthy semantics
         flags below. These flags change observable project output — Scratch compatibility
