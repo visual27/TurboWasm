@@ -69,6 +69,31 @@ describe('ErrorLogPanel', () => {
     render(<ErrorLogPanel />);
     expect(screen.getByLabelText(/^Errors$/i)).toBeInTheDocument();
   });
+
+  it('does not render "Dismiss all errors" while collapsed', () => {
+    useErrorLogStore.setState({
+      entries: [{ id: 'e1', severity: 'error', message: 'err', ts: 1, visible: true }],
+    });
+    render(<ErrorLogPanel />);
+    expect(screen.queryByLabelText(/Dismiss all errors/i)).toBeNull();
+  });
+
+  it('clears all surfaced entries when "Dismiss all errors" is clicked', () => {
+    useErrorLogStore.setState({
+      entries: [
+        { id: 'e1', severity: 'error', message: 'first', ts: 1, visible: true },
+        { id: 'e2', severity: 'warn', message: 'second', ts: 2, visible: true },
+        { id: 'e3', severity: 'error', message: 'third', ts: 3, visible: true },
+      ],
+    });
+    const { container } = render(<ErrorLogPanel />);
+    fireEvent.click(screen.getByLabelText(/Expand errors/i));
+    expect(screen.getByLabelText(/Dismiss all errors/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText(/Dismiss all errors/i));
+    expect(useErrorLogStore.getState().entries).toEqual([]);
+    // surfaced = [] triggers the early-return in ErrorLogPanel.
+    expect(container.querySelector('section')).toBeNull();
+  });
 });
 
 describe('useErrorLogStore — pushOnce (§Phase 7)', () => {

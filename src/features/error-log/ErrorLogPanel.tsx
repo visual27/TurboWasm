@@ -8,6 +8,7 @@ import type { ErrorLogEntry, ErrorSeverity } from '@/stores/useErrorLogStore';
 export function ErrorLogPanel(): React.JSX.Element {
   const allEntries = useErrorLogStore((s) => s.entries);
   const dismiss = useErrorLogStore((s) => s.dismiss);
+  const clear = useErrorLogStore((s) => s.clear);
   const [expanded, setExpanded] = React.useState<boolean>(false);
 
   // §Phase 7 — surface `warn` and `error` entries. Info entries are
@@ -42,20 +43,33 @@ export function ErrorLogPanel(): React.JSX.Element {
             {summarize(errorCount, warnCount)}
           </span>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          aria-label={expanded ? 'Collapse errors' : 'Expand errors'}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((v) => !v)}
-        >
-          {expanded ? (
-            <ChevronDown className="h-3.5 w-3.5" />
-          ) : (
-            <ChevronUp className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-1">
+          {expanded && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-5 w-5 shrink-0"
+              aria-label="Dismiss all errors"
+              onClick={clear}
+            >
+              <X className="h-3 w-3" />
+            </Button>
           )}
-        </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            aria-label={expanded ? 'Collapse errors' : 'Expand errors'}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronUp className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        </div>
       </header>
       {expanded && (
         <ScrollArea className="max-h-32 border-t border-border">
