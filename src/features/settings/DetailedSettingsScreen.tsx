@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
 import { ClickableFieldRow } from './SettingsDialog';
 import {
   DETAILED_CATEGORY_LABELS,
@@ -79,7 +78,7 @@ export function DetailedSettingsScreen({
         <FieldRow
           id="enable-webgpu"
           label="Enable WebGPU"
-          description="Offload @compute regions (marked in a project via the // @compute comment DSL) to WebGPU compute shaders. Falls back to the JS path when WebGPU is unavailable or when a region is unsupported (D1/D2/D3 demote). Independent of the WASM toggle below — turning this off disables the GPU compute kernel pipeline without affecting WASM SIMD collision detection."
+          description="Accelerate supported project calculations with WebGPU when available."
           disabled={disabled}
           checked={enableWebgpu}
           onChange={(v) => patchAdvanced({ enableWebgpu: v })}
@@ -89,7 +88,7 @@ export function DetailedSettingsScreen({
         <FieldRow
           id="enable-wasm"
           label="Enable WASM"
-          description="Install the WASM-SIMD collision-detection hooks on the renderer. Off clears every TurboWasm hook so the runtime behaves identically to unmodified scratch-render (the Definition-of-Done parity mode). On uses WASM SIMD when it has initialised and falls back to the JS path otherwise. Independent of the WebGPU toggle above."
+          description="Speed up sprite collision detection when supported."
           disabled={disabled}
           checked={enableWasm}
           onChange={(v) => setEnableWasm(v)}
@@ -99,7 +98,7 @@ export function DetailedSettingsScreen({
         <FieldRow
           id="custom-block-inlining"
           label="Custom Block Inlining"
-          description="When enabled, GPU compute regions can call custom blocks (pre-parse inline expansion). Disable to treat procedure_call as D1-unsafe so regions that use custom blocks fall back to the JS path instead of the GPU pipeline. Power-user toggle: 'Set as default' preserves the current value rather than forcing it on."
+          description="Allow accelerated project calculations to use custom blocks."
           disabled={disabled}
           checked={customBlockInliningEnabled}
           onChange={(v) => patchAdvanced({ customBlockInliningEnabled: v })}
@@ -129,7 +128,7 @@ export function DetailedSettingsScreen({
       <ClickableFieldRow
         id="semantics-settings"
         label="Semantics"
-        description={`Comparison / modulo / NaN / truthy semantics. Active preset: ${semantics.preset}. Disabled when TurboWasm Acceleration is OFF.`}
+        description="Configure how projects compare and interpret values."
         onClick={onOpenSemantics}
         disabled={disabled}
         ariaLabel="Open semantics settings"

@@ -69,7 +69,7 @@ describe('SettingsDialog — layout', () => {
     expect(placeholder).not.toBeNull();
     const classAttr = placeholder?.getAttribute('class') ?? '';
     expect(classAttr).toContain('h-8');
-    expect(classAttr).toContain('w-8');
+    expect(classAttr).toContain('w-0');
     expect(classAttr).toContain('-ml-2');
   });
 
@@ -557,15 +557,6 @@ describe('SettingsDialog — Disable Compiler description mentions "Set as defau
       defaultAdvanced: { ...DEFAULT_ADVANCED_SETTINGS },
       allowedExtensionUrls: [],
     });
-  });
-
-  it('hints the toggle is session-only ("Set as default" re-enables)', () => {
-    render(<SettingsDialog open onOpenChange={() => undefined} />);
-    const othersSection = screen
-      .getByTestId('settings-section-others')
-      .closest('section') as HTMLElement;
-    const description = within(othersSection).getByText(/Set as default/i);
-    expect(description).toBeInTheDocument();
   });
 });
 

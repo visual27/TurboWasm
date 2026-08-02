@@ -305,7 +305,7 @@ const RuntimeSection = React.memo(function RuntimeSection({
       <FieldRow
         id="turbo-mode"
         label="Turbo Mode"
-        description="Run without framerate limit when supported."
+        description="Run without framerate limit."
       >
         <SwitchField
           id="turbo-mode"
@@ -355,7 +355,7 @@ const RenderingSection = React.memo(function RenderingSection({
       <FieldRow
         id="stage-size"
         label="Stage Size"
-        description="Stage canvas width and height in pixels."
+        description="Stage canvas width and height."
       >
         <div className="flex items-center gap-2">
           <NumberField
@@ -438,7 +438,7 @@ const TurboWasmMasterSection = React.memo(function TurboWasmMasterSection({
       <FieldRow
         id="turbo-wasm-acceleration"
         label="TurboWasm Acceleration"
-        description="Master toggle for the TurboWasm acceleration pipeline (= WebGPU compute kernels + WASM SIMD collision detection + procedure inlining + detailed optimization toggles + semantics). When off, the runtime falls back to the JS path and every related flag in the Detailed Settings screen is locked to off. The runtime is restored to its previous state the next time you turn this back on."
+        description="Enable TurboWasm acceleration features."
       >
         <SwitchField
           id="turbo-wasm-acceleration"
@@ -450,7 +450,7 @@ const TurboWasmMasterSection = React.memo(function TurboWasmMasterSection({
       <ClickableFieldRow
         id="detailed-settings-row"
         label="Detailed Settings"
-        description="Per-toggle power-user controls (= Enable WebGPU / Enable WASM / Custom Block Inlining + branchInfo pool / map conversion / constant folding + semantics preset & flags). Disabled when TurboWasm Acceleration is OFF."
+        description="Configure advanced compiler and runtime options."
         onClick={onOpenDetailed}
         disabled={!advanced.turboWasmAccelerationEnabled}
         ariaLabel="Open detailed settings"
@@ -508,7 +508,7 @@ const OthersSection = React.memo(function OthersSection({
       <FieldRow
         id="disable-compiler"
         label="Disable Compiler"
-        description="Force the VM to interpret scripts. Session-only — 'Set as default' always re-enables the compiler so the choice cannot lock future sessions into the interpreter path."
+        description="Force the VM to interpret scripts."
       >
         <SwitchField
           id="disable-compiler"

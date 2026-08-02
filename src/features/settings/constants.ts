@@ -22,10 +22,8 @@ export const DETAILED_CATEGORY_LABELS: Readonly<Record<DetailedCategoryId, strin
 } as const;
 
 export const DETAILED_CATEGORY_DESCRIPTIONS: Readonly<Record<DetailedCategoryId, string>> = {
-  'compat-layer':
-    'Reduce per-step allocations in the scratch-vm compatibility-layer closure paths.',
-  'data-structures':
-    'Evaluate maps and constants eagerly when the inputs are compile-time-known.',
+  'compat-layer': 'Reduce memory use in compatible extension control blocks.',
+  'data-structures': 'Speed up script preparation and fixed calculations.',
 } as const;
 
 export const DETAILED_CATEGORY_ORDER: readonly DetailedCategoryId[] = [
@@ -50,11 +48,9 @@ export const DETAILED_OPTIMIZATION_DESCRIPTIONS: Readonly<
   Record<DetailedOptimizationId, string>
 > = {
   'compatLayer.branchInfoReuse':
-    '§Phase 4A — opt-in. The per-thread branchInfo pool (= `runtime.compilerOptions.branchInfoPoolEnabled`) reuses the 4-key branchInfo snapshot (`defaultIsLoop`, `isLoop`, `branch`, `stackFrame`) across CONDITIONAL/LOOP compat-layer blocks via `try { ... } finally { __branchInfoRelease(...) }` wrapping emitted by `JSGenerator.descendStackedBlock`. Default OFF (= identical to upstream scratch-vm) so existing projects are byte-identical until the user opts in. The Phase 4A microbench (= 6,000 acquire/release cycles × 30 trials) shows heapDelta 0.83 MB → 0.02 MB = 97.2% reduction; wall-time delta is in JIT-noise territory (≈ 30 µs absolute). Only affects scripts that hit the compat layer (= extension blocks with `BlockType.CONDITIONAL` / `LOOP`); native `control_if` / `control_repeat` blocks are inlined as native JS by the vendored compiler and do NOT go through the compat layer. Toggle off (= legacy) by setting `compatLayer.branchInfoReuse = false` (= default), or programmatically via `vm.runtime.setCompilerOptions({ branchInfoPoolEnabled: false })`.',
-  'data.mapConversionEvaluation':
-    '§Phase 4B — opt-in. `Blocks._cache.compiledScripts` (= the runtime cache for compiled-scripts, 50-key typical workload) is backed by a `Map<string, {success, value}>` instead of a plain `{}`. Default OFF (= identical to upstream scratch-vm) so existing projects are byte-identical until the user opts in. The Phase 4B microbench (= 100,000 mixed lookup/insert ops × 30 trials on a 50-key cache with 80% lookup / 20% insert workload) shows wall median 4.04 ms (plain) → 1.28 ms (Map) = 68% faster. Only `compiledScripts` is in scope; `Target.variables` and `Thread.procedures` are intentionally excluded (= serialization compatibility / 4-key workload are not worth the Map migration cost) and remain plain `{}` regardless of this flag. Toggle off (= legacy) by setting `data.mapConversionEvaluation = false` (= default), or programmatically via `vm.runtime.setCompilerOptions({ mapConversionEnabled: false })`.',
-  'data.constantFolding':
-    '§Phase 3 — adopted. Fold compile-time-constant boolean / numeric / string operators (`OP_NOT` / `OP_AND` / `OP_OR` / `OP_ADD/SUB/MUL/DIV` / `OP_EQUALS` / `OP_LESS` / `OP_GREATER` / `OP_JOIN`). Both operands must be `CONSTANT` and the result\'s type bitset is preserved via `IntermediateInput.getNumberInputType` (= NaN / Infinity / -0). Toggling off calls `setCompilerOptions({ constantFoldingEnabled: false })` and clears the compile cache; subsequent compiles go through the original IR without fold. Defaults to ON.',
+    'Reduce memory use in compatible extension control blocks.',
+  'data.mapConversionEvaluation': 'Speed up repeated script compilation.',
+  'data.constantFolding': 'Speed up scripts with fixed calculations.',
 };
 
 /**
@@ -73,16 +69,11 @@ export const SEMANTIC_FLAG_LABELS: Readonly<Record<string, string>> = {
 };
 
 export const SEMANTIC_FLAG_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  strictNumericEquality:
-    'Use `===` directly. Type-mixed comparisons return false instead of coercing. List `contains` and `operator_contains` follow the same gate.',
-  caseSensitiveStrings:
-    'String comparisons treat case as distinct. Most user-visible change. Combined with strict mode, substring matches also fail on type-mixed operands.',
-  propagateNaN:
-    'Do not convert NaN to 0. Errors propagate silently through arithmetic.',
-  truncatedModulo:
-    'Use JS `%` (truncated) instead of Scratch floored modulo.',
-  jsTruthyBooleans:
-    'Use JS truthy / falsy. Empty strings and "0" become true.',
+  strictNumericEquality: 'Treat numeric text and numbers as different values.',
+  caseSensitiveStrings: 'Treat uppercase and lowercase text as different.',
+  propagateNaN: 'Keep invalid-number results instead of replacing them with zero.',
+  truncatedModulo: 'Use JavaScript-style results for negative modulo operations.',
+  jsTruthyBooleans: 'Treat non-empty text, including "0" and "false", as true.',
 };
 
 export const SEMANTIC_FLAG_ORDER: readonly (keyof import('@/types/settings').SemanticOptions)[] = [
@@ -101,12 +92,8 @@ export const SEMANTIC_PRESET_LABELS: Readonly<Record<string, string>> = {
 };
 
 export const SEMANTIC_PRESET_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  scratch:
-    'All flags off. Byte-identical to upstream scratch-vm. Default for new projects.',
-  'low-risk-js':
-    'Closest alignment with JS that keeps Scratch-compatible behaviour on arithmetic. Sets caseSensitiveStrings and truncatedModulo only.',
-  'full-js':
-    'Full JS alignment: strictNumericEquality, caseSensitiveStrings, propagateNaN, truncatedModulo, jsTruthyBooleans all on.',
-  custom:
-    'User-edited bundle. Edit individual flags below to lock in your own combination.',
+  scratch: 'Preserve standard Scratch behavior.',
+  'low-risk-js': 'Use case-sensitive text and JavaScript-style modulo.',
+  'full-js': 'Align comparisons, numbers, text, and booleans with JavaScript.',
+  custom: 'Configure each value behavior individually.',
 };

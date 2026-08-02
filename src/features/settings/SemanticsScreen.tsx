@@ -60,9 +60,7 @@ export function SemanticsScreen({
         Semantics
       </h3>
       <p className="pb-4 text-xs leading-relaxed text-muted-foreground">
-        Select a preset to bundle the comparison / modulo / NaN / truthy semantics
-        flags below. These flags change observable project output — Scratch compatibility
-        may be reduced when a non-Scratch preset is active.
+        Choose how values behave; non-Scratch presets may change project results.
       </p>
       <PresetRow
         currentPreset={semantics.preset}
@@ -87,12 +85,6 @@ export function SemanticsScreen({
                 </Label>
                 <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
                   {SEMANTIC_FLAG_DESCRIPTIONS[flag]}
-                </p>
-                <p
-                  aria-hidden="true"
-                  className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60"
-                >
-                  semantics.{flag}
                 </p>
               </div>
               <div

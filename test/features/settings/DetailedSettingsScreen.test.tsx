@@ -138,14 +138,4 @@ describe('DetailedSettingsScreen (Phase 14)', () => {
       (screen.getByLabelText('Open semantics settings') as HTMLButtonElement).disabled,
     ).toBe(true);
   });
-
-  it('shows a "master off" hint when the master toggle is off', () => {
-    renderScreen({ masterOn: false });
-    expect(screen.getByText(/Master off/i)).toBeInTheDocument();
-  });
-
-  it('shows a "master on" hint when the master toggle is on', () => {
-    renderScreen({ masterOn: true });
-    expect(screen.getByText(/Master on/i)).toBeInTheDocument();
-  });
 });
